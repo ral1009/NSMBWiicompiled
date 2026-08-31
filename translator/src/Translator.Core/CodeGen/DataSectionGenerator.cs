@@ -69,6 +69,61 @@ public static class DataSectionGenerator
         WriteSourceFile(sections, outputPath, dol.BssAddress, dol.BssSize, projectName);
     }
     
+    /// <summary>
+    /// NSMBW-shaped variant of <see cref="Generate"/>: one dol plus several always-loaded RELs
+    /// instead of at most one. Each project's own generate-data-init run only knows about a
+    /// single dol+rel pair, so combining all 5 NSMBW modules into one executable needs one
+    /// initializer that embeds main.dol's sections once and every REL's relocated image
+    /// alongside it - otherwise each module's separately-generated InitializeDataSections()/
+    /// IsDataSectionsInitialized() would collide as duplicate symbol definitions at link time,
+    /// and using just one of them would leave the other RELs' game data never written into
+    /// guest memory at all.
+    /// </summary>
+    public static void GenerateCombined(
+        DolFile dol,
+        IReadOnlyList<(RelImage Image, string Name)> rels,
+        string outputPath,
+        string projectName = "PowerPC DOL")
+    {
+        var sections = new List<DataSectionEntry>();
+
+        foreach (var section in dol.Sections)
+        {
+            if (section.Kind == SectionKind.Bss || !section.HasData || section.Size == 0)
+            {
+                continue;
+            }
+            sections.Add(new DataSectionEntry(
+                Name: SanitizeName(section.Name),
+                Address: section.VirtualAddress,
+                Data: section.Data,
+                Source: "DOL"));
+        }
+
+        foreach (var (rel, name) in rels)
+        {
+            if (rel.Data.Length == 0)
+            {
+                continue;
+            }
+            sections.Add(new DataSectionEntry(
+                Name: SanitizeName(name),
+                Address: rel.BaseAddress,
+                Data: rel.Data,
+                Source: "REL"));
+        }
+
+        var blobDirectory = Path.Combine(
+            Path.GetDirectoryName(outputPath) ?? ".",
+            Path.GetFileNameWithoutExtension(outputPath) + "_blobs");
+        var blobAssemblyPath = Path.Combine(
+            Path.GetDirectoryName(outputPath) ?? ".",
+            Path.GetFileNameWithoutExtension(outputPath) + "_blobs.S");
+
+        WriteBlobFiles(sections, blobDirectory, blobDirectory, blobAssemblyPath);
+        WriteSourceFile(sections, outputPath, dol.BssAddress, dol.BssSize, projectName);
+    }
+
     private static string SanitizeName(string name)
     {
         var sb = new StringBuilder();

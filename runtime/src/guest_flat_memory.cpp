@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "abi_bridge.h"
 #include "memory.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
@@ -444,6 +445,24 @@ void ReportFatalGuestFault(const char* category, uint32_t guestAddress, bool isW
         std::cerr << "  guest pc:      0x" << std::hex << cpu->pc << " lr=0x" << cpu->lr << std::dec
                   << std::endl;
         SystemBridge::DumpCpuState(cpu);
+    }
+    // Temporary: real host call stack (unlike the guest-register/stack-word heuristics above,
+    // which can be stale), to pin down exactly which translated PPC function is executing.
+    {
+        void* frames[32]{};
+        const USHORT n = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+        std::cerr << "  host stack trace (" << n << " frames):" << std::endl;
+        for (USHORT i = 0; i < n; ++i) {
+            const auto addr = reinterpret_cast<uintptr_t>(frames[i]);
+            if (auto info = TranslatedFunctionRegistry::FindByHostAddress(addr)) {
+                std::cerr << "    [" << i << "] " << info->name << " (PPC:0x" << std::hex
+                          << std::uppercase << info->address << std::dec << std::nouppercase
+                          << ") host=0x" << std::hex << addr << std::dec << std::endl;
+            } else {
+                std::cerr << "    [" << i << "] <native> host=0x" << std::hex << addr << std::dec
+                          << std::endl;
+            }
+        }
     }
     std::cerr.flush();
     std::ostringstream message;

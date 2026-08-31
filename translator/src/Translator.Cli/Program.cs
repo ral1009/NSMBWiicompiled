@@ -161,9 +161,13 @@ return command switch
     "help" or "--help" or "-h" or "-?" => ShowGlobalHelp(),
     "info" or "--info" or "--version" => RunInfo(),
     "generate-data-init" => RunGenerateDataInit(),
+    "generate-nsmbw-data-init" => RunGenerateNsmbwDataInit(tail),
     "translate-recursive" => RunTranslateRecursive(tail),
     "translate-mod" => RunTranslateMod(tail),
     "emit-build-shards" => RunEmitBuildShards(tail),
+    "emit-nsmbw-build-shards" => RunEmitNsmbwBuildShards(tail),
+    "trace-rel-relocations" => RunTraceRelRelocations(tail),
+    "extract-data-function-pointers" => RunExtractDataFunctionPointers(tail),
     "emit-base-manifest" => RunEmitBaseManifest(tail),
     "check-base-mod-awareness" => RunCheckBaseModAwareness(tail),
     _ => ShowHelp(command)
@@ -264,6 +268,317 @@ int RunEmitBuildShards(string[] argsTail)
     catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException)
     {
         Console.Error.WriteLine($"emit-build-shards failed: {ex.Message}");
+        return 1;
+    }
+}
+
+int RunGenerateNsmbwDataInit(string[] argsTail)
+{
+    var relProjectsOption = OptionValue(argsTail, "--rel-projects");
+    if (string.IsNullOrWhiteSpace(relProjectsOption))
+    {
+        Console.Error.WriteLine(
+            "Usage: translator generate-nsmbw-data-init --project <main.dol manifest> " +
+            "--rel-projects <rel1.yml,rel2.yml,...> [--out path] [--runtime-config-out path]");
+        return 1;
+    }
+    var mainProject = RequireProject();
+    var output = OptionValue(argsTail, "--out")
+        ?? Path.Combine(root, "generated_nsmbw", "data_sections_init.cpp");
+    var runtimeConfigOutput = OptionValue(argsTail, "--runtime-config-out")
+        ?? Path.Combine(root, "generated_nsmbw", "RuntimeConfig.h");
+
+    try
+    {
+        var dol = DolFile.Load(mainProject.Inputs.Dol.Path);
+        var (sda1Base, sda2Base) = mainProject.RequireSdaBases();
+        RuntimeConfigGenerator.GenerateConfigHeader(
+            sda1Base, sda2Base, runtimeConfigOutput, mainProject.Identity.DisplayName);
+
+        // Load every REL's header/sections up front so cross-module relocations (a boss REL
+        // referencing a shared "bases" REL, etc.) can resolve against the *target* module's own
+        // load address and section table instead of silently reusing whichever REL is currently
+        // being relocated (see RelFile.ApplyRelocations - that mismatch produced bogus small
+        // "addresses" like 0x00040104 instead of real 0x80... targets).
+        var loadedRels = new List<(RelFile File, uint LoadAddress, string Name)>();
+        foreach (var relProjectPath in relProjectsOption.Split(
+                     ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var relProject = TranslationProjectConfig.Load(relProjectPath);
+            if (relProject.Inputs.Rel is not { } rel)
+            {
+                throw new InvalidDataException($"Project '{relProjectPath}' has no inputs.rel configured.");
+            }
+            loadedRels.Add((RelFile.Load(rel.Path), rel.LoadAddress, Path.GetFileNameWithoutExtension(rel.Path)));
+        }
+
+        var moduleRegistry = loadedRels.ToDictionary(
+            static entry => entry.File.ModuleId,
+            entry => new RelModuleInfo(entry.LoadAddress, entry.File.Sections));
+
+        var relEntries = new List<(RelImage Image, string Name)>();
+        foreach (var (relFile, loadAddress, name) in loadedRels)
+        {
+            var image = relFile.BuildImage(loadAddress, applyRelocations: true, moduleRegistry: moduleRegistry);
+            relEntries.Add((image, name));
+        }
+
+        var outputDir = Path.GetDirectoryName(output);
+        if (!string.IsNullOrEmpty(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
+        DataSectionGenerator.GenerateCombined(dol, relEntries, output, mainProject.Identity.DisplayName);
+
+        var guestSymbolOutput = Path.Combine(string.IsNullOrEmpty(outputDir) ? "." : outputDir, "guest_symbol_table.cpp");
+        var guestSymbolCount = EmitGuestSymbolTable(functionMap, guestSymbolOutput);
+
+        var dolDataSize = dol.Sections.Where(static section => section.HasData).Sum(static section => section.Size);
+        var relDataSize = relEntries.Sum(static entry => entry.Image.Data.Length);
+        Console.WriteLine($"[translator] Generated combined NSMBW data section initializer: {output}");
+        Console.WriteLine($"[translator] Guest symbol table: {guestSymbolCount:N0} named entries -> {guestSymbolOutput}");
+        Console.WriteLine($"[translator] Modules embedded: main.dol + {relEntries.Count} REL(s)");
+        Console.WriteLine($"[translator] DOL sections: {dolDataSize:N0} bytes, REL data: {relDataSize:N0} bytes, " +
+                          $"total: {(dolDataSize + relDataSize) / 1024.0 / 1024.0:F2} MB");
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException)
+    {
+        Console.Error.WriteLine($"generate-nsmbw-data-init failed: {ex.Message}");
+        return 1;
+    }
+}
+
+int RunTraceRelRelocations(string[] argsTail)
+{
+    var relProjectsOption = OptionValue(argsTail, "--rel-projects");
+    var targetRel = OptionValue(argsTail, "--rel");
+    var rangeStartOption = OptionValue(argsTail, "--range-start");
+    var rangeEndOption = OptionValue(argsTail, "--range-end");
+    if (string.IsNullOrWhiteSpace(relProjectsOption) || string.IsNullOrWhiteSpace(targetRel)
+        || string.IsNullOrWhiteSpace(rangeStartOption) || string.IsNullOrWhiteSpace(rangeEndOption))
+    {
+        Console.Error.WriteLine(
+            "Usage: translator trace-rel-relocations --rel-projects <rel1.yml,rel2.yml,...> " +
+            "--rel <name matching one of the --rel-projects entries> --range-start 0xADDR --range-end 0xADDR");
+        return 1;
+    }
+
+    try
+    {
+        var loadedRels = new List<(RelFile File, uint LoadAddress, string Name)>();
+        foreach (var relProjectPath in relProjectsOption.Split(
+                     ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var relProject = TranslationProjectConfig.Load(relProjectPath);
+            if (relProject.Inputs.Rel is not { } rel)
+            {
+                throw new InvalidDataException($"Project '{relProjectPath}' has no inputs.rel configured.");
+            }
+            loadedRels.Add((RelFile.Load(rel.Path), rel.LoadAddress, Path.GetFileNameWithoutExtension(rel.Path)));
+        }
+
+        var moduleRegistry = loadedRels.ToDictionary(
+            static entry => entry.File.ModuleId,
+            entry => new RelModuleInfo(entry.LoadAddress, entry.File.Sections));
+
+        var target = loadedRels.FirstOrDefault(entry => entry.Name == targetRel);
+        if (target.File is null)
+        {
+            Console.Error.WriteLine($"No --rel-projects entry named '{targetRel}' (available: " +
+                                     string.Join(", ", loadedRels.Select(static e => e.Name)) + ")");
+            return 1;
+        }
+
+        static uint ParseHex(string s) => Convert.ToUInt32(s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s[2..] : s, 16);
+        var rangeStart = ParseHex(rangeStartOption);
+        var rangeEnd = ParseHex(rangeEndOption);
+        var traces = target.File.TraceRelocationsInRange(
+            target.LoadAddress, MemoryLayout.DolBaseAddress, moduleRegistry, rangeStart, rangeEnd);
+
+        Console.WriteLine($"[translator] {targetRel} (module id {target.File.ModuleId}, base 0x{target.LoadAddress:X8}): " +
+                           $"{traces.Count} relocation(s) write into [0x{rangeStart:X8}, 0x{rangeEnd:X8})");
+        foreach (var t in traces.OrderBy(static t => t.Dst))
+        {
+            Console.WriteLine($"  dst=0x{t.Dst:X8} type={t.Type} fromModule={t.FromModuleId} " +
+                               $"symbolSection={t.SymbolSection} addend=0x{t.Addend:X8} -> target=0x{t.ComputedTarget:X8}");
+        }
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or FormatException)
+    {
+        Console.Error.WriteLine($"trace-rel-relocations failed: {ex.Message}");
+        return 1;
+    }
+}
+
+// Static-data vtable/function-pointer discovery: finds real function addresses that direct-call
+// (`bl`) discovery can never see because they're only reached via indirect dispatch (a C++
+// vtable slot, a callback table), AND that have no ELF symbol either (so the existing ELF-symbol
+// seeding pass can't find them). Unlike the vtable/function-pointer/adjacent-prologue scans this
+// project's call-graph-walk architecture deliberately replaced (see the comment above
+// ProcessSpeculativeSeeds()) - which scanned everywhere and "guessed" - this is narrowly scoped
+// to genuine link-time-constant data: it only reads already-loaded DOL/REL data sections (never
+// invents bytes) and reuses this project's own LooksExecutable/LooksLikeFunctionStart validation
+// (the same check that already gates every other speculative seed), so a candidate is accepted
+// only if it decodes as a real instruction inside a real executable range. False positives still
+// fall back to function_map.txt's own "skipped map entry: did not translate" safety net.
+int RunExtractDataFunctionPointers(string[] argsTail)
+{
+    var existingMapPath = OptionValue(argsTail, "--function-map");
+    var outputPath = OptionValue(argsTail, "--out");
+    if (string.IsNullOrWhiteSpace(outputPath))
+    {
+        Console.Error.WriteLine(
+            "Usage: translator extract-data-function-pointers --project <manifest> " +
+            "[--function-map <existing function_map.txt to skip>] --out <path>");
+        return 1;
+    }
+
+    try
+    {
+        RequireProject();
+        var known = new HashSet<uint>();
+        if (!string.IsNullOrWhiteSpace(existingMapPath) && File.Exists(existingMapPath))
+        {
+            foreach (var line in File.ReadLines(existingMapPath))
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+                var sp = trimmed.IndexOf(' ');
+                var addrText = sp < 0 ? trimmed : trimmed[..sp];
+                if (uint.TryParse(addrText, System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out var addr))
+                {
+                    known.Add(addr);
+                }
+            }
+        }
+
+        var found = new SortedSet<uint>();
+        foreach (var section in dolFile.Value.Sections)
+        {
+            if (section.Kind != Translator.Core.Parsing.Dol.SectionKind.Data || !section.HasData)
+            {
+                continue;
+            }
+            var span = section.Data.Span;
+            for (var i = 0; i + 4 <= span.Length; i += 4)
+            {
+                var value = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(i, 4));
+                if (known.Contains(value) || found.Contains(value))
+                {
+                    continue;
+                }
+                if (LooksExecutable(value) && LooksLikeFunctionStart(value))
+                {
+                    found.Add(value);
+                }
+            }
+        }
+
+        var outDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(outDir))
+        {
+            Directory.CreateDirectory(outDir);
+        }
+        using (var writer = new StreamWriter(outputPath))
+        {
+            writer.WriteLine("# Discovered by extract-data-function-pointers: DOL data-section words that decode as a");
+            writer.WriteLine("# real instruction inside a real executable range, and are not already in an existing");
+            writer.WriteLine("# function_map.txt. Candidates for vtable/callback-table entries with no ELF symbol.");
+            foreach (var addr in found)
+            {
+                writer.WriteLine($"{addr:X8} func_{addr:X8}");
+            }
+        }
+        Console.WriteLine($"[translator] extract-data-function-pointers: {found.Count:N0} new candidate(s) -> {outputPath}");
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or FormatException)
+    {
+        Console.Error.WriteLine($"extract-data-function-pointers failed: {ex.Message}");
+        return 1;
+    }
+}
+
+int RunEmitNsmbwBuildShards(string[] argsTail)
+{
+    var modulesFile = OptionValue(argsTail, "--modules-file");
+    if (string.IsNullOrWhiteSpace(modulesFile))
+    {
+        Console.Error.WriteLine(
+            "Usage: translator emit-nsmbw-build-shards --modules-file <path> --out <dir> --native-source-dir <dir> " +
+            "[--shard-count N] [--registration-shard-count N]");
+        Console.Error.WriteLine(
+            "--modules-file lines are: <id> <base_translation_output.json path> <functions directory>");
+        return 1;
+    }
+    var output = OptionValue(argsTail, "--out") ?? Path.Combine(root, "generated_nsmbw", "build_shards");
+    // Both directories matter: runtime/src holds MKW's own hand-written native overrides for
+    // generic Wii OS/IOS functions (threading alarms, NAND/ISFS access, etc.) - not MKW-specific,
+    // just reused runtime scaffolding - and NSMBW's dol links the same SDK glue at the same
+    // addresses. Checking only projects/nsmbw/native (NSMBW's own tiny stub set) let those
+    // addresses get speculatively translated too, so both the translated function and the
+    // existing native override ended up defined - a duplicate-symbol link error, not caught
+    // until the actual link step.
+    var nativeSourcesOption = OptionValue(argsTail, "--native-source-dir")
+        ?? $"{Path.Combine(root, "runtime", "src")},{Path.Combine(root, "projects", "nsmbw", "native")}";
+    var shardCount = int.TryParse(OptionValue(argsTail, "--shard-count"), out var sc) ? sc : 200;
+    var registrationShardCount = int.TryParse(OptionValue(argsTail, "--registration-shard-count"), out var rsc) ? rsc : 32;
+
+    try
+    {
+        var modules = new List<NsmbwModuleInput>();
+        foreach (var (rawLine, lineNumber) in File.ReadLines(modulesFile).Select((line, index) => (line, index + 1)))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3)
+            {
+                throw new InvalidDataException(
+                    $"Invalid modules file entry at {modulesFile}:{lineNumber}: expected '<id> <metadata path> <functions dir>'.");
+            }
+            var moduleDirectory = Path.GetDirectoryName(Path.GetFullPath(modulesFile))!;
+            modules.Add(new NsmbwModuleInput(
+                parts[0],
+                Path.GetFullPath(Path.Combine(moduleDirectory, parts[1])),
+                Path.GetFullPath(Path.Combine(moduleDirectory, parts[2]))));
+        }
+
+        var nativeSourcePaths = nativeSourcesOption
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(Path.GetFullPath)
+            .ToArray();
+        var nativeIndexes = nativeSourcePaths.Select(RuntimeNativeIndexBuilder.Build).ToArray();
+        var mergedNativeIndex = new RuntimeNativeIndex(
+            nativeIndexes.SelectMany(static index => index.Registrations).ToArray(),
+            nativeIndexes.SelectMany(static index => index.VoidStubAbis).ToArray(),
+            nativeIndexes.SelectMany(static index => index.Effects).ToArray());
+        var result = TranslatedBuildShardEmitter.EmitNsmbw(new NsmbwShardOptions(
+            modules,
+            Path.GetFullPath(output),
+            nativeSourcePaths[0],
+            shardCount,
+            registrationShardCount,
+            NativeIndex: mergedNativeIndex));
+        Console.WriteLine("[translator] emitted NSMBW combined build graph");
+        Console.WriteLine($"  modules: {modules.Count}");
+        Console.WriteLine($"  unique functions: {result.UniqueFunctionCount:N0} ({result.DuplicateFunctionCount:N0} duplicate address(es) collapsed, " +
+                          $"{result.OptimizationVariantCount:N0} of those disagreed only on inlining/optimization choices)");
+        if (result.StateFreeAbiConflictCount > 0)
+        {
+            Console.WriteLine($"  excluded {result.StateFreeAbiConflictCount:N0} caller(s) whose state-free ABI expectation " +
+                              "didn't match the target's surviving definition (cross-module optimization disagreement)");
+        }
+        Console.WriteLine($"  shards: {result.ShardCount:N0}");
+        Console.WriteLine($"  CMake graph: {result.CMakeManifestPath}");
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException)
+    {
+        Console.Error.WriteLine($"emit-nsmbw-build-shards failed: {ex.Message}");
         return 1;
     }
 }
@@ -638,7 +953,15 @@ int RunTranslateRecursive(string[] argsTail)
         {
             if (!speculative)
             {
-                return TranslateWork(work);
+                try
+                {
+                    return TranslateWork(work);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[debug] Failed translating '{work.Name}' at 0x{work.Address:X8} (depth {work.Depth}): {ex.Message}");
+                    throw;
+                }
             }
 
             try
@@ -702,7 +1025,22 @@ int RunTranslateRecursive(string[] argsTail)
 
             foreach (var target in discoveryTargets)
             {
+                if (target == 0x00000060)
+                {
+                    Console.Error.WriteLine($"[debug] Caller '{work.Name}' at 0x{work.Address:X8} (depth {work.Depth}) branches to 0x{target:X8}");
+                }
                 knownBaseFunctionEntryPoints.Add(target);
+                if (baseTranslationExclusions.Value.Contains(target))
+                {
+                    // Natively-overridden call target: skip discovery entirely rather than
+                    // attempting to decode guest instructions there. Existing native
+                    // overrides all target real, in-image addresses (decode succeeds, then
+                    // the override just replaces the emitted output); this address sits
+                    // entirely outside the loaded RAM image, so decode would always throw
+                    // before override logic is ever consulted.
+                    visited.Add(target);
+                    continue;
+                }
                 if (visited.Add(target))
                 {
                     queue.Enqueue((target, work.Depth + 1));
@@ -3635,10 +3973,12 @@ static string[] KnownCommands() => new[]
 {
     "info",
     "generate-data-init",
+    "generate-nsmbw-data-init",
     "translate-recursive",
     "translate-mod",
     "emit-base-manifest",
     "emit-build-shards",
+    "emit-nsmbw-build-shards",
     "check-base-mod-awareness"
 };
 
@@ -3652,6 +3992,12 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
     "info" or "--info" or "--version" =>
         (null, Array.Empty<CommandOption>()),
     "generate-data-init" => (null, Array.Empty<CommandOption>()),
+    "generate-nsmbw-data-init" => (null, new CommandOption[]
+    {
+        new("--rel-projects", "rel1.yml,rel2.yml,...", Required: true),
+        new("--out", "generated_nsmbw/data_sections_init.cpp"),
+        new("--runtime-config-out", "generated_nsmbw/RuntimeConfig.h")
+    }),
     "translate-recursive" => ("<start_addr>", new CommandOption[]
     {
         new("--outdir", "path"),
@@ -3697,6 +4043,14 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--resolved-profile", "path"),
         new("--retro-cpp-dir", "path"),
         new("--out", "generated/build_shards")
+    }),
+    "emit-nsmbw-build-shards" => (null, new CommandOption[]
+    {
+        new("--modules-file", "path", Required: true),
+        new("--native-source-dir", "path"),
+        new("--shard-count", "200"),
+        new("--registration-shard-count", "32"),
+        new("--out", "generated_nsmbw/build_shards")
     }),
     _ => null
 };

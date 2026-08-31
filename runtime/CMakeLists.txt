@@ -266,3 +266,7 @@ message(STATUS
 
 set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/PublicProducts.cmake")
+# Off by default (MKW_BUILD_NSMBW); see the file itself for why this isn't just another
+# entry in PublicProducts.cmake. Included after it to reuse mkw_configure_translated_target
+# and friends, which that file defines.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/NsmbwProduct.cmake")

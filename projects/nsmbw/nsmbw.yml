@@ -1,0 +1,32 @@
+schema_version: 1
+workspace_root: ../..
+
+project:
+  id: nsmbw
+  display_name: New Super Mario Bros. Wii
+
+memory:
+  base: 0x80000000
+  size: 0x01800000
+  sda_base: 0x8042f980
+  sda2_base: 0x80433360
+
+inputs:
+  dol:
+    path: "../NSMBW-Decomp/original/wiimj2d.dol"
+
+translation:
+  allow_unsupported_instructions: false
+  function_map:
+    path: projects/nsmbw/function_map.txt
+
+runtime:
+  native_registration_root: projects/nsmbw/native
+  native_abi_directories: [projects/nsmbw/native]
+
+output:
+  root: build/nsmbw
+  functions: functions
+  runtime_config: RuntimeConfig.h
+  data_initializer: data_sections_init.cpp
+  base_manifest: base/base_manifest.json

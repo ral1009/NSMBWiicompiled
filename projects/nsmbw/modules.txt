@@ -1,0 +1,7 @@
+# NSMBW modules always linked into one executable together (unlike WiiCompiled's
+# base/Retro Rewind profile selection). Each line: <id> <base_translation_output.json> <functions dir>
+dol         ../../build/nsmbw/base_translation_output.json              ../../build/nsmbw/functions
+d_basesNP   ../../build/nsmbw-d_basesNP/base_translation_output.json    ../../build/nsmbw-d_basesNP/functions
+d_en_bossNP ../../build/nsmbw-d_en_bossNP/base_translation_output.json  ../../build/nsmbw-d_en_bossNP/functions
+d_enemiesNP ../../build/nsmbw-d_enemiesNP/base_translation_output.json  ../../build/nsmbw-d_enemiesNP/functions
+d_profileNP ../../build/nsmbw-d_profileNP/base_translation_output.json  ../../build/nsmbw-d_profileNP/functions

@@ -1,0 +1,34 @@
+schema_version: 1
+workspace_root: ../..
+
+project:
+  id: nsmbw-d_profileNP
+  display_name: NSMBW - d_profileNP.rel
+
+memory:
+  base: 0x80000000
+  size: 0x01800000
+  sda_base: 0x8042f980
+  sda2_base: 0x80433360
+
+inputs:
+  dol:
+    path: "../NSMBW-Decomp/original/wiimj2d.dol"
+  rel:
+    path: "../NSMBW-Decomp/original/d_profileNP.rel"
+    load_address: 0x807685A0
+
+translation:
+  allow_unsupported_instructions: false
+  function_map:
+    path: projects/nsmbw/function_map.txt
+
+runtime:
+  native_abi_directories: []
+
+output:
+  root: build/nsmbw-d_profileNP
+  functions: functions
+  runtime_config: RuntimeConfig.h
+  data_initializer: data_sections_init.cpp
+  base_manifest: base/base_manifest.json

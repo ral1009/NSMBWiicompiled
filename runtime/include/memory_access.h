@@ -17,6 +17,25 @@ extern "C" {
     void GX_HLE_FIFO_WriteBurst(const uint8_t* data, uint32_t sizeBytes);
 }
 
+// Plain hardware register blocks (PI, IPC, MI, DSP, EXI, AI) - see runtime/src/hle/pi.cpp for why
+// these are wired into the checked read/write path only, not the raw flat-memory path.
+extern "C" {
+    bool PI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool PI_HLE_TryWrite32(uint32_t addr, uint32_t value);
+    bool IPC_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool IPC_HLE_TryWrite32(uint32_t addr, uint32_t value);
+    bool MI_HLE_TryRead16(uint32_t addr, uint16_t* outValue);
+    bool MI_HLE_TryWrite16(uint32_t addr, uint16_t value);
+    bool DSP_HLE_TryRead16(uint32_t addr, uint16_t* outValue);
+    bool DSP_HLE_TryWrite16(uint32_t addr, uint16_t value);
+    bool EXI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool EXI_HLE_TryWrite32(uint32_t addr, uint32_t value);
+    bool AI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool AI_HLE_TryWrite32(uint32_t addr, uint32_t value);
+    bool DI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool DI_HLE_TryWrite32(uint32_t addr, uint32_t value);
+}
+
 namespace MemoryInline {
 #if defined(_WIN32)
 #define MKW_MEMORY_FORCE_INLINE __forceinline

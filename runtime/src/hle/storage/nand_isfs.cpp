@@ -1082,4 +1082,12 @@ extern "C" void NAND_IOS_Ioctlv_Entry_HLE(CpuContext* ctx) {
     ctx->gpr[3] = static_cast<uint32_t>(
         NAND_IOS_Ioctlv_HLE(fd, cmd, numIn, numOut, vectorPtr));
 }
+// 0x801945E0 is MKW's NAND IOCTLV entry address only. NSMBW's own compiled binary places an
+// unrelated function there (confirmed by reading its real translated body: loop-driven array
+// traversal with a 7-bit variable-length-integer decode, nothing resembling an IOS ioctlv
+// dispatch) - registering this override unconditionally duplicate-symbols the NSMBW link once
+// that address is reached, so it's MKW-only. See NsmbwProduct.cmake for
+// MKW_RUNTIME_PRODUCT_NSMBW.
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
 PPC_NATIVE_OVERRIDE_VOID(801945E0, NAND_IOS_Ioctlv_Entry_HLE, (CpuContext* ctx), (ctx));
+#endif

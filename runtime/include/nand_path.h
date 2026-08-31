@@ -1,5 +1,6 @@
 #pragma once
 
+#include "isa/ppc_isa_context.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "system_bridge.h"

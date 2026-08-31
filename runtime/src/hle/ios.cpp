@@ -128,7 +128,15 @@ extern "C" void IOS_OpenAsync_HLE(CpuContext* ctx) {
     const int32_t result = NAND_IOS_Open_HLE(pathPtr, mode);
     CompleteAsync(ctx, callback, result, callbackArg); // Queued successfully
 }
+// 0x801937E0 is MKW's IOS_OpenAsync address only. NSMBW's own compiled binary places an unrelated
+// function there (confirmed by reading its real translated body: struct field arithmetic, a table
+// lookup, and calls into two other NSMBW-local helpers - nothing matching IOS_OpenAsync's 4-arg
+// path/mode/callback/callbackArg contract) - registering this override unconditionally
+// duplicate-symbols the NSMBW link once that address is reached, so it's MKW-only. See
+// NsmbwProduct.cmake for MKW_RUNTIME_PRODUCT_NSMBW.
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
 PPC_NATIVE_OVERRIDE_VOID(801937E0, IOS_OpenAsync_HLE, (CpuContext* ctx), (ctx));
+#endif
 
 // 0x80193A18 -> IOS_CloseAsync
 extern "C" void IOS_CloseAsync_HLE(CpuContext* ctx) {

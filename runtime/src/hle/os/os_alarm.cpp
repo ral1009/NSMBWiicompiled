@@ -346,7 +346,15 @@ extern "C" void OSSetAlarm_HLE_801a0870(CpuContext* ctx)
 
     OS__RestoreInterrupts_801a65d4(level);
 }
+// 0x801A0870 is MKW's OSSetAlarm address only. NSMBW's own compiled binary places an unrelated
+// function there (confirmed by reading its real translated body: a 4-instruction array-index
+// accessor writing one computed pointer to *r3, nothing resembling alarm-queue insertion or
+// interrupt masking) - registering this override unconditionally duplicate-symbols the NSMBW link
+// once that address is reached, so it's MKW-only. See NsmbwProduct.cmake for
+// MKW_RUNTIME_PRODUCT_NSMBW.
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
 PPC_NATIVE_OVERRIDE_VOID(801A0870, OSSetAlarm_HLE_801a0870, (CpuContext* ctx), (ctx));
+#endif
 
 extern "C" void OS_HLE_ProcessAlarms(int maxToProcess)
 {

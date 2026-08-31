@@ -9,16 +9,30 @@ using Translator.Core.Loading;
 
 namespace Translator.Core.Parsing.Rel;
 
+/// <summary>
+/// What a cross-module relocation needs to resolve against the *target* module instead of
+/// the module currently being relocated: that module's own load address and its own section
+/// table (file offsets are only meaningful relative to the section table they came from).
+/// </summary>
+public readonly record struct RelModuleInfo(uint BaseAddress, IReadOnlyList<RelSection> Sections);
+
+/// <summary>Diagnostic record of one relocation that writes into a caller-specified address
+/// range, for tracing exactly why a given memory location ends up with a given value.</summary>
+public readonly record struct RelocationTrace(
+    uint Dst, RelocationType Type, uint FromModuleId, byte SymbolSection, uint Addend, uint ComputedTarget);
+
 public sealed class RelFile
 {
     private readonly byte[] _raw;
 
     private RelFile(byte[] raw,
+        uint moduleId,
         IReadOnlyList<RelSection> sections,
         IReadOnlyList<RelImportEntry> imports,
         uint totalSize)
     {
         _raw = raw;
+        ModuleId = moduleId;
         Sections = sections;
         _imports = imports;
         _totalSize = totalSize;
@@ -26,6 +40,9 @@ public sealed class RelFile
 
     private readonly IReadOnlyList<RelImportEntry> _imports;
     private readonly uint _totalSize;
+
+    /// <summary>This REL's own module id (header offset 0x00) - what other RELs' import tables use to refer to it.</summary>
+    public uint ModuleId { get; }
 
     /// <summary>The only REL header surface any caller outside this file reads.</summary>
     public IReadOnlyList<RelSection> Sections { get; }
@@ -35,6 +52,9 @@ public sealed class RelFile
         var raw = File.ReadAllBytes(path);
         using var stream = new MemoryStream(raw, writable: false);
         using var reader = new BigEndianBinaryReader(stream, leaveOpen: true);
+
+        reader.Seek(0x00, SeekOrigin.Begin);
+        var moduleId = reader.ReadUInt32();
 
         reader.Seek(0x0C, SeekOrigin.Begin);
         var sectionCount = reader.ReadUInt32();
@@ -77,13 +97,24 @@ public sealed class RelFile
         {
             bssAlign = 0x20;
         }
-        var bssOffset = AlignUp(CalculateBssOffset(raw.Length), bssAlign);
+        // BSS must be placed right after the real resident image, not the raw file. The on-disc
+        // .rel is bigger than what ends up in RAM: c_dylink.cpp's do_link() (NSMBW-Decomp) reads
+        // the whole file, calls OSLink, then shrinks the heap block to fixSize+bssSize, discarding
+        // the relocation/import tables (relOffset/impOffset/impSize) that trail the section data -
+        // those exist only on disc to drive linking, never get mapped into guest memory. Using
+        // raw.Length here (as this used to) means BSS - and therefore this REL's total resident
+        // size - included that discarded tail, inflating every REL's memory footprint far beyond
+        // its real one. With 4 RELs placed back-to-back at their real observed addresses, that
+        // inflation is exactly what made each one's computed range run into the next REL's start.
+        var maxSectionExtent = ComputeMaxSectionExtent(sections, bssSectionIndex);
+        var bssOffset = AlignUp(maxSectionExtent, bssAlign);
         var totalSize = checked(bssOffset + bssSize);
         var adjustedSections = ApplyBssLayout(sections, bssSectionIndex, bssOffset, bssSize);
         var imports = ParseImports(raw, importTableOffset, importTableSize);
 
         return new RelFile(
             raw,
+            moduleId,
             new ReadOnlyCollection<RelSection>(adjustedSections),
             new ReadOnlyCollection<RelImportEntry>(imports),
             totalSize);
@@ -151,15 +182,24 @@ public sealed class RelFile
         return imports;
     }
 
-    private static uint CalculateBssOffset(int fileSize)
+    /// <summary>
+    /// The real resident image ends at the last byte of the last actual (non-BSS) section - not
+    /// at the end of the file, which also contains the relocation/import tables. Mirrors
+    /// ApplyBssLayout's own "is this section BSS" check so both agree on what counts as real data.
+    /// </summary>
+    private static uint ComputeMaxSectionExtent(List<RelSection> sections, byte bssSectionIndex)
     {
-        // BSS placement must be deterministic for offline relocation. We assume the common
-        // OSAllocFromHeap layout, alignUp(size + 0x20 header, 0x20) = (size + 0x20 + 0x1F) & ~0x1F,
-        // and place BSS right after the heap-rounded REL allocation; a future REL consumer with a
-        // different allocator would need its own placement policy.
-        const uint heapAlign = 0x20;
-        const uint heapHeaderSize = 0x20;
-        return AlignUp(checked((uint)fileSize + heapHeaderSize), heapAlign);
+        uint max = 0;
+        foreach (var section in sections)
+        {
+            var isBss = section.FileOffset == 0 && (section.Size != 0 || section.Index == bssSectionIndex);
+            if (isBss)
+            {
+                continue;
+            }
+            max = checked(Math.Max(max, section.FileOffset + section.Size));
+        }
+        return max;
     }
 
     private static uint AlignUp(uint value, uint alignment)
@@ -180,20 +220,25 @@ public sealed class RelFile
 
     public RelImage BuildImage(uint baseAddress,
         uint dolBaseAddress = MemoryLayout.DolBaseAddress,
-        bool applyRelocations = true)
+        bool applyRelocations = true,
+        IReadOnlyDictionary<uint, RelModuleInfo>? moduleRegistry = null)
     {
         var buffer = new byte[checked((int)_totalSize)];
-        Buffer.BlockCopy(_raw, 0, buffer, 0, _raw.Length);
+        // _totalSize now excludes the on-disc relocation/import table tail (see ComputeMaxSectionExtent),
+        // so it can be smaller than _raw.Length - copy only what fits, i.e. the real section data.
+        var copyLength = Math.Min(_raw.Length, buffer.Length);
+        Buffer.BlockCopy(_raw, 0, buffer, 0, copyLength);
 
         if (applyRelocations)
         {
-            ApplyRelocations(buffer, baseAddress, dolBaseAddress);
+            ApplyRelocations(buffer, baseAddress, dolBaseAddress, moduleRegistry);
         }
 
         return new RelImage(buffer, baseAddress);
     }
-    
-    private void ApplyRelocations(byte[] memory, uint baseAddress, uint dolBaseAddress)
+
+    private void ApplyRelocations(byte[] memory, uint baseAddress, uint dolBaseAddress,
+        IReadOnlyDictionary<uint, RelModuleInfo>? moduleRegistry)
     {
         foreach (var import in _imports)
         {
@@ -239,8 +284,10 @@ public sealed class RelFile
                         target = dolBaseAddress + target;
                     }
                 }
-                else
+                else if (import.ModuleId == ModuleId)
                 {
+                    // Self-relocation: the symbol lives in *this* REL, so this module's own
+                    // base address and section table are the right ones to resolve against.
                     if (symbolSection >= Sections.Count)
                     {
                         throw new InvalidDataException($"Relocation referenced unknown symbol section {symbolSection}");
@@ -248,6 +295,41 @@ public sealed class RelFile
 
                     var symbol = Sections[symbolSection];
                     target = baseAddress + symbol.FileOffset + addend;
+                }
+                else
+                {
+                    // Cross-module relocation: the symbol lives in a *different* REL. Its file
+                    // offsets are only meaningful relative to that module's own load address and
+                    // section table - reusing this module's baseAddress/Sections here (as earlier
+                    // code did) silently computes a bogus small-looking "address" instead of the
+                    // real target, since the two modules' section tables don't correspond.
+                    if (moduleRegistry is null || !moduleRegistry.TryGetValue(import.ModuleId, out var otherModule))
+                    {
+                        throw new InvalidDataException(
+                            $"Relocation at dst=0x{dst:X8} imports from module {import.ModuleId}, but no module " +
+                            "registry entry was supplied for it (pass moduleRegistry to BuildImage covering every " +
+                            "linked REL for a multi-module product).");
+                    }
+
+                    if (symbolSection >= otherModule.Sections.Count)
+                    {
+                        throw new InvalidDataException(
+                            $"Relocation referenced unknown symbol section {symbolSection} in module {import.ModuleId}");
+                    }
+
+                    var symbol = otherModule.Sections[symbolSection];
+                    target = otherModule.BaseAddress + symbol.FileOffset + addend;
+                }
+
+                if (target < MemoryLayout.RamBase
+                    && type is RelocationType.R_PPC_ADDR32 or RelocationType.R_PPC_ADDR16_LO
+                        or RelocationType.R_PPC_ADDR16_HA or RelocationType.R_PPC_REL24)
+                {
+                    Console.Error.WriteLine(
+                        $"[relfile] WARNING: relocation produced out-of-range target 0x{target:X8} " +
+                        $"(< RAM base 0x{MemoryLayout.RamBase:X8}) at dst=0x{dst:X8}, " +
+                        $"importingModule={ModuleId} fromModule={import.ModuleId} type={type} " +
+                        $"symbolSection={symbolSection} addend=0x{addend:X8}");
                 }
 
                 var memIndex = checked((int)(dst - baseAddress));
@@ -280,6 +362,88 @@ public sealed class RelFile
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Walks every relocation exactly like ApplyRelocations, but instead of writing memory,
+    /// reports the ones whose write address (dst) falls in [rangeStart, rangeEndExclusive) -
+    /// useful for tracing exactly which import/relocation produced a suspicious value at a
+    /// known-bad address, using the same resolution logic (including the module registry) that
+    /// actually runs at build time, instead of a separately hand-rolled parser.
+    /// </summary>
+    public List<RelocationTrace> TraceRelocationsInRange(uint baseAddress, uint dolBaseAddress,
+        IReadOnlyDictionary<uint, RelModuleInfo>? moduleRegistry, uint rangeStart, uint rangeEndExclusive)
+    {
+        var results = new List<RelocationTrace>();
+        foreach (var import in _imports)
+        {
+            uint currentOffset = 0;
+            byte currentSection = 0;
+            var cursor = import.RelocationOffset;
+
+            while (true)
+            {
+                var delta = ReadUInt16(_raw, (int)cursor);
+                var type = (RelocationType)_raw[cursor + 2];
+                var symbolSection = _raw[cursor + 3];
+                var addend = ReadUInt32(_raw, (int)cursor + 4);
+                cursor += 8;
+
+                if (type == RelocationType.R_RVL_STOP)
+                {
+                    break;
+                }
+
+                if (type == RelocationType.R_RVL_SECT)
+                {
+                    currentSection = symbolSection;
+                    currentOffset = 0;
+                    continue;
+                }
+
+                currentOffset = checked(currentOffset + delta);
+                if (currentSection >= Sections.Count)
+                {
+                    throw new InvalidDataException($"Relocation referenced unknown section index {currentSection}");
+                }
+
+                var dstSection = Sections[currentSection];
+                var dst = baseAddress + dstSection.FileOffset + currentOffset;
+
+                if (dst < rangeStart || dst >= rangeEndExclusive)
+                {
+                    continue;
+                }
+
+                uint target;
+                if (import.ModuleId == 0)
+                {
+                    target = addend;
+                    if (target < MemoryLayout.RamBase)
+                    {
+                        target = dolBaseAddress + target;
+                    }
+                }
+                else if (import.ModuleId == ModuleId && symbolSection < Sections.Count)
+                {
+                    var symbol = Sections[symbolSection];
+                    target = baseAddress + symbol.FileOffset + addend;
+                }
+                else if (moduleRegistry is not null && moduleRegistry.TryGetValue(import.ModuleId, out var otherModule)
+                         && symbolSection < otherModule.Sections.Count)
+                {
+                    var symbol = otherModule.Sections[symbolSection];
+                    target = otherModule.BaseAddress + symbol.FileOffset + addend;
+                }
+                else
+                {
+                    target = 0xFFFFFFFFu; // unresolvable with the registry given - flagged, not thrown, for tracing
+                }
+
+                results.Add(new RelocationTrace(dst, type, import.ModuleId, symbolSection, addend, target));
+            }
+        }
+        return results;
     }
 
     private static ushort ReadUInt16(IReadOnlyList<byte> data, int offset)

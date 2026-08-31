@@ -623,6 +623,16 @@ namespace {
            << RecompMod::CurrentTranslatedExecutionAddress() << std::dec << std::nouppercase << ")";
     throw Memory::AccessViolation(addr, length, reason.str());
 }
+
+[[noreturn]] void ThrowMmioWriteBlocked(uint32_t addr, size_t length, uint64_t value) {
+    std::ostringstream reason;
+    reason << "MMIO write blocked (non-GPU)"
+           << "; add HLE for this device instead of dropping the write"
+           << " (active=0x" << std::hex << std::uppercase
+           << RecompMod::CurrentTranslatedExecutionAddress()
+           << ", value=0x" << value << std::dec << std::nouppercase << ")";
+    throw Memory::AccessViolation(addr, length, reason.str());
+}
 } // namespace
 
 uint8_t MemoryInline::Read8Slow(uint32_t addr) {
@@ -635,6 +645,12 @@ uint8_t MemoryInline::Read8Slow(uint32_t addr) {
 
 uint16_t MemoryInline::Read16Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (uint16_t miValue; MI_HLE_TryRead16(addr, &miValue)) {
+            return miValue;
+        }
+        if (uint16_t dspValue; DSP_HLE_TryRead16(addr, &dspValue)) {
+            return dspValue;
+        }
         ThrowMmioReadBlocked(addr, sizeof(uint16_t));
     }
     ResolveDeferredReads(addr, sizeof(uint16_t));
@@ -643,6 +659,21 @@ uint16_t MemoryInline::Read16Slow(uint32_t addr) {
 
 uint32_t MemoryInline::Read32Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (uint32_t piValue; PI_HLE_TryRead32(addr, &piValue)) {
+            return piValue;
+        }
+        if (uint32_t ipcValue; IPC_HLE_TryRead32(addr, &ipcValue)) {
+            return ipcValue;
+        }
+        if (uint32_t exiValue; EXI_HLE_TryRead32(addr, &exiValue)) {
+            return exiValue;
+        }
+        if (uint32_t aiValue; AI_HLE_TryRead32(addr, &aiValue)) {
+            return aiValue;
+        }
+        if (uint32_t diValue; DI_HLE_TryRead32(addr, &diValue)) {
+            return diValue;
+        }
         ThrowMmioReadBlocked(addr, sizeof(uint32_t));
     }
     ResolveDeferredReads(addr, sizeof(uint32_t));
@@ -686,7 +717,7 @@ void MemoryInline::Write8Slow(uint32_t addr, uint8_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
-        throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
+        ThrowMmioWriteBlocked(addr, sizeof(val), val);
     }
     WriteScalar(addr, val);
 }
@@ -697,7 +728,13 @@ void MemoryInline::Write16Slow(uint32_t addr, uint16_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
-        throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
+        if (MI_HLE_TryWrite16(addr, val)) {
+            return;
+        }
+        if (DSP_HLE_TryWrite16(addr, val)) {
+            return;
+        }
+        ThrowMmioWriteBlocked(addr, sizeof(val), val);
     }
     WriteScalar(addr, val);
 }
@@ -708,7 +745,22 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
-        throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
+        if (PI_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        if (IPC_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        if (EXI_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        if (AI_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        if (DI_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        ThrowMmioWriteBlocked(addr, sizeof(val), val);
     }
     WriteScalar(addr, val);
 }
@@ -724,7 +776,7 @@ void MemoryInline::Write64Slow(uint32_t addr, uint64_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
-        throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
+        ThrowMmioWriteBlocked(addr, sizeof(val), val);
     }
     WriteScalar(addr, val);
 }
@@ -738,7 +790,7 @@ void MemoryInline::WriteFloat32Slow(uint32_t addr, double val) {
         return;
     }
     if (IsMmioAddress(addr)) {
-        throw Memory::AccessViolation(addr, sizeof(float), "MMIO write blocked (non-GPU)");
+        ThrowMmioWriteBlocked(addr, sizeof(float), bits);
     }
 
     WriteScalar(addr, bits);
@@ -755,7 +807,7 @@ void MemoryInline::WriteFloat64Slow(uint32_t addr, double val) {
         return;
     }
     if (IsMmioAddress(addr)) {
-        throw Memory::AccessViolation(addr, sizeof(double), "MMIO write blocked (non-GPU)");
+        ThrowMmioWriteBlocked(addr, sizeof(double), bits);
     }
 
     WriteScalar(addr, bits);
