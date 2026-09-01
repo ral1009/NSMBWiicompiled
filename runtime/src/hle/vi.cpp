@@ -379,17 +379,48 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
     s_inAdvanceRetrace.store(false);
 }
 
+// TEMPORARY diagnostic for investigating func_801AF710's VI_HLE_PollRetrace-driven hang.
+// Remove once that investigation is resolved.
+namespace {
+std::atomic<uint64_t> g_diagAdvanceDueRetracesCalls{0};
+std::atomic<uint64_t> g_diagCatchUpIterations{0};
+std::atomic<uint64_t> g_diagResyncEvents{0};
+}
+
 bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
 {
     bool advancedAny = false;
+    const uint64_t callN = g_diagAdvanceDueRetracesCalls.fetch_add(1, std::memory_order_relaxed);
+    if (callN < 20 || callN % 100000 == 0) {
+        RT_LOGF(RT_TAG_VI, "diag AdvanceDueRetraces: call #%llu catchUpIters=%llu resyncs=%llu\n",
+                static_cast<unsigned long long>(callN),
+                static_cast<unsigned long long>(g_diagCatchUpIterations.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(g_diagResyncEvents.load(std::memory_order_relaxed)));
+    }
 
     for (int catchUpCount = 0; catchUpCount < maxToProcess; ++catchUpCount) {
+        g_diagCatchUpIterations.fetch_add(1, std::memory_order_relaxed);
         Clock::time_point target;
         auto now = Clock::now();
         {
             std::lock_guard<std::mutex> lock(g_viMutex);
             if (!g_vi.initialized) {
                 return advancedAny;
+            }
+            // Real hardware never queues missed VBlank interrupts - if the CPU doesn't service
+            // one promptly, that retrace's worth of real time is simply lost, not replayed later.
+            // A caller (e.g. a raw guest busy-wait loop with no prior yield point, only now able to
+            // reach this pump for the first time) can accumulate a large real-time gap since
+            // lastRetrace before ever calling here - replaying every interval in that gap one at a
+            // time would mean minutes of catch-up presentation work for seconds of real stall. Once
+            // the gap exceeds what a single call is meant to catch up (maxToProcess intervals),
+            // resync lastRetrace to just short of now so this call still advances the callback/
+            // retraceCount state normally (same guest-visible effect as a real large stall: the
+            // count jumps, no per-interval replay), without processing every interval individually.
+            const auto gapIntervals = (now - g_vi.lastRetrace) / g_vi.retraceInterval;
+            if (gapIntervals > maxToProcess) {
+                g_vi.lastRetrace = now - g_vi.retraceInterval;
+                g_diagResyncEvents.fetch_add(1, std::memory_order_relaxed);
             }
             target = g_vi.lastRetrace + g_vi.retraceInterval;
             if (now < target) {
@@ -677,6 +708,7 @@ PPC_NATIVE_OVERRIDE_VOID(801B9944, VIInit_caseD_2_HLE_801b9944, (CpuContext* ctx
 extern "C" void VISetPreRetraceCallback_HLE_801b90f4(CpuContext* ctx)
 {
     const uint32_t newCb = ctx ? ctx->gpr[3] : 0;
+    RT_LOGF(RT_TAG_VI, "diag VISetPreRetraceCallback: newCb=0x%08X\n", newCb);
     uint32_t prev = 0;
     {
         std::lock_guard<std::mutex> lock(g_viMutex);
@@ -695,6 +727,7 @@ PPC_NATIVE_OVERRIDE_VOID(801B90F4, VISetPreRetraceCallback_HLE_801b90f4, (CpuCon
 extern "C" void VISetPostRetraceCallback_HLE_801b9138(CpuContext* ctx)
 {
     const uint32_t newCb = ctx ? ctx->gpr[3] : 0;
+    RT_LOGF(RT_TAG_VI, "diag VISetPostRetraceCallback: newCb=0x%08X\n", newCb);
     uint32_t prev = 0;
     {
         std::lock_guard<std::mutex> lock(g_viMutex);
@@ -716,6 +749,67 @@ extern "C" void VIGetDTVStatus_HLE_801bad38(CpuContext* ctx)
     ViSetR3(ctx, 0); // return 0 -> not ready / disabled
 }
 PPC_NATIVE_OVERRIDE_VOID(801BAD38, VIGetDTVStatus_HLE_801bad38, (CpuContext* ctx), (ctx));
+
+// -----------------------------------------------------------------------------
+// VI_HLE_TryRead16 / VI_HLE_TryWrite16 - checked-path backing for raw VI
+// hardware register accesses that reach here directly (not through one of the
+// function-level overrides above). NSMBW's own boot code was observed poking
+// VI_HW_REGS directly and sequentially (DCR at 0xCC002002, then HTR0_L at
+// 0xCC002006, ...) rather than going exclusively through VIConfigure/VIInit -
+// evidently a lower-level VI bring-up routine this runtime doesn't have a
+// function-level override for. Rather than add one raw address at a time
+// (the previous approach, which just kept hitting the next register in the
+// same sequence), this backs the whole 64-register VI_HW_REGS block
+// (vihardware.h) as flat storage, same as PI_INTMR's "hold whatever was last
+// written" precedent in pi.cpp - none of these registers' real side effects
+// (timing/interrupt generation this runtime doesn't produce) are modeled, so
+// read-back-what-was-written is the correct, evidence-backed behavior for a
+// register nothing here actually drives.
+//
+// VI_VICLK (index 0x36/0xCC00206C) and VI_DTVSTATUS (index 0x37/0xCC00206E)
+// are exceptions: real hardware reports these as live status, not a plain
+// echo of the last write. VICLK's power-on-reset default (0 = 27MHz, standard
+// interlaced NTSC/PAL) and DTVSTATUS's "not ready/disabled" (0, matching this
+// file's own VIGetDTVStatus_HLE_801bad38 override) are returned unconditionally.
+// -----------------------------------------------------------------------------
+namespace {
+constexpr uint32_t kViHwRegsBase = 0xCC002000u;
+constexpr uint32_t kViHwRegsCount = 64u;
+constexpr uint32_t kViHwRegsSize = kViHwRegsCount * 2u;
+std::mutex g_viHwRegsMutex;
+std::array<uint16_t, kViHwRegsCount> g_viHwRegs{};
+}
+
+extern "C" bool VI_HLE_TryRead16(uint32_t addr, uint16_t* outValue) {
+    constexpr uint32_t kViViclkAddr = 0xCC00206Cu;
+    constexpr uint32_t kViDtvStatusAddr = 0xCC00206Eu;
+    if (outValue == nullptr) {
+        return false;
+    }
+    if (addr == kViViclkAddr) {
+        *outValue = 0; // VI_VICLK_27MHZ
+        return true;
+    }
+    if (addr == kViDtvStatusAddr) {
+        *outValue = 0; // not ready / disabled, matching VIGetDTVStatus_HLE_801bad38
+        return true;
+    }
+    if (addr < kViHwRegsBase || addr >= kViHwRegsBase + kViHwRegsSize || (addr & 1u) != 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_viHwRegsMutex);
+    *outValue = g_viHwRegs[(addr - kViHwRegsBase) / 2u];
+    return true;
+}
+
+extern "C" bool VI_HLE_TryWrite16(uint32_t addr, uint16_t value) {
+    if (addr < kViHwRegsBase || addr >= kViHwRegsBase + kViHwRegsSize || (addr & 1u) != 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_viHwRegsMutex);
+    g_viHwRegs[(addr - kViHwRegsBase) / 2u] = value;
+    return true;
+}
 
 // -----------------------------------------------------------------------------
 // VIConfigure & related helpers: translate GXRenderModeObj into guest globals.

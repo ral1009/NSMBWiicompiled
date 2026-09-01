@@ -236,8 +236,8 @@ MKW_PPC_FORCE_INLINE uint8_t* PpcTryGetPsqWritableHostInline(uint32_t addr)
 {
     if (addr > UINT32_MAX - 7u) [[unlikely]]
         return nullptr;
-    if (MemoryInline::FlatWriteNeedsPolicy(addr) ||
-        MemoryInline::FlatWriteNeedsPolicy(addr + 7u)) [[unlikely]]
+    if (MemoryInline::FlatMmioNeedsPolicy(addr) ||
+        MemoryInline::FlatMmioNeedsPolicy(addr + 7u)) [[unlikely]]
         return nullptr;
     return MKW_FLAT_GUEST_BASE + addr;
 }

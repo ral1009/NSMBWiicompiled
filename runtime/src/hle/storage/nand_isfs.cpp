@@ -57,9 +57,13 @@ struct ISFSFileStats {
 
 // Special FD for /dev/fs (the ISFS device)
 static constexpr int32_t ISFS_DEV_FD = 1;
+static constexpr int32_t DI_DEV_FD = 2;
 static constexpr int32_t ES_DEV_FD = 3;
 static constexpr int32_t DOLPHIN_DEV_FD = 4;
 static constexpr uint32_t ES_IOCTL_GETDEVICEID = 0x07;
+static constexpr uint32_t ES_IOCTL_GETCONSUMPTION = 0x16;
+static constexpr uint32_t ES_IOCTL_DIGETTICKETVIEW = 0x1B;
+static constexpr uint32_t ES_IOCTL_GETTITLEDIR = 0x1D;
 static constexpr uint32_t ES_IOCTL_GETDEVICECERT = 0x1E;
 static constexpr uint32_t ES_IOCTL_GETTITLEID = 0x20;
 static constexpr uint32_t ES_IOCTL_SIGN = 0x30;
@@ -118,6 +122,15 @@ static bool WriteGuestBytes(uint32_t address, uint32_t size, const uint8_t* data
     }
     uint8_t* out = Memory::GetPointer(address, dataSize);
     std::memcpy(out, data, dataSize);
+    return true;
+}
+
+static bool WriteZeroGuestBytes(uint32_t address, uint32_t size) {
+    if (address == 0 || !Memory::Contains(address, size)) {
+        return false;
+    }
+    uint8_t* out = Memory::GetPointer(address, size);
+    std::memset(out, 0, size);
     return true;
 }
 
@@ -310,6 +323,14 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     if (std::strncmp(path, "/dev/", 5) == 0) {
         if (std::strcmp(path, "/dev/fs") == 0) {
             return ISFS_DEV_FD;
+        }
+        // NSMBW-specific: this runtime's actual disc reads go through dvd.cpp's DVDRead-level
+        // HLE, which reads straight from the host-extracted ISO folder and never touches this fd -
+        // so a fake, non-zero handle here (same "real work happens elsewhere" shape as STM's
+        // handles) is sufficient for whatever lower-level IOS handshake NSMBW's SDK internals do
+        // before DVDRead-style calls become usable.
+        if (std::strcmp(path, "/dev/di") == 0) {
+            return DI_DEV_FD;
         }
         if (std::strcmp(path, "/dev/es") == 0) {
             return ES_DEV_FD;
@@ -1003,6 +1024,63 @@ extern "C" int32_t NAND_IOS_Ioctlv_HLE(
                 }
                 const WiiEsCrypto::Identity& identity = WiiEsCrypto::CurrentIdentity();
                 Memory::Write32(out.address, identity.deviceId);
+                return ISFS_OK;
+            }
+
+            case ES_IOCTL_GETCONSUMPTION: {
+                if (numIn != 1 || numOut != 2) {
+                    return ISFS_EINVAL;
+                }
+                // Real ES_GETCONSUMPTION(titleId) writes parental-control "play time limit" entries
+                // into out[0] and the actual entry count into out[1] (4 bytes). Reporting 0 entries
+                // is the same "no real hardware, evidence-backed default" used elsewhere in this
+                // file - virtually no disc configures play-time limits, so an empty limit list is
+                // correct for the overwhelming majority of titles, not a guess specific to NSMBW.
+                const IosVector countOut = ReadIosVector(vectorPtr, 2);
+                if (countOut.address == 0 || countOut.size < 4 || !Memory::Contains(countOut.address, 4)) {
+                    return ISFS_EINVAL;
+                }
+                Memory::Write32(countOut.address, 0);
+                return ISFS_OK;
+            }
+
+            case ES_IOCTL_DIGETTICKETVIEW: {
+                if (numIn != 1 || numOut != 1) {
+                    return ISFS_EINVAL;
+                }
+                const IosVector out = ReadIosVector(vectorPtr, 1);
+                if (out.address == 0 || !Memory::Contains(out.address, out.size)) {
+                    return ISFS_EINVAL;
+                }
+                // Real ES_DIGETTICKETVIEW parses the raw ticket.bin bytes the game already read
+                // via DVDRead (the input vector) into a 0xD8-byte ticket view. This runtime doesn't
+                // model real Wii ticket parsing yet - zero-filling is the same "no real hardware,
+                // evidence-backed default" used for GETDEVICECERT above. If NSMBW later proves it
+                // validates specific ticket-view fields (not just needing *a* response to proceed),
+                // that's the signal to build real ticket parsing, not something to guess at here.
+                if (!WriteZeroGuestBytes(out.address, out.size)) {
+                    return ISFS_EINVAL;
+                }
+                return ISFS_OK;
+            }
+
+            case ES_IOCTL_GETTITLEDIR: {
+                if (numIn != 1 || numOut != 1) {
+                    return ISFS_EINVAL;
+                }
+                const IosVector in = ReadIosVector(vectorPtr, 0);
+                const IosVector out = ReadIosVector(vectorPtr, 1);
+                if (in.address == 0 || !Memory::Contains(in.address, 8)) {
+                    return ISFS_EINVAL;
+                }
+                const uint32_t titleIdHi = Memory::Read32(in.address);
+                const uint32_t titleIdLo = Memory::Read32(in.address + 4u);
+                char path[32];
+                std::snprintf(path, sizeof(path), "/title/%08x/%08x", titleIdHi, titleIdLo);
+                if (!WriteGuestBytes(out.address, out.size,
+                                      reinterpret_cast<const uint8_t*>(path), std::strlen(path) + 1)) {
+                    return ISFS_EINVAL;
+                }
                 return ISFS_OK;
             }
 

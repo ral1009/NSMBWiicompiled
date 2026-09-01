@@ -20,6 +20,34 @@
 
 inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx);
 
+// TEMPORARY diagnostic for the post-EXI/HW boot hang investigation: RecompMod::
+// ScopedTranslatedExecutionAddress (recomp_mod_loader.h) only updates on the
+// "cold" dispatch paths - DispatchKnownTranslatedCpuTargetStatic's fast path
+// (below) deliberately skips it for the hot generated-to-generated call case,
+// which is nearly every InvokeDirectCpu<Target> call in this codebase. That
+// makes RecompMod::CurrentTranslatedExecutionAddress() report only the
+// outermost call in a chain, useless for finding which nested guest function
+// a hang is actually stuck in. This ring buffer is pushed on every call
+// through the fast path instead, cheaply (one array write, no locking - a
+// diagnostic reader racing the writer is an acceptable risk here), so a
+// watchdog on another thread can dump "the last N guest addresses called"
+// after a timeout. Remove once the hang's cause is confirmed.
+namespace DiagRecentCalls {
+inline constexpr size_t kCapacity = 512;
+inline std::array<uint32_t, kCapacity> g_addrs{};
+// The caller's return address (ctx->lr) at the moment of each dispatch - resolving THIS against
+// the symbol table names the function that MADE the call, not just the one being called. Added
+// specifically to find an indirect-dispatch loop's container without needing to grep for a
+// literal InvokeDirectCpu<addr> call site (which doesn't exist for computed/indirect targets).
+inline std::array<uint32_t, kCapacity> g_lrs{};
+inline std::atomic<uint32_t> g_next{0};
+inline void Push(uint32_t addr, uint32_t lr) {
+    const uint32_t slot = g_next.fetch_add(1, std::memory_order_relaxed) % static_cast<uint32_t>(kCapacity);
+    g_addrs[slot] = addr;
+    g_lrs[slot] = lr;
+}
+} // namespace DiagRecentCalls
+
 // Some game-facing runtime options alter arguments at well-defined ABI
 // boundaries. Keep this independent of the dispatch mechanism: generated
 // static calls deliberately bypass InvokeDirectCpu for performance.
@@ -423,6 +451,7 @@ MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionI
         return false;
     }
 
+    DiagRecentCalls::Push(info->address, cpu->lr); // TEMPORARY - see DiagRecentCalls's comment above
     RecompMod::ScopedTranslatedExecutionAddress translatedExecution(info->address);
     PpcNonvolatileFprGuard fprGuard(cpu, NonvolatileFprGuardMaskFor(info));
     PpcNonvolatileGprGuard gprGuard(cpu, ShouldPreserveNonvolatileGprsForRawCpuCall(info));
@@ -439,6 +468,7 @@ inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext*
     if (!record || !record->entry) {
         return false;
     }
+    DiagRecentCalls::Push(record->address, cpu->lr); // TEMPORARY - see DiagRecentCalls's comment above
     RecompMod::ScopedTranslatedExecutionAddress translatedExecution(record->address);
     PpcNonvolatileGprGuard gprGuard(cpu, record->preserveNonvolatileGprs);
     PpcNonvolatileFprGuard fprGuard(cpu, record->nonvolatileFprWriteMask);
@@ -453,6 +483,7 @@ inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext*
 
 template <uint32_t Target>
 inline void DispatchKnownTranslatedCpuTargetStatic(CpuContext* cpu) {
+    DiagRecentCalls::Push(Target, cpu->lr); // TEMPORARY - see DiagRecentCalls's comment above
     const auto invokeKnownTranslated = [&]() {
         KnownTranslatedCpuCall<Target>::Entry(cpu);
     };

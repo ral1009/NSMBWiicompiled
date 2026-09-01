@@ -28,12 +28,24 @@ extern "C" {
     bool MI_HLE_TryWrite16(uint32_t addr, uint16_t value);
     bool DSP_HLE_TryRead16(uint32_t addr, uint16_t* outValue);
     bool DSP_HLE_TryWrite16(uint32_t addr, uint16_t value);
+    bool DSP_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool DSP_HLE_TryWrite32(uint32_t addr, uint32_t value);
+    bool VI_HLE_TryRead16(uint32_t addr, uint16_t* outValue);
+    bool VI_HLE_TryWrite16(uint32_t addr, uint16_t value);
+    bool CP_HLE_TryRead16(uint32_t addr, uint16_t* outValue);
+    bool CP_HLE_TryWrite16(uint32_t addr, uint16_t value);
+    bool PE_HLE_TryRead16(uint32_t addr, uint16_t* outValue);
+    bool PE_HLE_TryWrite16(uint32_t addr, uint16_t value);
+    bool SI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool SI_HLE_TryWrite32(uint32_t addr, uint32_t value);
     bool EXI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
     bool EXI_HLE_TryWrite32(uint32_t addr, uint32_t value);
     bool AI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
     bool AI_HLE_TryWrite32(uint32_t addr, uint32_t value);
     bool DI_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
     bool DI_HLE_TryWrite32(uint32_t addr, uint32_t value);
+    bool HW_HLE_TryRead32(uint32_t addr, uint32_t* outValue);
+    bool HW_HLE_TryWrite32(uint32_t addr, uint32_t value);
 }
 
 namespace MemoryInline {
@@ -119,9 +131,10 @@ constexpr bool IsGpuFifoAddress(uint32_t addr) {
 }
 
 // Page protections can't cover this: an MMIO write must reach GX HLE with its value or be
-// reported, and a fault record can't carry the value, so this mask/compare sits in front of
-// every flat store instead.
-MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
+// reported, and a fault record can't carry the value (nor, for a read, its width - see the
+// FlatRead* comment below), so this mask/compare sits in front of every flat store AND load
+// instead. One predicate, both directions: the address range that needs policy is the same.
+MKW_MEMORY_FORCE_INLINE bool FlatMmioNeedsPolicy(uint32_t address) {
     return (address & 0xFE000000u) == 0xCC000000u;  // 0xCC000000..0xCDFFFFFF
 }
 
@@ -251,7 +264,7 @@ MKW_MEMORY_FORCE_INLINE uint8_t* ResolveRangeHost(uint32_t base, int32_t minOffs
     const uint32_t guestStart = base + static_cast<uint32_t>(minOffset);
     if (length == 0 || length > kPageSize || guestStart > UINT32_MAX - (length - 1)) return nullptr;
     if (needsWrite &&
-        (FlatWriteNeedsPolicy(guestStart) || FlatWriteNeedsPolicy(guestStart + (length - 1))))
+        (FlatMmioNeedsPolicy(guestStart) || FlatMmioNeedsPolicy(guestStart + (length - 1))))
         [[unlikely]] return nullptr;
     return MKW_FLAT_GUEST_BASE + guestStart;
 }
@@ -539,8 +552,17 @@ MKW_MEMORY_FORCE_INLINE void WriteResolvedFloat64(uint8_t* r, uint32_t o, uint32
 
 // Flat guest memory (audit item T-MEM): the 4 GiB reservation makes a guest access a byte swap
 // around `*(T*)(base + addr)`, no page-table load or limit check (interception model documented
-// in guest_flat_memory.h). The one exception kept inline is the MMIO write policy, since the
-// written value can't be recovered from a fault record.
+// in guest_flat_memory.h). The one exception kept inline is the MMIO policy check, applied
+// symmetrically to both directions: a write's value can't be recovered from a fault record at
+// all, and a read that faulted raw (guest_flat_memory.cpp's FlatGuestVectoredHandler) can't
+// recover its *width* either ("access size: unknown" - see that file's ReportFatalGuestFault),
+// so neither direction can be serviced from the SEH handler the way an ordinary unmapped-RAM
+// touch is. Routing both through the checked Read*Slow/Write*Slow path first means every
+// register-file HLE hooked in memory.cpp (PI, EXI, VI, AI, DI, SI, ...) is reachable from any
+// call site the translator lowers to the flat tier, not only ones it happens to route through
+// the checked Memory::ReadN()/WriteN() API already - found via hle/si.cpp's SI_SISR read still
+// hitting the raw fault path (and its "unknown access size" abort) even after SI_HLE_TryRead32
+// existed, because nothing before this fed flat reads through it.
 
 template <typename T>
 MKW_MEMORY_FORCE_INLINE T FlatLoad(uint32_t address) {
@@ -555,11 +577,23 @@ MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value) {
     std::memcpy(MKW_FLAT_GUEST_BASE + address, &swapped, sizeof(T));
 }
 
-MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t address) { return FlatLoad<uint8_t>(address); }
-MKW_MEMORY_FORCE_INLINE uint16_t FlatRead16(uint32_t address) { return FlatLoad<uint16_t>(address); }
-MKW_MEMORY_FORCE_INLINE uint32_t FlatRead32(uint32_t address) { return FlatLoad<uint32_t>(address); }
+MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t address) {
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { return Read8Slow(address); }
+    return FlatLoad<uint8_t>(address);
+}
+
+MKW_MEMORY_FORCE_INLINE uint16_t FlatRead16(uint32_t address) {
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { return Read16Slow(address); }
+    return FlatLoad<uint16_t>(address);
+}
+
+MKW_MEMORY_FORCE_INLINE uint32_t FlatRead32(uint32_t address) {
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { return Read32Slow(address); }
+    return FlatLoad<uint32_t>(address);
+}
 
 MKW_MEMORY_FORCE_INLINE float FlatReadFloat32(uint32_t address) {
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { return ReadFloat32Slow(address); }
     const uint32_t bits = FlatLoad<uint32_t>(address);
     float value = 0.0f;
     std::memcpy(&value, &bits, sizeof(value));
@@ -567,6 +601,7 @@ MKW_MEMORY_FORCE_INLINE float FlatReadFloat32(uint32_t address) {
 }
 
 MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t address) {
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { return ReadFloat64Slow(address); }
     const uint64_t bits = FlatLoad<uint64_t>(address);
     double value = 0.0;
     std::memcpy(&value, &bits, sizeof(value));
@@ -574,31 +609,31 @@ MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t address) {
 }
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite8(uint32_t address, uint8_t value) {
-    if (FlatWriteNeedsPolicy(address)) [[unlikely]] { Write8Slow(address, value); return; }
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { Write8Slow(address, value); return; }
     FlatStore<uint8_t>(address, value);
 }
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite16(uint32_t address, uint16_t value) {
-    if (FlatWriteNeedsPolicy(address)) [[unlikely]] { Write16Slow(address, value); return; }
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { Write16Slow(address, value); return; }
     FlatStore<uint16_t>(address, value);
 }
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite32(uint32_t address, uint32_t value) {
-    if (FlatWriteNeedsPolicy(address)) [[unlikely]] { Write32Slow(address, value); return; }
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { Write32Slow(address, value); return; }
     FlatStore<uint32_t>(address, value);
 }
 
 
 MKW_MEMORY_FORCE_INLINE void FlatWriteFloat32(uint32_t address, double value) {
     const uint32_t bits = ConvertPpcDoubleToSingleBits(value);
-    if (FlatWriteNeedsPolicy(address)) [[unlikely]] { WriteFloat32Slow(address, value); return; }
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { WriteFloat32Slow(address, value); return; }
     FlatStore<uint32_t>(address, bits);
 }
 
 MKW_MEMORY_FORCE_INLINE void FlatWriteFloat64(uint32_t address, double value) {
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
-    if (FlatWriteNeedsPolicy(address)) [[unlikely]] { WriteFloat64Slow(address, value); return; }
+    if (FlatMmioNeedsPolicy(address)) [[unlikely]] { WriteFloat64Slow(address, value); return; }
     FlatStore<uint64_t>(address, bits);
 }
 

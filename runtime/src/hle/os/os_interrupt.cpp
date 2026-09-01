@@ -136,6 +136,18 @@ extern "C" uint32_t OS__ExceptionInit_801a00e0(uint32_t r3, uint32_t r4, uint32_
 
 extern "C" uint32_t __OSSetInterruptHandler_801a65f8_hle(uint32_t interrupt, uint32_t handler)
 {
+    // TEMPORARY diagnostic for investigating func_801AF710's (r13-20020) counter hang - checking
+    // whether NSMBW ever registers func_801BBD10/func_801BC8E0 as a raw interrupt handler (this
+    // table is written here but never dispatched from anywhere in the runtime). Remove once
+    // resolved.
+    {
+        static uint32_t diagCalls = 0;
+        if (diagCalls < 20) {
+            RT_LOGF(RT_TAG_OS, "diag __OSSetInterruptHandler: call #%u interrupt=%u handler=0x%08X\n",
+                    diagCalls, interrupt, handler);
+        }
+        ++diagCalls;
+    }
     constexpr uint32_t kMaxInterrupts = 32;
 
     uint32_t tableBase = 0;

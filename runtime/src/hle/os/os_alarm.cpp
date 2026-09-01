@@ -279,6 +279,18 @@ extern "C" void OSSetAlarm_HLE_801a0870(CpuContext* ctx)
         return;
     }
 
+    // TEMPORARY diagnostic for investigating func_801AF710's (r13-20020) counter hang - checking
+    // whether NSMBW ever registers func_801BBD10/func_801BC8E0 as an alarm handler. Remove once
+    // that investigation is resolved.
+    {
+        static uint32_t diagCalls = 0;
+        if (diagCalls < 20) {
+            RT_LOGF(RT_TAG_OS, "diag OSSetAlarm: call #%u alarm=0x%08X handler=0x%08X tickHi=0x%08X tickLo=0x%08X\n",
+                    diagCalls, alarm, handler, tickHi, tickLo);
+        }
+        ++diagCalls;
+    }
+
     const int32_t level = OS__DisableInterrupts_801a65ac();
     SanitizeAlarmQueue(cpu);
 
@@ -423,6 +435,16 @@ extern "C" void OS__SetPeriodicAlarm_801a08e0(CpuContext* ctx)
     const uint32_t periodHi = cpu->gpr[7];
     const uint32_t periodLo = cpu->gpr[8];
     const uint32_t handler = cpu->gpr[9];
+
+    // TEMPORARY diagnostic, same investigation as OSSetAlarm's above. Remove once resolved.
+    {
+        static uint32_t diagCalls = 0;
+        if (diagCalls < 20) {
+            RT_LOGF(RT_TAG_OS, "diag OSSetPeriodicAlarm: call #%u alarm=0x%08X handler=0x%08X periodHi=0x%08X periodLo=0x%08X\n",
+                    diagCalls, alarm, handler, periodHi, periodLo);
+        }
+        ++diagCalls;
+    }
 
     const int32_t level = OS__DisableInterrupts_801a65ac();
 

@@ -10,6 +10,7 @@
 // through RuntimeCrash::FatalMissingGuestTarget (unimplemented HLE calls) rather than silently -
 // that failure, once we see it, is Phase 6's actual starting point.
 #include "abi_bridge.h"
+#include "fiber_manager.h"
 #include "memory.h"
 #include "runtime_product.h"
 #include "system_bridge.h"
@@ -17,6 +18,8 @@
 
 #include <aurora/aurora.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -25,6 +28,10 @@
 #include <ios>
 #include <sstream>
 #include <thread>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 extern "C" void InitializeDataSections();
 
@@ -62,10 +69,28 @@ void SeedLowMemDefaults() {
     const uint32_t ipcBufLo = ipcBufHi - kIPCArenaSize;
     constexpr uint32_t kGameCode = 0x534D4E50u;       // "SMNP", read from the real disc header
     constexpr uint32_t kMakerDiscVersion = 0x30310001u; // "01" maker, disc 0, version 1 (Rev 1)
+    // Same retail-vs-NDEV test as OS__GetConsoleType_8019f33c (os_init.cpp) - kept in sync so a
+    // guest read of this field and a guest call to OSGetConsoleType() never disagree.
+    constexpr uint32_t kRetailMem2Size = 64u * 1024u * 1024u;
+    const uint32_t consoleType = mem2Size == kRetailMem2Size ? 0x00000012u : 0x10000012u;
 
     const SeedEntry entries[] = {
         {0x80000000u, kGameCode, "Disc game code"},
         {0x80000004u, kMakerDiscVersion, "Disc maker/disc/version"},
+        {0x8000002Cu, consoleType, "OSBootInfo consoleType"},
+        // func_801AA940 (a one-time CPU/BAT bring-up routine, confirmed by reading its body)
+        // unconditionally writes 0x80000000 here the first time it runs, caching a pointer to
+        // OSBootInfo for func_801AA020's SI/DVD status decode. On real hardware that init runs
+        // before any game code (as part of __start/OSInit, which this runtime skips in favor of
+        // jumping straight to the DOL entry point). NSMBW's own boot order calls something that
+        // reads this cache (via func_801AA020, from the sound-archive load path) before
+        // func_801AA940 itself gets a chance to run, so without this the cache is seen as NULL and
+        // that read permanently fails - the actual root cause of the OSSleepThread hang traced this
+        // session. This isn't a guess: it's the exact value func_801AA940 would itself store here.
+        // 0x8042F980 = SDA1_BASE (r13), from generated_nsmbw/generated/RuntimeConfig.h -
+        // NSMBWCompiled's own target doesn't have that header on its include path (only
+        // nsmbw_runtime_common does), so this is the literal value, not a re-derivation.
+        {0x8042F980u - 20528u, 0x80000000u, "cached OSBootInfo* (func_801AA940 pre-seed)"},
         {0x80003180u, kGameCode, "OS app game code"},
         {0x80003194u, kGameCode, "OS app gamename"},
         {0x800000F8u, static_cast<uint32_t>(TimeBaseContract::kBusClockHz), "__OSBusClock"},
@@ -82,6 +107,7 @@ void SeedLowMemDefaults() {
         {0x80003118u, mem2Size, "Physical MEM2 size"},
         {0x8000311Cu, mem2Size, "Simulated MEM2 size"},
         {0x80003120u, iosReservedLo, "MEM2 end"},
+        {0x80003124u, Memory::kMem2CachedBase, "MEM2 arena lo"},
         {0x80003128u, iosReservedLo, "MEM2 arena hi"},
         {0x80003130u, ipcBufLo, "IPC Buffer lo"},
         {0x80003134u, ipcBufHi, "IPC Buffer hi"},
@@ -235,9 +261,173 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     return outInfo.window != nullptr;
 }
 
+// TEMPORARY diagnostic for the post-EXI/HW boot hang investigation (see abi_bridge.h's
+// DiagRecentCalls comment for why RecompMod::CurrentTranslatedExecutionAddress() alone can't find
+// it). Dumps the ring buffer of recently-dispatched guest addresses, newest first, resolved
+// against the project's function-map symbol table (same table + floor-search system_bridge.cpp's
+// crash reporter uses) so the actual nested call site is visible instead of just the outermost
+// entry point. Remove once the hang's cause is confirmed.
+extern "C" {
+extern const uint32_t kGuestMapSymbolCount;
+extern const uint32_t kGuestMapSymbolAddresses[];
+extern const char* const kGuestMapSymbolNames[];
+}
+
+const char* DiagResolveSymbol(uint32_t address, uint32_t* symbolStart) {
+    if (kGuestMapSymbolCount == 0) return nullptr;
+    uint32_t lo = 0, hi = kGuestMapSymbolCount;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (kGuestMapSymbolAddresses[mid] <= address) lo = mid + 1; else hi = mid;
+    }
+    if (lo == 0) return nullptr;
+    const uint32_t index = lo - 1;
+    if (address - kGuestMapSymbolAddresses[index] >= 0x10000u) return nullptr;
+    if (symbolStart) *symbolStart = kGuestMapSymbolAddresses[index];
+    return kGuestMapSymbolNames[index];
+}
+
+// Formats "0xADDR" or "0xADDR<symbol[+0xOFFSET]>" into a fixed buffer - shared by both the callee
+// and the caller (LR) columns in DiagDumpRecentCalls below.
+void DiagFormatAddress(uint32_t addr, char* out, size_t outSize) {
+    uint32_t symStart = 0;
+    const char* sym = DiagResolveSymbol(addr, &symStart);
+    if (sym && symStart == addr) {
+        std::snprintf(out, outSize, "0x%08X<%s>", addr, sym);
+    } else if (sym) {
+        std::snprintf(out, outSize, "0x%08X<%s+0x%X>", addr, sym, addr - symStart);
+    } else {
+        std::snprintf(out, outSize, "0x%08X", addr);
+    }
+}
+
+void DiagDumpRecentCalls(int afterSeconds) {
+    if (afterSeconds < 0) {
+        std::fprintf(stderr,
+                     "[nsmbw] diag: crashed - last dispatched guest calls (newest first, called-from "
+                     "is ctx->lr at dispatch time):\n");
+    } else {
+        std::fprintf(stderr,
+                     "[nsmbw] diag: still running after %ds, last dispatched guest calls (newest first, "
+                     "called-from is ctx->lr at dispatch time):\n",
+                     afterSeconds);
+    }
+    const uint32_t next = DiagRecentCalls::g_next.load(std::memory_order_relaxed);
+    const uint32_t count = std::min<uint32_t>(next, static_cast<uint32_t>(DiagRecentCalls::kCapacity));
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t slot = (next - 1 - i) % static_cast<uint32_t>(DiagRecentCalls::kCapacity);
+        char calleeStr[96];
+        char callerStr[96];
+        DiagFormatAddress(DiagRecentCalls::g_addrs[slot], calleeStr, sizeof(calleeStr));
+        DiagFormatAddress(DiagRecentCalls::g_lrs[slot], callerStr, sizeof(callerStr));
+        std::fprintf(stderr, "  [%u] %s called-from %s\n", i, calleeStr, callerStr);
+    }
+    std::fflush(stderr);
+}
+
+#if defined(_WIN32)
+// TEMPORARY diagnostic (same technique used to find func_801B4FE0/__OSReschedule earlier this
+// session): suspend the main thread just long enough to read its native RIP/RSP, then resume it.
+// DiagRecentCalls only sees InvokeIndirectCpu/registry dispatch - a hang built out of
+// MKW_STATIC_TRANSLATED_CALL (a plain Entry(ctx) call, no bookkeeping) is invisible to it.
+void DiagSampleMainThreadNativePc(HANDLE mainThread, int afterSeconds) {
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_CONTROL;
+    if (::SuspendThread(mainThread) == static_cast<DWORD>(-1)) {
+        std::fprintf(stderr, "[nsmbw] diag: still running after %ds - SuspendThread failed (%lu)\n",
+                     afterSeconds, ::GetLastError());
+        return;
+    }
+    const BOOL gotContext = ::GetThreadContext(mainThread, &ctx);
+    ::ResumeThread(mainThread);
+    if (!gotContext) {
+        std::fprintf(stderr, "[nsmbw] diag: still running after %ds - GetThreadContext failed (%lu)\n",
+                     afterSeconds, ::GetLastError());
+        return;
+    }
+#if defined(_M_X64) || defined(__x86_64__)
+    const uint64_t moduleBase = reinterpret_cast<uint64_t>(::GetModuleHandleW(nullptr));
+    std::fprintf(stderr,
+                 "[nsmbw] diag: still running after %ds - native RIP=0x%016llX RSP=0x%016llX "
+                 "moduleBase=0x%016llX rvaFromBase=0x%llX\n",
+                 afterSeconds, static_cast<unsigned long long>(ctx.Rip),
+                 static_cast<unsigned long long>(ctx.Rsp), static_cast<unsigned long long>(moduleBase),
+                 static_cast<unsigned long long>(ctx.Rip - moduleBase));
+#endif
+    std::fflush(stderr);
+}
+#endif
+
+void StartDiagWatchdog(std::atomic<bool>& finished) {
+#if defined(_WIN32)
+    HANDLE mainThreadHandle = nullptr;
+    ::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentThread(), ::GetCurrentProcess(),
+                       &mainThreadHandle, 0, FALSE, DUPLICATE_SAME_ACCESS);
+#endif
+    std::thread([&finished
+#if defined(_WIN32)
+                 , mainThreadHandle
+#endif
+    ] {
+        const auto start = std::chrono::steady_clock::now();
+        for (int deadlineSeconds : {6, 15, 30}) {
+            const auto deadline = start + std::chrono::seconds(deadlineSeconds);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (finished.load(std::memory_order_relaxed)) return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            if (finished.load(std::memory_order_relaxed)) return;
+            DiagDumpRecentCalls(deadlineSeconds);
+#if defined(_WIN32)
+            if (mainThreadHandle) {
+                DiagSampleMainThreadNativePc(mainThreadHandle, deadlineSeconds);
+            }
+#endif
+        }
+    }).detach();
+}
+
+#if defined(_WIN32)
+// TEMPORARY diagnostic for investigating a deterministic native SIGSEGV reached after clearing
+// the func_801AF710/func_801AF900 boot blockers - it's not a guest Memory::AccessViolation (those
+// are already caught below), so it must be a raw native fault; this reports exactly where before
+// the OS terminates the process, instead of a bare "Segmentation fault" with no address. Remove
+// once that investigation is resolved.
+LONG WINAPI DiagVectoredExceptionHandler(EXCEPTION_POINTERS* info) {
+    if (info && info->ExceptionRecord &&
+        info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        const auto* record = info->ExceptionRecord;
+        const uint64_t faultAddr = record->NumberParameters >= 2
+                                        ? static_cast<uint64_t>(record->ExceptionInformation[1])
+                                        : 0;
+        const uint64_t accessType = record->NumberParameters >= 1
+                                         ? static_cast<uint64_t>(record->ExceptionInformation[0])
+                                         : 0;
+        const uint64_t rip = reinterpret_cast<uint64_t>(record->ExceptionAddress);
+        const uint64_t moduleBase = reinterpret_cast<uint64_t>(::GetModuleHandleW(nullptr));
+        std::fprintf(stderr,
+                     "[nsmbw] diag: NATIVE ACCESS VIOLATION - accessType=%llu(0=read,1=write) "
+                     "faultAddr=0x%016llX nativeRIP=0x%016llX rvaFromBase=0x%llX\n",
+                     static_cast<unsigned long long>(accessType),
+                     static_cast<unsigned long long>(faultAddr),
+                     static_cast<unsigned long long>(rip),
+                     static_cast<unsigned long long>(rip - moduleBase));
+        std::fflush(stderr);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 } // namespace
 
 int main() {
+    // Unbuffered so log order is trustworthy across an abnormal termination (abort() from an
+    // uncaught exception does not flush buffered stdio) - needed to tell whether a crash happens
+    // before or after other printf-based milestones instead of guessing from apparent line order.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+#if defined(_WIN32)
+    ::AddVectoredExceptionHandler(1, DiagVectoredExceptionHandler);
+#endif
     // Confirmed the hard way: without this, InitializeDataSections()'s first memcpy into guest
     // memory is a raw access violation, since nothing has mapped that address space yet.
     // SystemBridge::Initialize() (system_bridge.cpp) does the same allocation, but bundled
@@ -277,6 +467,17 @@ int main() {
     InitializePersistentCpuContext();
     CpuContext& cpu = GetPersistentCpuContext();
     SeedCpuContext(cpu);
+
+    // Mirrors main.cpp's own init order (Initialize() right after SeedCpuContext, before
+    // CpuContextScope) - confirmed missing here: NSMBW's real main() spawns its game-loop thread
+    // via OSCreateThread/OSResumeThread (see the shard-level fix in func_800CA080/func_801B5270),
+    // which needs a live GuestFiberManager to create the host fiber that thread actually runs on.
+    // Without this, every Fiber::GuestFiberManager::IsInitialized() guard in the OS thread HLE
+    // silently no-ops, so the new thread's fiber was never created at all - a separate, compounding
+    // gap on top of the OSCreateThread/OSResumeThread guest-address mismatch (this product's shared
+    // os_thread.cpp hooks are registered at MKW's link addresses, not NSMBW's).
+    Fiber::GuestFiberManager::Initialize();
+
     CpuContextScope cpuScope(&cpu);
 
     RunGuestConstructors(cpu);
@@ -288,9 +489,15 @@ int main() {
     // memory access, and any other host-side exception, matching main.cpp's own two catch blocks
     // for the same reasons (so a Phase 6 boot crash is diagnosable output, not a raw libc++abi
     // "terminating due to uncaught exception" abort).
+    std::atomic<bool> diagFinished{false};
+    StartDiagWatchdog(diagFinished);
     try {
         InvokeIndirectCpu(kNsmbwEntryAddress, &cpu);
+        diagFinished.store(true, std::memory_order_relaxed);
     } catch (const Memory::AccessViolation& ex) {
+        diagFinished.store(true, std::memory_order_relaxed);
+        DiagDumpRecentCalls(-1); // TEMPORARY - see DiagRecentCalls's comment in abi_bridge.h. -1
+                                 // marks this as a crash-triggered dump, not a watchdog timeout one.
         std::ostringstream details;
         details << "addr=0x" << std::hex << std::uppercase << ex.address()
                 << " len=0x" << ex.length() << std::dec << std::nouppercase
@@ -300,6 +507,7 @@ int main() {
         std::fprintf(stderr, "[nsmbw] guest memory access violation: %s\n", details.str().c_str());
         return 1;
     } catch (const std::exception& ex) {
+        diagFinished.store(true, std::memory_order_relaxed);
         RuntimeCrash::WriteCrashArtifacts("exception", ex.what(), nullptr);
         ShowRuntimeFatalPopup("a runtime exception occurred", ex.what());
         std::fprintf(stderr, "[nsmbw] runtime exception: %s\n", ex.what());

@@ -262,7 +262,19 @@ extern "C" void OSCreateThread_HLE_801a9e84(CpuContext* ctx)
     const uint32_t stackSize  = cpu->gpr[7];
     const int32_t  priority   = static_cast<int32_t>(cpu->gpr[8]);
     const uint16_t attributes = static_cast<uint16_t>(cpu->gpr[9]);
-    
+
+    // TEMPORARY diagnostic for investigating func_801AF710's (r13-20020) counter hang - checking
+    // whether NSMBW creates a thread with func_801BBD10/func_801BC8E0 as the entry point. Remove
+    // once resolved.
+    {
+        static uint32_t diagCalls = 0;
+        if (diagCalls < 20) {
+            RT_LOGF(RT_TAG_OS, "diag OSCreateThread: call #%u threadPtr=0x%08X entryFunc=0x%08X priority=%d\n",
+                    diagCalls, threadPtr, entryFunc, priority);
+        }
+        ++diagCalls;
+    }
+
     // Validate priority range
     if (priority < 0 || priority > 31) {
         RT_LOG(RT_TAG_OS) << "OSCreateThread: invalid priority " << priority << std::endl;

@@ -174,7 +174,13 @@ if(MKW_BUILD_NSMBW)
     target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
     target_compile_options(NSMBWCompiled PRIVATE -march=x86-64-v3 -g)
     # -g alone only affects compiling; the linker strips debug sections unless told to keep them.
-    target_link_options(NSMBWCompiled PRIVATE -g)
+    # Each translated guest call (MKW_STATIC_TRANSLATED_CALL/InvokeDirectCpu) is a real, nested
+    # native C++ call - PPC call trees several dozen frames deep (seen repeatedly during NSMBW
+    # boot) turn into native stacks deep enough to overflow the platform's 1MB default. Reproduced
+    # a deterministic native SIGSEGV (no guest AccessViolation, so not a guest-memory-bounds issue)
+    # right after clearing several boot blockers that let execution progress further/deeper than
+    # before - raise the reserved stack well past what's been observed so far.
+    target_link_options(NSMBWCompiled PRIVATE -g -Wl,--stack,16777216)
     target_sources(NSMBWCompiled PRIVATE
         $<TARGET_OBJECTS:nsmbw_translated>
         $<TARGET_OBJECTS:nsmbw_native>

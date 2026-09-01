@@ -651,6 +651,15 @@ uint16_t MemoryInline::Read16Slow(uint32_t addr) {
         if (uint16_t dspValue; DSP_HLE_TryRead16(addr, &dspValue)) {
             return dspValue;
         }
+        if (uint16_t viValue; VI_HLE_TryRead16(addr, &viValue)) {
+            return viValue;
+        }
+        if (uint16_t cpValue; CP_HLE_TryRead16(addr, &cpValue)) {
+            return cpValue;
+        }
+        if (uint16_t peValue; PE_HLE_TryRead16(addr, &peValue)) {
+            return peValue;
+        }
         ThrowMmioReadBlocked(addr, sizeof(uint16_t));
     }
     ResolveDeferredReads(addr, sizeof(uint16_t));
@@ -665,6 +674,9 @@ uint32_t MemoryInline::Read32Slow(uint32_t addr) {
         if (uint32_t ipcValue; IPC_HLE_TryRead32(addr, &ipcValue)) {
             return ipcValue;
         }
+        if (uint32_t siValue; SI_HLE_TryRead32(addr, &siValue)) {
+            return siValue;
+        }
         if (uint32_t exiValue; EXI_HLE_TryRead32(addr, &exiValue)) {
             return exiValue;
         }
@@ -673,6 +685,12 @@ uint32_t MemoryInline::Read32Slow(uint32_t addr) {
         }
         if (uint32_t diValue; DI_HLE_TryRead32(addr, &diValue)) {
             return diValue;
+        }
+        if (uint32_t hwValue; HW_HLE_TryRead32(addr, &hwValue)) {
+            return hwValue;
+        }
+        if (uint32_t dspValue32; DSP_HLE_TryRead32(addr, &dspValue32)) {
+            return dspValue32;
         }
         ThrowMmioReadBlocked(addr, sizeof(uint32_t));
     }
@@ -734,6 +752,15 @@ void MemoryInline::Write16Slow(uint32_t addr, uint16_t val) {
         if (DSP_HLE_TryWrite16(addr, val)) {
             return;
         }
+        if (VI_HLE_TryWrite16(addr, val)) {
+            return;
+        }
+        if (CP_HLE_TryWrite16(addr, val)) {
+            return;
+        }
+        if (PE_HLE_TryWrite16(addr, val)) {
+            return;
+        }
         ThrowMmioWriteBlocked(addr, sizeof(val), val);
     }
     WriteScalar(addr, val);
@@ -751,6 +778,9 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val) {
         if (IPC_HLE_TryWrite32(addr, val)) {
             return;
         }
+        if (SI_HLE_TryWrite32(addr, val)) {
+            return;
+        }
         if (EXI_HLE_TryWrite32(addr, val)) {
             return;
         }
@@ -758,6 +788,12 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val) {
             return;
         }
         if (DI_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        if (HW_HLE_TryWrite32(addr, val)) {
+            return;
+        }
+        if (DSP_HLE_TryWrite32(addr, val)) {
             return;
         }
         ThrowMmioWriteBlocked(addr, sizeof(val), val);
