@@ -960,7 +960,14 @@ extern "C" int32_t DVD__ReadAbsAsyncPrio_HLE_801628cc(uint32_t cmdBlockPtr,
             bytesRead = DvdReadFatal(cmdBlockPtr, "<unmapped DVD offset>", absoluteOffset,
                                      requestedLength,
                                      "absolute DVD read offset is not mapped to a host file");
-        } else if (requestedLength != 0 && readInfo.readLength != requestedLength) {
+        // A DVD transfer length must be a multiple of 32 bytes, so the final read of any file
+        // whose size is not already aligned asks for up to 31 bytes more than the file holds.
+        // On a real disc those bytes are the padding the file is stored with and the read
+        // succeeds; the game only consumes the first `size` bytes. Tolerate exactly that much
+        // overrun and zero-fill it below. Anything past the padded extent is still a real
+        // out-of-range read and stays fatal.
+        } else if (requestedLength != 0 && readInfo.readLength != requestedLength &&
+                   requestedLength > ((readInfo.readLength + 31u) & ~31u)) {
             bytesRead = DvdReadFatal(cmdBlockPtr, HostPathText(readInfo.entry->hostPath),
                                      readInfo.fileOffset, requestedLength,
                                      "requested range extends beyond the indexed DVD file");
@@ -980,6 +987,11 @@ extern "C" int32_t DVD__ReadAbsAsyncPrio_HLE_801628cc(uint32_t cmdBlockPtr,
                                          readInfo.fileOffset, readInfo.readLength,
                                          DvdReadContract::Describe(failure));
             } else {
+                // Zero the alignment padding rather than leaving the guest buffer untouched, so
+                // the transfer is deterministic and reports the length the hardware would.
+                if (tempBuf.size() < requestedLength) {
+                    tempBuf.resize(requestedLength, 0u);
+                }
                 CopyToGuestAsDma(bufferPtr, tempBuf.data(), tempBuf.size());
                 bytesRead = static_cast<int32_t>(tempBuf.size());
             }
@@ -1029,6 +1041,29 @@ extern "C" int32_t DVDLowInquiry_80165A30(uint32_t cmdBlockPtr, uint32_t callbac
 }
 PPC_NATIVE_OVERRIDE(80165A30, DVDLowInquiry_80165A30, int32_t, (uint32_t b, uint32_t c), (b, c));
 
+// NSMBW's DVDLowInquiry completion. Same operation as DVDLowInquiry_80165A30 above - report that
+// the drive is present and finish the command - but shaped for NSMBW's caller and left separate
+// so MKW's binding is untouched.
+//
+// Two differences, both forced by the caller rather than chosen:
+//
+//  - MKW's version writes DVD_STATE_END into its first argument at +0x0C because its callers pass
+//    a DVD command block and poll that word. NSMBW passes the drive-info output buffer instead
+//    (`lwz r3, 0x18(r29)` at 0x801CE130 loads the block's buffer field), so the same write would
+//    land inside DVDDriveInfo. It is omitted here.
+//  - NSMBW is callback-driven, not poll-driven, so completion has to be signalled the way
+//    DVDLowRead_80166330 signals it, with the transfer-complete interrupt type.
+//
+// The drive-info buffer is left as the caller supplied it, exactly as MKW's binding leaves it -
+// no drive identity is invented here.
+extern "C" int32_t DVDLowInquiry_Completing(uint32_t driveInfoPtr, uint32_t callback)
+{
+    (void)driveInfoPtr;
+    CompleteDvdCancelState();
+    InvokeDvdLowCallback(callback, DvdReadContract::CompletionFor(true).callbackResult);
+    return 1;
+}
+
 // 0x80164AAC -> DVDLowReadDiskID
 extern "C" int32_t DVDLowReadDiskID_80164AAC(uint32_t diskIdPtr, uint32_t callback) {
     if (diskIdPtr) {
@@ -1040,6 +1075,24 @@ extern "C" int32_t DVDLowReadDiskID_80164AAC(uint32_t diskIdPtr, uint32_t callba
     return 1; // Success
 }
 PPC_NATIVE_OVERRIDE(80164AAC, DVDLowReadDiskID_80164AAC, int32_t, (uint32_t p, uint32_t c), (p, c));
+
+// Same fill as above, plus the low-level completion callback.
+//
+// MKW's callers poll the command block, so the binding above never has to signal anything.
+// NSMBW instead drives its DVD state machine off the low callback: OSInit issues
+// DVDReadDiskID, the block goes to DVD_STATE_BUSY (1), and it only leaves that state when the
+// DVDLowCallback registered with the transaction runs. Without it the block stays BUSY forever,
+// DVDGetDriveStatus keeps reporting BUSY, and dDvd::loader_c::request never completes.
+//
+// The completion value is the same one DVDLowRead_80166330 reports for a successful transfer
+// (DvdReadContract::kInterruptTransferComplete), and the disc identity written above comes from
+// the configured disc, not a fabricated one - so this signals a transfer that genuinely happened
+// rather than faking a result.
+extern "C" int32_t DVDLowReadDiskID_Completing(uint32_t diskIdPtr, uint32_t callback) {
+    const int32_t result = DVDLowReadDiskID_80164AAC(diskIdPtr, callback);
+    InvokeDvdLowCallback(callback, DvdReadContract::CompletionFor(true).callbackResult);
+    return result;
+}
 
 // 0x80166330 -> DVDLowRead (And 0x80165708 UnencryptedRead)
 // The game calls this to read the Disk Header (offset 0) or raw data.

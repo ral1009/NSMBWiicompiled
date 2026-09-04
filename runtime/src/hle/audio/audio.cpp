@@ -21,10 +21,24 @@ namespace {
 constexpr uint32_t kDefaultSampleRate = 32000u;
 constexpr uint32_t kAudioChannels = 2u;
 constexpr uint32_t kBytesPerSample = 2u;
+// The four AI library globals this HLE stands in for. Both titles link the same SDK but at
+// their own addresses, so they are selected per product. NSMBW's were read off its own AIInit
+// (0x8019F330): it stores its callback_stack_switch argument to r13-0x51B4, zeroes the DMA
+// callback at r13-0x51B0, and sets the init flag at r13-0x51E8 last; the DMA interrupt handler
+// at 0x8019F4EC sets and clears the busy flag at r13-0x51E4. r13 is 0x8042F980 for NSMBW.
+// The relative layout matches MKW's (initialized/busy adjacent, stack-switch/dma-callback
+// adjacent), which is the cross-check that these are the same four variables.
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+constexpr uint32_t kAIInitializedAddr = 0x8042A798u;
+constexpr uint32_t kAICallbackBusyAddr = 0x8042A79Cu;
+constexpr uint32_t kAICallbackStackSwitchAddr = 0x8042A7CCu;
+constexpr uint32_t kAIDmaCallbackAddr = 0x8042A7D0u;
+#else
 constexpr uint32_t kAIInitializedAddr = 0x80386448u;
 constexpr uint32_t kAICallbackBusyAddr = 0x8038644Cu;
 constexpr uint32_t kAICallbackStackSwitchAddr = 0x8038647Cu;
 constexpr uint32_t kAIDmaCallbackAddr = 0x80386480u;
+#endif
 
 // Max completed 3 ms DMA blocks delivered per tick. Draining several at once catches up
 // backlog from a long frame without letting a large stall spiral into an unbounded loop.

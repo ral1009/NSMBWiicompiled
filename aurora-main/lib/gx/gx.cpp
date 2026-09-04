@@ -1136,6 +1136,7 @@ void clear_display_copy_cache() noexcept {
 
 void set_display_copy_present_source() noexcept {
   if (!g_gxState.displayCopyTexture) {
+    nsmbw_diag_log("set_display_copy_present_source", "EARLY-RETURN no displayCopyTexture");
     return;
   }
 
@@ -1143,6 +1144,7 @@ void set_display_copy_present_source() noexcept {
                                                                   webgpu::present_source().sampler);
   webgpu::set_present_source_override(g_gxState.displayCopyBindGroup, g_gxState.displayCopyTexture->texture,
                                       g_gxState.displayCopyTexture->size, g_gxState.displayCopyTexture->format);
+  nsmbw_diag_log("set_display_copy_present_source", "override SET");
 }
 
 void evict_copy_texture(const void* dest) noexcept {
@@ -1831,6 +1833,37 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
       };
     }
   }
+  // DIAGNOSTIC (temporary): NSMBW_LOG_TEV_RAS logs whether rasterized/vertex color is actually
+  // wired into TEV stage 0's color/alpha inputs, and whether it's sourced from a vertex attribute
+  // (GX_SRC_VTX) vs a register (GX_SRC_REG, which would ignore the per-vertex color entirely).
+  // Used after ruling out viewport/scissor and depth as the reason forced-opaque-white vertex
+  // colors still produced 0 non-black pixels. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_TEV_RAS") != nullptr) {
+    static int tevLogged = 0;
+    if (tevLogged < 20) {
+      ++tevLogged;
+      const auto& cc0 = g_gxState.colorChannelConfig[0];
+      std::fprintf(stderr,
+                   "[NSMBW_TEV_RAS] numChans=%u numTevStages=%u cc0.lightingEnabled=%d cc0.matSrc=%u "
+                   "cc0.ambSrc=%u colorUpdate=%d alphaUpdate=%d dstAlpha=%d\n",
+                   (unsigned)g_gxState.numChans, (unsigned)g_gxState.numTevStages, cc0.lightingEnabled ? 1 : 0,
+                   (unsigned)cc0.matSrc, (unsigned)cc0.ambSrc, g_gxState.colorUpdate ? 1 : 0,
+                   g_gxState.alphaUpdate ? 1 : 0, g_gxState.dstAlpha != UINT32_MAX ? 1 : 0);
+      for (u8 i = 0; i < g_gxState.numTevStages; ++i) {
+        const auto& st = g_gxState.tevStages[i];
+        std::fprintf(stderr,
+                     "[NSMBW_TEV_RAS]   stage[%u] channelId=%u texMapId=%u texCoordId=%u "
+                     "colorPass(a,b,c,d)=(%u,%u,%u,%u) alphaPass(a,b,c,d)=(%u,%u,%u,%u) "
+                     "colorOutReg=%u alphaOutReg=%u colorOp=%u alphaOp=%u\n",
+                     (unsigned)i, (unsigned)st.channelId, (unsigned)st.texMapId, (unsigned)st.texCoordId,
+                     (unsigned)st.colorPass.a, (unsigned)st.colorPass.b, (unsigned)st.colorPass.c,
+                     (unsigned)st.colorPass.d, (unsigned)st.alphaPass.a, (unsigned)st.alphaPass.b,
+                     (unsigned)st.alphaPass.c, (unsigned)st.alphaPass.d, (unsigned)st.colorOp.outReg,
+                     (unsigned)st.alphaOp.outReg, (unsigned)st.colorOp.op, (unsigned)st.alphaOp.op);
+      }
+      std::fflush(stderr);
+    }
+  }
   for (u8 i = 0; i < MaxTexCoord; ++i) {
     config.shaderConfig.tcgs[i].src = static_cast<GXTexGenSrc>(GX_TG_TEX0 + i);
   }
@@ -1856,6 +1889,19 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   config.depthUpdate = g_gxState.depthUpdate;
   config.alphaUpdate = effective_alpha_update(g_gxState.pixelFmt, g_gxState.alphaUpdate);
   config.colorUpdate = g_gxState.colorUpdate;
+
+  // DIAGNOSTIC: NSMBW_LOG_DEPTH logs the effective depth-test state that goes into each distinct
+  // pipeline config.
+  if (std::getenv("NSMBW_LOG_DEPTH") != nullptr) {
+    static int depthLogged = 0;
+    if (depthLogged < 20) {
+      ++depthLogged;
+      std::fprintf(stderr, "[NSMBW_DEPTH] depthCompare(enable)=%d depthFunc=%u depthUpdate(write)=%d cullMode=%u\n",
+                   config.depthCompare ? 1 : 0, (unsigned)config.depthFunc, config.depthUpdate ? 1 : 0,
+                   (unsigned)config.cullMode);
+      std::fflush(stderr);
+    }
+  }
 }
 
 static TextureBindGroupCacheKey make_texture_bind_group_cache_key(const ShaderInfo& info) noexcept {

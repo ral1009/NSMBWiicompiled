@@ -2,6 +2,7 @@
 #include "runtime_log.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 
 // --- Texture and TLUT Objects ---
@@ -130,12 +131,35 @@ TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr) {
         meta.userData = word4;
         meta.mipmap = (flags & 1) != 0;
 
+        // word2's top nibble is the format field GX packs together with width/height in the same
+        // hardware register word (TX_SETIMAGE0-shaped), so it is always populated by GXInitTexObj
+        // and is the field to trust. word5 usually matches it, but is not reliably the format for
+        // every texture object - confirmed live: for one real NSMBW texture, word5 decoded to 22
+        // (GX_TF_Z24X8, a depth format) while word2's nibble correctly gave 6 (GX_TF_RGBA8, a
+        // completely ordinary texture), and every OTHER texture sampled had the two agree. Because
+        // 22 also happens to be a "known" GXTexFmt value, the old word5-first logic accepted it
+        // without ever consulting word2, silently turning a color texture into a mis-decoded depth
+        // one (read back from the GPU as opaque white with alpha=0, i.e. fully transparent -
+        // the actual black-screen cause this was tracking down).
         const uint32_t formatFromWord2 = (word2 >> 20) & 0xF;
-        uint32_t resolvedFormat = word5;
-        if (!IsKnownTexFormat(resolvedFormat) && IsKnownTexFormat(formatFromWord2)) {
-            resolvedFormat = formatFromWord2;
+        uint32_t resolvedFormat = formatFromWord2;
+        if (!IsKnownTexFormat(resolvedFormat) && IsKnownTexFormat(word5)) {
+            resolvedFormat = word5;
         }
         meta.format = resolvedFormat;
+        if (std::getenv("NSMBW_TEX_PEEK") != nullptr) {
+            static int dumped = 0;
+            if (dumped < 20) {
+                ++dumped;
+                RT_LOGF(RT_TAG_GX,
+                        "NSMBW_TEXOBJ_RAW addr=0x%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X w5=%08X "
+                        "w6=%08X flags=%02X width=%u height=%u dataAddr=0x%08X word5AsFmt=%u "
+                        "word2Bits20_23AsFmt=%u chosenFmt=%u word5Known=%d word2Known=%d\n",
+                        addr, word0, word1, word2, word3, word4, word5, word6, flags, meta.width, meta.height,
+                        meta.dataAddr, word5, formatFromWord2, resolvedFormat, (int)IsKnownTexFormat(word5),
+                        (int)IsKnownTexFormat(formatFromWord2));
+            }
+        }
         meta.tlut = word6;
         
         // LOD parameters from GXGetTexObjLODAll

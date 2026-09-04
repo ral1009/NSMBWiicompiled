@@ -529,22 +529,34 @@ int RunEmitNsmbwBuildShards(string[] argsTail)
 
     try
     {
+        static uint ParseModuleAddress(string text) =>
+            Convert.ToUInt32(text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text.Substring(2) : text, 16);
+
         var modules = new List<NsmbwModuleInput>();
         foreach (var (rawLine, lineNumber) in File.ReadLines(modulesFile).Select((line, index) => (line, index + 1)))
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
             var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length != 3)
+            if (parts.Length != 3 && parts.Length != 5)
             {
                 throw new InvalidDataException(
-                    $"Invalid modules file entry at {modulesFile}:{lineNumber}: expected '<id> <metadata path> <functions dir>'.");
+                    $"Invalid modules file entry at {modulesFile}:{lineNumber}: expected '<id> <metadata path> <functions dir> [<owned start> <owned end>]'.");
             }
             var moduleDirectory = Path.GetDirectoryName(Path.GetFullPath(modulesFile))!;
+            uint ownedStart = 0u;
+            uint ownedEnd = 0u;
+            if (parts.Length == 5)
+            {
+                ownedStart = ParseModuleAddress(parts[3]);
+                ownedEnd = ParseModuleAddress(parts[4]);
+            }
             modules.Add(new NsmbwModuleInput(
                 parts[0],
                 Path.GetFullPath(Path.Combine(moduleDirectory, parts[1])),
-                Path.GetFullPath(Path.Combine(moduleDirectory, parts[2]))));
+                Path.GetFullPath(Path.Combine(moduleDirectory, parts[2])),
+                ownedStart,
+                ownedEnd));
         }
 
         var nativeSourcePaths = nativeSourcesOption
@@ -4077,7 +4089,7 @@ static string CommandUsage(string command)
 
 // Options every command tolerates. --project and --profile are consumed before
 // dispatch, so they only reach a command's tail when they were repeated.
-static string[] GlobalValueOptions() => new[] { "--project", "--profile" };
+static string[] GlobalValueOptions() => new[] { "--project", "--profile", "--rel-projects" };
 
 static string[] GlobalFlagOptions() => new[] { "--prefer-cached-inputs" };
 
@@ -4147,8 +4159,39 @@ ProgramImage LoadImage()
         $"[translator] SDA bases: r13 (_SDA_BASE_) 0x{sda1Base:X8}, r2 (_SDA2_BASE_) 0x{sda2Base:X8} " +
         $"(entry 0x{dol.EntryPoint:X8}).");
 
-    var relImage = relFile.Value?.BuildImage(loadedProject.Inputs.Rel!.LoadAddress);
+    // Every REL that is linked together at run time has to be relocated against the same view of
+    // the others, or an import from a sibling module resolves against whichever REL happens to be
+    // relocating (RelFile.ApplyRelocations). Passing --rel-projects with all of them supplies that
+    // view; leaving it off keeps the previous single-module behaviour.
+    var relImage = relFile.Value?.BuildImage(
+        loadedProject.Inputs.Rel!.LoadAddress,
+        moduleRegistry: LoadRelModuleRegistry());
     return new ProgramImageBuilder().Build(dol, relImage, loadedProject.Memory.Base, loadedProject.Memory.Size);
+}
+
+IReadOnlyDictionary<uint, RelModuleInfo>? LoadRelModuleRegistry()
+{
+    var relProjects = OptionValue(args.Skip(1).ToArray(), "--rel-projects");
+    if (string.IsNullOrWhiteSpace(relProjects))
+    {
+        return null;
+    }
+
+    var registry = new Dictionary<uint, RelModuleInfo>();
+    foreach (var relProjectPath in relProjects.Split(
+                 ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var relProject = TranslationProjectConfig.Load(relProjectPath);
+        if (relProject.Inputs.Rel is not { } siblingRel)
+        {
+            throw new InvalidDataException($"Project '{relProjectPath}' has no inputs.rel configured.");
+        }
+
+        var siblingFile = RelFile.Load(siblingRel.Path);
+        registry[siblingFile.ModuleId] = new RelModuleInfo(siblingRel.LoadAddress, siblingFile.Sections);
+    }
+
+    return registry;
 }
 
 DolFile LoadDol()

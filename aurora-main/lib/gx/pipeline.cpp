@@ -1,5 +1,6 @@
 #include "pipeline.hpp"
 
+#include "../internal.hpp"
 #include "../webgpu/gpu.hpp"
 #include "gx_fmt.hpp"
 #include "shader_info.hpp"
@@ -67,7 +68,28 @@ void clear_shader_module_cache() {
 
 void render(const DrawData& data, const wgpu::RenderPassEncoder& pass, DrawEncodeState& state,
             bool requireReadyPipeline, const gfx::Range* uniformRangeOverride) {
-  if (!gfx::bind_pipeline(data.pipeline, pass, state.currentPipeline, requireReadyPipeline)) {
+  // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation. Remove before merging.
+  if (nsmbw_diag_enabled()) {
+    static std::atomic<uint64_t> attemptCount{0};
+    static std::atomic<uint64_t> skipCount{0};
+    const uint64_t n = attemptCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool ok = gfx::bind_pipeline(data.pipeline, pass, state.currentPipeline, requireReadyPipeline);
+    if (!ok) {
+      const uint64_t s = skipCount.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (s <= 5 || s % 200 == 0) {
+        std::fprintf(stderr, "[NSMBW_PIPE] SKIP draw #%llu (skipped %llu total) pipelineRef=0x%llx\n",
+                     static_cast<unsigned long long>(n), static_cast<unsigned long long>(s),
+                     static_cast<unsigned long long>(data.pipeline));
+        std::fflush(stderr);
+      }
+      return;
+    }
+    if (n <= 5) {
+      std::fprintf(stderr, "[NSMBW_PIPE] OK draw #%llu pipelineRef=0x%llx\n", static_cast<unsigned long long>(n),
+                   static_cast<unsigned long long>(data.pipeline));
+      std::fflush(stderr);
+    }
+  } else if (!gfx::bind_pipeline(data.pipeline, pass, state.currentPipeline, requireReadyPipeline)) {
     return;
   }
 

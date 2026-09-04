@@ -38,7 +38,14 @@ GX_FATAL_STUB(8016d054, "GX__SetBreakPtCallback_8016d054") PPC_NATIVE_OVERRIDE_V
 GX_FATAL_STUB(8016d098, "GX__EnableBreakPt_8016d098") PPC_NATIVE_OVERRIDE_VOID(8016d098, gx_stub_8016d098, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d138, "GX__DisableBreakPt_8016d138") PPC_NATIVE_OVERRIDE_VOID(8016d138, gx_stub_8016d138, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d1fc, "__GX__CleanGPFifo_8016d1fc") PPC_NATIVE_OVERRIDE_VOID(8016d1fc, gx_stub_8016d1fc, (CpuContext* ctx), (ctx));
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::SetVtxDesc switch -> NSMBW createEffect__Q23mEf13levelEffect_c). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 GX_FATAL_STUB(8016d3c0, "GX__SetVtxDesc_switch_8016d3c0") PPC_NATIVE_OVERRIDE_VOID(8016d3c0, gx_stub_8016d3c0, (CpuContext* ctx), (ctx));
+#endif
 GX_FATAL_STUB(8016d3c4, "GX__SetVtxDesc_caseD_0_8016d3c4") PPC_NATIVE_OVERRIDE_VOID(8016d3c4, gx_stub_8016d3c4, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d3d8, "GX__SetVtxDesc_caseD_1_8016d3d8") PPC_NATIVE_OVERRIDE_VOID(8016d3d8, gx_stub_8016d3d8, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d3ec, "GX__SetVtxDesc_caseD_2_8016d3ec") PPC_NATIVE_OVERRIDE_VOID(8016d3ec, gx_stub_8016d3ec, (CpuContext* ctx), (ctx));
@@ -58,7 +65,14 @@ GX_FATAL_STUB(8016d530, "GX__SetVtxDesc_caseD_e_8016d530") PPC_NATIVE_OVERRIDE_V
 GX_FATAL_STUB(8016d544, "GX__SetVtxDesc_caseD_f_8016d544") PPC_NATIVE_OVERRIDE_VOID(8016d544, gx_stub_8016d544, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d558, "GX__SetVtxDesc_caseD_10_8016d558") PPC_NATIVE_OVERRIDE_VOID(8016d558, gx_stub_8016d558, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d56c, "GX__SetVtxDesc_caseD_11_8016d56c") PPC_NATIVE_OVERRIDE_VOID(8016d56c, gx_stub_8016d56c, (CpuContext* ctx), (ctx));
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::SetVtxDesc case 12 -> NSMBW update__Q23mEf13levelEffect_c). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 GX_FATAL_STUB(8016d580, "GX__SetVtxDesc_caseD_12_8016d580") PPC_NATIVE_OVERRIDE_VOID(8016d580, gx_stub_8016d580, (CpuContext* ctx), (ctx));
+#endif
 GX_FATAL_STUB(8016d594, "GX__SetVtxDesc_caseD_13_8016d594") PPC_NATIVE_OVERRIDE_VOID(8016d594, gx_stub_8016d594, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d5a8, "GX__SetVtxDesc_caseD_14_8016d5a8") PPC_NATIVE_OVERRIDE_VOID(8016d5a8, gx_stub_8016d5a8, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016d5b8, "GX__SetVtxDesc_caseD_15_8016d5b8") PPC_NATIVE_OVERRIDE_VOID(8016d5b8, gx_stub_8016d5b8, (CpuContext* ctx), (ctx));
@@ -67,7 +81,14 @@ GX_FATAL_STUB(8016d8c4, "__GX__CalculateVLim_8016d8c4") PPC_NATIVE_OVERRIDE_VOID
 // moved to gx_vertex.cpp: GX__GetVtxDesc_8016d9f0
 GX_FATAL_STUB(8016da0c, "GX__GetVtxDesc_switch_8016da0c") PPC_NATIVE_OVERRIDE_VOID(8016da0c, gx_stub_8016da0c, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016da10, "GX__GetVtxDesc_caseD_0_8016da10") PPC_NATIVE_OVERRIDE_VOID(8016da10, gx_stub_8016da10, (CpuContext* ctx), (ctx));
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::GetVtxDesc case 1 -> NSMBW func_8016DA20). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 GX_FATAL_STUB(8016da20, "GX__GetVtxDesc_caseD_1_8016da20") PPC_NATIVE_OVERRIDE_VOID(8016da20, gx_stub_8016da20, (CpuContext* ctx), (ctx));
+#endif
 GX_FATAL_STUB(8016da30, "GX__GetVtxDesc_caseD_2_8016da30") PPC_NATIVE_OVERRIDE_VOID(8016da30, gx_stub_8016da30, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016da40, "GX__GetVtxDesc_caseD_3_8016da40") PPC_NATIVE_OVERRIDE_VOID(8016da40, gx_stub_8016da40, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016da50, "GX__GetVtxDesc_caseD_4_8016da50") PPC_NATIVE_OVERRIDE_VOID(8016da50, gx_stub_8016da50, (CpuContext* ctx), (ctx));
@@ -218,7 +239,14 @@ GX_FATAL_STUB(80173b18, "GX__SetGPMetric_switch_80173b18") PPC_NATIVE_OVERRIDE_V
 GX_FATAL_STUB(80173b1c, "GX__SetGPMetric_caseD_0_80173b1c") PPC_NATIVE_OVERRIDE_VOID(80173b1c, gx_stub_80173b1c, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173b38, "GX__SetGPMetric_caseD_1_80173b38") PPC_NATIVE_OVERRIDE_VOID(80173b38, gx_stub_80173b38, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173b54, "GX__SetGPMetric_caseD_2_80173b54") PPC_NATIVE_OVERRIDE_VOID(80173b54, gx_stub_80173b54, (CpuContext* ctx), (ctx));
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::SetGPMetric case 3 -> NSMBW func_80173B70). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 GX_FATAL_STUB(80173b70, "GX__SetGPMetric_caseD_3_80173b70") PPC_NATIVE_OVERRIDE_VOID(80173b70, gx_stub_80173b70, (CpuContext* ctx), (ctx));
+#endif
 GX_FATAL_STUB(80173b8c, "GX__SetGPMetric_caseD_8_80173b8c") PPC_NATIVE_OVERRIDE_VOID(80173b8c, gx_stub_80173b8c, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173ba8, "GX__SetGPMetric_caseD_15_80173ba8") PPC_NATIVE_OVERRIDE_VOID(80173ba8, gx_stub_80173ba8, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173bc4, "GX__SetGPMetric_caseD_4_80173bc4") PPC_NATIVE_OVERRIDE_VOID(80173bc4, gx_stub_80173bc4, (CpuContext* ctx), (ctx));
@@ -236,6 +264,13 @@ GX_FATAL_STUB(80173d84, "GX__SetGPMetric_caseD_10_80173d84") PPC_NATIVE_OVERRIDE
 GX_FATAL_STUB(80173db0, "GX__SetGPMetric_caseD_11_80173db0") PPC_NATIVE_OVERRIDE_VOID(80173db0, gx_stub_80173db0, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173dc0, "GX__SetGPMetric_caseD_12_80173dc0") PPC_NATIVE_OVERRIDE_VOID(80173dc0, gx_stub_80173dc0, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173dd0, "GX__SetGPMetric_caseD_13_80173dd0") PPC_NATIVE_OVERRIDE_VOID(80173dd0, gx_stub_80173dd0, (CpuContext* ctx), (ctx));
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::SetGPMetric case 14 -> NSMBW func_80173DE0). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 GX_FATAL_STUB(80173de0, "GX__SetGPMetric_caseD_14_80173de0") PPC_NATIVE_OVERRIDE_VOID(80173de0, gx_stub_80173de0, (CpuContext* ctx), (ctx));
+#endif
 GX_FATAL_STUB(80173dec, "GX__SetGPMetric_caseD_16_80173dec") PPC_NATIVE_OVERRIDE_VOID(80173dec, gx_stub_80173dec, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(80173df8, "GX__ClearGPMetric_80173df8") PPC_NATIVE_OVERRIDE_VOID(80173df8, gx_stub_80173df8, (CpuContext* ctx), (ctx));

@@ -12,6 +12,8 @@
 #include "runtime_log.h"
 #include "os_internal.h"
 
+namespace OsSwitchDiag { void Arm(uint32_t threadPtr); void Check(const char* tag); }
+
 namespace OsHleInternal {
 void RemoveThreadFromList(uint32_t threadPtr)
 {
@@ -249,7 +251,7 @@ void TerminateThreadCommon(CpuContext* cpu, uint32_t threadPtr, bool publishExit
 
 // OSCreateThread (0x801a9e84)
 // Creates a new guest thread and associates a host fiber with it.
-extern "C" void OSCreateThread_HLE_801a9e84(CpuContext* ctx)
+extern "C" void OSCreateThread_HLE_801b5270(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     
@@ -274,6 +276,8 @@ extern "C" void OSCreateThread_HLE_801a9e84(CpuContext* ctx)
         }
         ++diagCalls;
     }
+
+    OsSwitchDiag::Arm(threadPtr);
 
     // Validate priority range
     if (priority < 0 || priority > 31) {
@@ -323,7 +327,13 @@ extern "C" void OSCreateThread_HLE_801a9e84(CpuContext* ctx)
             cpu->gpr[3] = threadPtr;
             cpu->gpr[4] = entryFunc;
             cpu->gpr[5] = alignedStack - 8;
-            InvokeIndirectCpu(0x801A20BCu, cpu); // OSInitContext
+            // OSInitContext. 0x801AD0F0, not 0x801A20BC: NSMBW's real OSCreateThread calls it at
+            // 0x801B52F8, and 0x801AD0F0's body is unmistakably it - `stw r4,0x198(r3)` (SRR0 =
+            // entry), `stw r5,4(r3)` (gpr1 = stack pointer), `stw r11,0x19c(r3)` (SRR1 = 0x9032),
+            // then it zeroes the remaining GPR slots. 0x801A20BC is mid-function code (it starts
+            // on a `bl`, with no prologue), so the created thread's context - including its stack
+            // pointer - was never initialized, and the game thread began executing with r1 = 0.
+            InvokeIndirectCpu(0x801AD0F0u, cpu);
         }
 
         if (IsThpVideoDecoderEntry(entryFunc)) {
@@ -410,7 +420,11 @@ extern "C" void OSCreateThread_HLE_801a9e84(CpuContext* ctx)
         cpu->gpr[3] = 0; // Return failure
     }
 }
-PPC_NATIVE_OVERRIDE_VOID(801A9E84, OSCreateThread_HLE_801a9e84, (CpuContext* ctx), (ctx));
+// (registration moved to projects/nsmbw/native/nsmbw_create_thread_override.cpp - see that
+// file for why: 0x801A9E84 disassembles to unrelated mfmsr/mtmsr/mtspr code, not
+// OSCreateThread; the real body lives at 0x801B5270 per NSMBW-Decomp's syms.txt, confirmed by
+// matching this function's field writes one-for-one against kThreadStateOffset/kThreadPriorityOffset/
+// kThreadSuspendOffset/kThreadExitValueOffset in os_internal.h.)
 
 extern "C" void OSExitThread_HLE_801aa0f0(CpuContext* ctx)
 {
@@ -429,7 +443,7 @@ extern "C" void OSExitThread_HLE_801aa0f0(CpuContext* ctx)
 
         ::Memory::Write32(kSchedulerReschedCounterAddr, 1);
         cpu->gpr[3] = 0;
-        SelectThread_801a9c08(cpu);
+        SelectThread_801b4fe0(cpu);
     } catch (const ::Memory::AccessViolation& e) {
         LogMemoryError(RT_TAG_OS, "OSExitThread", e);
     }
@@ -470,7 +484,7 @@ extern "C" void OSCancelThread_HLE_801aa1d4(CpuContext* ctx)
 
         if (::Memory::Read32(kSchedulerReschedCounterAddr) != 0) {
             cpu->gpr[3] = 0;
-            SelectThread_801a9c08(cpu);
+            SelectThread_801b4fe0(cpu);
         }
     } catch (const ::Memory::AccessViolation& e) {
         LogMemoryError(RT_TAG_OS, "OSCancelThread", e);
@@ -569,7 +583,9 @@ extern "C" void OSDetachThread_HLE_801aa4ec(CpuContext* ctx)
 }
 PPC_NATIVE_OVERRIDE_VOID(801AA4EC, OSDetachThread_HLE_801aa4ec, (CpuContext* ctx), (ctx));
 
-extern "C" void OSSuspendThread_HLE_801aa6a8(CpuContext* ctx)
+// Address: 0x801B5C40 (registered in projects/nsmbw/native/nsmbw_suspend_thread_override.cpp -
+// see that file for why: 0x801AA6A8 was wrong, same bug class as SelectThread/OSCreateThread).
+extern "C" void OSSuspendThread_HLE_801b5c40(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     const uint32_t threadPtr = cpu->gpr[3];
@@ -611,7 +627,7 @@ extern "C" void OSSuspendThread_HLE_801aa6a8(CpuContext* ctx)
 
             if (::Memory::Read32(kSchedulerReschedCounterAddr) != 0) {
                 cpu->gpr[3] = 0;
-                SelectThread_801a9c08(cpu);
+                SelectThread_801b4fe0(cpu);
             }
         }
 
@@ -623,11 +639,11 @@ extern "C" void OSSuspendThread_HLE_801aa6a8(CpuContext* ctx)
 
     OS__RestoreInterrupts_801a65d4(irqState);
 }
-PPC_NATIVE_OVERRIDE_VOID(801AA6A8, OSSuspendThread_HLE_801aa6a8, (CpuContext* ctx), (ctx));
+// (registration moved to projects/nsmbw/native/nsmbw_suspend_thread_override.cpp)
 
 // OSResumeThread (0x801aa58c)
 // Resumes a suspended thread, making it eligible for scheduling.
-extern "C" void OSResumeThread_HLE_801aa58c(CpuContext* ctx)
+extern "C" void OSResumeThread_HLE_801b59a0(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     const uint32_t threadPtr = cpu->gpr[3];
@@ -712,7 +728,7 @@ extern "C" void OSResumeThread_HLE_801aa58c(CpuContext* ctx)
 
                 if (::Memory::Read32(kSchedulerReschedCounterAddr) != 0) {
                     cpu->gpr[3] = 0;
-                    SelectThread_801a9c08(cpu);
+                    SelectThread_801b4fe0(cpu);
                 }
             }
         }
@@ -726,4 +742,4 @@ extern "C" void OSResumeThread_HLE_801aa58c(CpuContext* ctx)
     
     OS__RestoreInterrupts_801a65d4(irqState);
 }
-PPC_NATIVE_OVERRIDE_VOID(801AA58C, OSResumeThread_HLE_801aa58c, (CpuContext* ctx), (ctx));
+// (registration moved to projects/nsmbw/native/nsmbw_resume_thread_override.cpp)

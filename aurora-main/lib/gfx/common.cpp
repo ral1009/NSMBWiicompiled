@@ -382,6 +382,16 @@ static ClipRect calculate_resolve_snapshot_rect(const wgpu::Extent3D& targetSize
 }
 
 static void set_efb_targets(RenderPass& pass) {
+  if (nsmbw_diag_enabled()) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      std::fprintf(stderr, "[NSMBW_DIAG] set_efb_targets msaaSamples=%u frameBufferSize=%ux%u\n",
+                   webgpu::g_graphicsConfig.msaaSamples, webgpu::g_frameBuffer.size.width,
+                   webgpu::g_frameBuffer.size.height);
+      std::fflush(stderr);
+    }
+  }
   pass.colorView = webgpu::g_frameBuffer.view;
   pass.resolveView = webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : nullptr;
   pass.depthView = webgpu::g_depthBuffer.view;
@@ -507,6 +517,24 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     return;
   }
   auto& prevPass = g_renderPasses[g_currentRenderPass];
+  // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation. Remove before merging.
+  {
+    static const bool logResolve = std::getenv("NSMBW_LOG_RESOLVE") != nullptr;
+    static const bool forceBright = std::getenv("NSMBW_FORCE_BRIGHT_RESOLVE") != nullptr;
+    if (logResolve) {
+      Log.warn("[NSMBW_DIAG] resolve_pass pass={} destTex={} target={}x{} rect={},{} {}x{} "
+               "clearColor={} clearColorValue={},{},{},{} resolveFormat={}",
+               g_currentRenderPass, static_cast<const void*>(texture.get()),
+               prevPass.targetSize.width, prevPass.targetSize.height, rect.x, rect.y, rect.width,
+               rect.height, clearColor, clearColorValue.x(), clearColorValue.y(),
+               clearColorValue.z(), clearColorValue.w(), static_cast<int>(resolveFormat));
+    }
+    if (forceBright) {
+      clearColor = true;
+      clearAlpha = true;
+      clearColorValue = {1.0f, 0.0f, 1.0f, 1.0f};
+    }
+  }
   const auto targetWidth = static_cast<int32_t>(prevPass.targetSize.width);
   const auto targetHeight = static_cast<int32_t>(prevPass.targetSize.height);
   if (targetWidth <= 0 || targetHeight <= 0) {
@@ -1040,6 +1068,7 @@ static bool begin_frame_impl(bool clearEfb) {
     gx::begin_frame_interpolation();
   }
   discard_suspended_efb_pass();
+  nsmbw_diag_log("clear_override@begin_frame_impl_head");
   webgpu::clear_present_source_override();
 
   push_render_pass(RenderPass{});
@@ -1095,6 +1124,7 @@ void abort_frame() noexcept {
   for (auto& array : gx::g_gxState.arrays) {
     array.cachedRange = {};
   }
+  nsmbw_diag_log("clear_override@begin_frame_impl_tail");
   webgpu::clear_present_source_override();
   end_pipeline_frame();
 }
@@ -1204,8 +1234,25 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
   // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
   // interpolation weight, so encode them on the native render and let replay slots sample them.
   const bool encodeTextureBakes = interpolatedFrame < 0;
+  if (nsmbw_diag_enabled()) {
+    std::fprintf(stderr,
+                 "[NSMBW_DIAG] render_impl interpolatedFrame=%d encodeTextureBakes=%d "
+                 "passCount=%zu\n",
+                 interpolatedFrame, encodeTextureBakes, renderPasses.size());
+    std::fflush(stderr);
+  }
   for (u32 i = 0; i < renderPasses.size(); ++i) {
     const auto& passInfo = renderPasses[i];
+    if (nsmbw_diag_enabled() && passInfo.resolveTarget) {
+      const bool hasRenderWork = passInfo.clearColor || passInfo.clearDepth || !passInfo.commands.empty();
+      std::fprintf(stderr,
+                   "[NSMBW_DIAG] render_impl pass[%u] HAS resolveTarget clearColor=%d "
+                   "hasRenderWork=%d isLast=%d willSkip=%d\n",
+                   i, passInfo.clearColor, hasRenderWork, i == renderPasses.size() - 1,
+                   (i != renderPasses.size() - 1) &&
+                       !((passInfo.resolveTarget && encodeTextureBakes)) && !hasRenderWork);
+      std::fflush(stderr);
+    }
     if (encodeTextureBakes) {
       for (const auto& conv : passInfo.paletteConvs) {
         tex_palette_conv::run(cmd, conv);
@@ -1251,6 +1298,14 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
     auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
     render_pass_impl(pass, renderPasses, i, interpolatedFrame);
     pass.End();
+    if (passInfo.resolveTarget) {
+      static bool firedA = false;
+      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedA && g_nsmbwDiagSeq.load() > 650) {
+        firedA = true;
+        webgpu::nsmbw_diag_peek_texture(cmd, webgpu::g_frameBuffer.texture, passInfo.targetSize.width,
+                                        passInfo.targetSize.height, "A_colorView_after_pass_end");
+      }
+    }
 
     if (finalize && i == renderPasses.size() - 1) {
       depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView, passInfo.targetSize, passInfo.msaaSamples);
@@ -1319,6 +1374,12 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
             .depthOrArrayLayers = 1,
         };
         cmd.CopyTextureToTexture(&src, &dst, &size);
+      }
+      static bool firedB = false;
+      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedB && g_nsmbwDiagSeq.load() > 650) {
+        firedB = true;
+        webgpu::nsmbw_diag_peek_texture(cmd, passInfo.resolveTarget->texture, passInfo.resolveTarget->size.width,
+                                        passInfo.resolveTarget->size.height, "B_displayCopyTexture_after_resolve");
       }
     }
   }
@@ -1409,7 +1470,21 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
 #endif
     switch (cmd.type) {
     case CommandType::SetViewport: {
-      const auto& vp = cmd.data.setViewport;
+      auto vp = cmd.data.setViewport;
+      const auto& size = renderPasses[idx].targetSize;
+      // DIAGNOSTIC: NSMBW_LOG_VIEWPORT logs the effective viewport actually sent to the WebGPU
+      // render pass for the first few occurrences per run.
+      if (std::getenv("NSMBW_LOG_VIEWPORT") != nullptr) {
+        static int vpLogged = 0;
+        if (vpLogged < 20) {
+          ++vpLogged;
+          std::fprintf(stderr,
+                       "[NSMBW_VIEWPORT] left=%.2f top=%.2f width=%.2f height=%.2f znear=%.3f zfar=%.3f "
+                       "targetSize=%ux%u\n",
+                       vp.left, vp.top, vp.width, vp.height, vp.znear, vp.zfar, size.width, size.height);
+          std::fflush(stderr);
+        }
+      }
       // WebGPU requires 0 <= minDepth <= maxDepth <= 1, and the guest's (near, far) order is already
       // reproduced in clip space. Passing the raw swapped pair diverged per backend in release builds.
       const float minDepth = std::clamp(std::min(vp.znear, vp.zfar), 0.0f, 1.0f);
@@ -1419,12 +1494,25 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
     case CommandType::SetScissor: {
       const auto& sc = cmd.data.setScissor;
       const auto& size = renderPasses[idx].targetSize;
-      const auto left = std::clamp(sc.x, 0, static_cast<int32_t>(size.width));
-      const auto top = std::clamp(sc.y, 0, static_cast<int32_t>(size.height));
-      const auto right =
+      auto left = std::clamp(sc.x, 0, static_cast<int32_t>(size.width));
+      auto top = std::clamp(sc.y, 0, static_cast<int32_t>(size.height));
+      auto right =
           std::clamp(sc.x + sc.width, left, static_cast<int32_t>(size.width));
-      const auto bottom =
+      auto bottom =
           std::clamp(sc.y + sc.height, top, static_cast<int32_t>(size.height));
+      // DIAGNOSTIC: see NSMBW_LOG_VIEWPORT above - same env var also covers the scissor rect
+      // actually applied to the pass.
+      if (std::getenv("NSMBW_LOG_VIEWPORT") != nullptr) {
+        static int scLogged = 0;
+        if (scLogged < 20) {
+          ++scLogged;
+          std::fprintf(stderr,
+                       "[NSMBW_SCISSOR] raw=(%d,%d,%d,%d) clamped=(%d,%d,%d,%d) targetSize=%ux%u\n",
+                       sc.x, sc.y, sc.width, sc.height, left, top, right - left, bottom - top, size.width,
+                       size.height);
+          std::fflush(stderr);
+        }
+      }
       pass.SetScissorRect(static_cast<uint32_t>(left), static_cast<uint32_t>(top),
                           static_cast<uint32_t>(right - left), static_cast<uint32_t>(bottom - top));
     } break;

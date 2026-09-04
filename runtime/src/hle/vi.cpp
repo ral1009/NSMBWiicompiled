@@ -141,13 +141,42 @@ constexpr uint32_t kViRenderWidthAddr       = 0x80350864;
 constexpr uint32_t kViRenderHeightAddr      = 0x80350866;
 constexpr uint32_t kViXfbWidthAddr          = 0x80350872;
 constexpr uint32_t kViXfbHeightAddr         = 0x8035087c;
-constexpr uint32_t kViRetraceCountAddr      = 0x80386be4; // matches VIWaitForRetrace/handler
+// Verified against this build's actual VIWaitForRetrace (0x801BCE30) disassembly: it polls
+// lwz r30, -0x4e34(r13), and this project's manifest (nsmbw.yml) pins sda_base to 0x8042f980,
+// so the guest-visible counter is 0x8042f980 - 0x4e34 = 0x8042ab4c, not the address below - the
+// stale value (0x80386be4) meant our writes and the guest's reads never touched the same
+// location, so VIWaitForRetrace spun forever waiting for a counter that was never updated where
+// it was actually looking. Confirmed the fix's target address independently against the same
+// function's second SDA-relative operand (r13-0x4e58, the retrace thread queue) landing on the
+// same +0xa3f68 correction, before touching only the address actually proven to block execution.
+constexpr uint32_t kViRetraceCountAddr      = 0x8042ab4c;
 constexpr uint32_t kViTimingGuardAddr       = 0x80386b44;
+// NSMBW's pre/post retrace callback slots, read off its own VISetPreRetraceCallback
+// (0x801BC520) and VISetPostRetraceCallback (0x801BC570): each loads the old value, calls
+// OSDisableInterrupts, stores the new one, restores, and returns the old. They swap
+// r13-0x4E60 and r13-0x4E64 respectively; r13 is 0x8042F980 for NSMBW. The pre slot sits 4
+// bytes above the post slot in both titles, and the two setters appear in the same order,
+// which is the cross-check that they have not been transposed.
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+constexpr uint32_t kViPreRetraceCallback    = 0x8042AB20;
+constexpr uint32_t kViPostRetraceCallback   = 0x8042AB1C;
+#else
 constexpr uint32_t kViPreRetraceCallback    = 0x80386bb8;
 constexpr uint32_t kViPostRetraceCallback   = 0x80386bb4;
+#endif
 constexpr uint32_t kViNextFrameBufferAddr   = 0x80386ba0;
 constexpr uint32_t kViNextFrameBufferHwAddr = 0x80350890;
-constexpr uint32_t kViRetraceQueueAddr      = 0x80386bc0; // Thread queue for VIWaitForRetrace
+// BISECT D1: temporarily reverted to 0x80386bc0 to find which post-GXInitTexObj change moved the
+// stall earlier. (Candidate correct value is 0x8042ab28 - r13-0x4E58 via func_801B5DD0.)
+// Thread queue for VIWaitForRetrace. NSMBW's is the queue its own VIWaitForRetrace
+// (0x801BCE30) sleeps on: `addi r3, r13, -0x4e58; bl OSSleepThread`, i.e. 0x8042AB28. The
+// same function polls the retrace counter at r13-0x4E34 = 0x8042AB4C, which matches
+// kViRetraceCountAddr above and confirms the pair came from the same title.
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+constexpr uint32_t kViRetraceQueueAddr      = 0x8042AB28;
+#else
+constexpr uint32_t kViRetraceQueueAddr      = 0x80386bc0;
+#endif
 
 // EGG::BaseSystem::sSystem pointer - must be non-null before post-retrace callback is valid
 constexpr uint32_t kEggSSystemAddr = 0x80386F60;
@@ -404,9 +433,13 @@ bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
         auto now = Clock::now();
         {
             std::lock_guard<std::mutex> lock(g_viMutex);
-            if (!g_vi.initialized) {
-                return advancedAny;
-            }
+            // Real VBlank ticks from power-on regardless of whether the guest has configured VI
+            // yet. This bailed out on !g_vi.initialized instead of lazily initializing (as every
+            // other VI entry point in this file does) - confirmed live that EGG::Video::initialize
+            // reaches VIWaitForRetrace (0x801BCE30) before any VIConfigure-family call, so
+            // g_vi.initialized was still false the first (and only) time this ran, retraceCount
+            // never advanced, and the guest polled a counter that could never change.
+            EnsureInitializedLocked();
             // Real hardware never queues missed VBlank interrupts - if the CPU doesn't service
             // one promptly, that retrace's worth of real time is simply lost, not replayed later.
             // A caller (e.g. a raw guest busy-wait loop with no prior yield point, only now able to

@@ -74,6 +74,11 @@ PresentSource current_present_source() noexcept;
 void set_present_source_override(wgpu::BindGroup bindGroup, wgpu::Texture texture, wgpu::Extent3D size,
                                  wgpu::TextureFormat format) noexcept;
 void clear_present_source_override() noexcept;
+// TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation. Remove before merging.
+void nsmbw_diag_peek_texture(const wgpu::CommandEncoder& encoder, const wgpu::Texture& tex, uint32_t texWidth,
+                             uint32_t texHeight, const char* stage);
+void nsmbw_diag_peek_texture_standalone(const wgpu::Texture& tex, uint32_t texWidth, uint32_t texHeight,
+                                        const char* stage);
 wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
 wgpu::BindGroup create_copy_bind_group(wgpu::TextureView sourceView, wgpu::Sampler sampler);
 Viewport calculate_present_viewport(uint32_t surface_width, uint32_t surface_height, uint32_t content_width,

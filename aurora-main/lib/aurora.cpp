@@ -1177,6 +1177,15 @@ void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
         image.texture.size.width, image.texture.size.height, presentAspect);
   }
   wgpu::BindGroup presentBindGroup = presentSource.bindGroup;
+  if (nsmbw_diag_enabled()) {
+    std::fprintf(stderr,
+                 "[NSMBW_DIAG] encode_presentation_snapshot imageSize=%ux%u srcSize=%ux%u "
+                 "viewport=%.1f,%.1f %.1fx%.1f bindGroup=%p\n",
+                 image.texture.size.width, image.texture.size.height, presentSource.size.width,
+                 presentSource.size.height, viewport.left, viewport.top, viewport.width,
+                 viewport.height, static_cast<const void*>(presentBindGroup.Get()));
+    std::fflush(stderr);
+  }
   {
     const std::array attachments{
         wgpu::RenderPassColorAttachment{
@@ -1197,6 +1206,12 @@ void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
                      viewport.znear, viewport.zfar);
     pass.Draw(3);
     pass.End();
+    static bool firedC = false;
+    if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedC && g_nsmbwDiagSeq.load() > 650) {
+      firedC = true;
+      webgpu::nsmbw_diag_peek_texture(encoder, image.texture.texture, image.texture.size.width,
+                                      image.texture.size.height, "C_finalImage_after_blit");
+    }
   }
   if (includeImGui) {
     const std::array attachments{
@@ -1350,7 +1365,9 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   // Probe-sized CPU-consumed copies read back asynchronously. Their downscale blits push uniforms,
   // so prepare them while the producer's staging buffers are still mapped.
   gfx::efb_ram::seal_async_downloads();
+  nsmbw_diag_log("seal_frame_locked", "before gfx::end_frame()");
   gfx::end_frame(ctx.encoder);
+  nsmbw_diag_log("seal_frame_locked", "after gfx::end_frame()");
   gfx::g_stats.presentedFrameCount = 0;
   gfx::g_stats.interpolatedFrameCount = 0;
   // Latched before the producer's next gfx::begin_frame() calls
@@ -1366,7 +1383,9 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ctx.logicalFrame = gfx::current_frame();
   // Latched before webgpu::clear_present_source_override() in the producer's
   // next gfx::begin_frame().
+  nsmbw_diag_log("seal_frame_locked", "before current_present_source() read");
   ctx.presentSource = webgpu::current_present_source();
+  nsmbw_diag_log("seal_frame_locked", "after current_present_source() read");
   // ImGui draw lists are built once per frame and replayed by each slot's ImGui pass, which is why
   // the next ImGui frame cannot start until the encode phase is done.
   imgui::render_frame_data();

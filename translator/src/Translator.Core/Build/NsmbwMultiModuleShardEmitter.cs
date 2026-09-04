@@ -13,7 +13,14 @@ namespace Translator.Core.Build;
 public sealed record NsmbwModuleInput(
     string Id,
     string BaseMetadataPath,
-    string FunctionsDirectory);
+    string FunctionsDirectory,
+    uint OwnedStart = 0u,
+    uint OwnedEnd = 0u)
+{
+    /// True when this module's own image covers the address. A REL declares its resident range
+    /// in the modules file; main.dol declares none and so owns nothing exclusively.
+    public bool Owns(uint address) => OwnedEnd > OwnedStart && address >= OwnedStart && address < OwnedEnd;
+}
 
 public sealed record NsmbwShardOptions(
     IReadOnlyList<NsmbwModuleInput> Modules,
@@ -78,6 +85,7 @@ public static partial class TranslatedBuildShardEmitter
         // but the fingerprint check below turns "arbitrary" into "verified identical" instead of
         // silently trusting that.
         var merged = new Dictionary<uint, FunctionRecord>();
+        var moduleByAddressOwner = new Dictionary<uint, bool>();
         var duplicateCount = 0;
         var optimizationVariantCount = 0;
         foreach (var module in options.Modules)
@@ -90,6 +98,25 @@ public static partial class TranslatedBuildShardEmitter
                 if (merged.TryGetValue(record.Address, out var existing))
                 {
                     duplicateCount++;
+                    // Ownership beats first-seen. Every module's project maps all four RELs so
+                    // cross-module relocations can resolve, so a module's recursive walk can wander
+                    // into a different REL's image and translate bytes there. Those copies are not
+                    // the "same function translated twice" this merge otherwise assumes - they are
+                    // one module's decode of another module's code. Confirmed for 0x80768680,
+                    // d_profileNP's _prolog: d_basesNP also produced a func_80768680 holding
+                    // d_basesNP's own prolog body (r3 = 0x80933864 = d_basesNP's _ctors,
+                    // lr = 0x8076D878) and, being listed first, won. The runtime's REL prolog call
+                    // therefore ran d_basesNP's constructors and never d_profileNP's, leaving
+                    // fProfListMg_c::m_data_p (guest 0x8042A698) null so fBase_make virtual-called
+                    // through it. When the incoming record's module owns the address and the
+                    // incumbent's does not, the owner replaces it.
+                    var incumbentOwns = moduleByAddressOwner.TryGetValue(record.Address, out var owns) && owns;
+                    if (!incumbentOwns && module.Owns(record.Address))
+                    {
+                        merged[record.Address] = record;
+                        moduleByAddressOwner[record.Address] = true;
+                        continue;
+                    }
                     // Leaf inlining and other interprocedural optimizations are decided per
                     // translate-recursive run from whatever call graph is reachable from that
                     // run's own seed - so the same address can legitimately come out byte-different
@@ -104,6 +131,7 @@ public static partial class TranslatedBuildShardEmitter
                     continue;
                 }
                 merged[record.Address] = record;
+                moduleByAddressOwner[record.Address] = module.Owns(record.Address);
             }
         }
 

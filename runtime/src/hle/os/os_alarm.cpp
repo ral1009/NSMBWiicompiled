@@ -90,12 +90,12 @@ void RunDeferredReschedule(CpuContext* cpu)
     }
 
     cpu->gpr[3] = 0;
-    SelectThread_801a9c08(cpu);
+    SelectThread_801b4fe0(cpu);
 }
 
 void SanitizeAlarmQueue(CpuContext* cpu)
 {
-    if (!cpu) {
+    if (!cpu || !kAlarmQueueBoundForTitle) {
         return;
     }
 
@@ -145,7 +145,7 @@ bool IsLikelyCodeAddress(uint32_t addr)
 namespace OsHleInternal {
 bool ProcessAlarmQueue(CpuContext* cpu, int maxToProcess)
 {
-    if (!cpu || maxToProcess <= 0) {
+    if (!cpu || maxToProcess <= 0 || !kAlarmQueueBoundForTitle) {
         return false;
     }
 

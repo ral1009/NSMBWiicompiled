@@ -2,6 +2,8 @@
 #include "__gx.h"
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 extern "C" {
 void GXSetFog(GXFogType type, float startZ, float endZ, float nearZ, float farZ, GXColor color) {
@@ -138,6 +140,22 @@ void GXSetBlendMode(GXBlendMode mode, GXBlendFactor src, GXBlendFactor dst, GXLo
 }
 
 void GXSetColorUpdate(GXBool enabled) {
+  // DIAGNOSTIC (temporary): NSMBW_LOG_CMODE0_ID - checks whether __gx->cmode0's register-ID byte
+  // (bits 24-31, meant to be 0x41, seeded once inside GXInit() at GXManage.cpp's
+  // `SET_REG_FIELD(0, __gx->cmode0, 8, 24, 0x41)`) is actually 0x41 by the time this call happens.
+  // GXInit()'s own guest-facing entry point (GX__Init_8016b850) was confirmed to never fire for
+  // NSMBW - if the ID byte is still 0 here, every GX_WRITE_RAS_REG(cmode0) push gets tagged as a
+  // write to BP register 0x00 (genMode) instead of 0x41 (cmode0), which would explain both the
+  // colorUpdate-never-sticks bug and the corrupted/random cullMode values observed elsewhere.
+  // Remove once resolved.
+  if (std::getenv("NSMBW_LOG_CMODE0_ID") != nullptr) {
+    static int logged = 0;
+    if (logged < 10) {
+      ++logged;
+      std::fprintf(stderr, "[NSMBW_CMODE0_ID] call#%d before: cmode0=0x%08X (idByte=0x%02X) enabled=%u\n", logged,
+                   __gx->cmode0, __gx->cmode0 >> 24, (unsigned)enabled);
+    }
+  }
   SET_REG_FIELD(0, __gx->cmode0, 1, 3, enabled);
   GX_WRITE_RAS_REG(__gx->cmode0);
   __gx->bpSent = 1;

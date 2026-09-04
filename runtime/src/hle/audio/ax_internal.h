@@ -31,6 +31,40 @@ constexpr uint32_t kMailReset = kTaskMailToDsp | 0x0002u;
 constexpr size_t kResamplingCoefficientCount = 0x800;
 constexpr uint32_t kMailContinue = kTaskMailToDsp | 0x0003u;
 constexpr uint32_t kAxSamplesPerFrame = 96u;
+// Both titles link the same AX/DSP SDK, at their own addresses. The NSMBW values were read
+// off NSMBW's own __AXOutInitDSP (0x801A1E20), which fills the DSP task at 0x8037D000 field by
+// field, and off its DSP library: the init flag DSPInit/DSPCheckInit share (r13-0x4C88), the
+// first-task pointer DSPAddTask compares against (r13-0x4C70), and the assert-pending /
+// assert-task / running-task trio DSPAssertTask writes (r13-0x4C80/-0x4C7C/-0x4C6C). r13 is
+// 0x8042F980 for NSMBW. Every one of these six sits at the same offset from the init flag as
+// MKW's does from 0x80386608, which is the cross-check that they are the same variables.
+// kAxDramLength and kAxDramDspAddr are immediates in both builds and agree exactly: NSMBW's
+// __AXOutInitDSP loads `li r10, 0x40` and `li r9, 0xcd2` into task+0x1C and task+0x20.
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+constexpr uint32_t kAxDspTaskAddr = 0x8037D000u;
+constexpr uint32_t kDspInitializedAddr = 0x8042ACF8u;
+constexpr uint32_t kDspAssertPendingAddr = 0x8042AD00u;
+constexpr uint32_t kDspAssertTaskAddr = 0x8042AD04u;
+constexpr uint32_t kDspCurrentTaskAddr = 0x8042AD0Cu;
+constexpr uint32_t kDspFirstTaskAddr = 0x8042AD10u;
+constexpr uint32_t kDspRunningTaskAddr = 0x8042AD14u;
+constexpr uint32_t kAxIramMmemAddr = 0x8032F740u;
+constexpr uint32_t kAxDramMmemAddr = 0x8037D060u;
+constexpr uint32_t kAxDramLength = 64u;
+constexpr uint32_t kAxDramDspAddr = 3282u;
+constexpr uint32_t kAxInitCallback = 0x801A1D90u;
+constexpr uint32_t kAxResumeCallback = 0x801A1DA0u;
+constexpr uint32_t kAxDoneCallback = 0x801A1E00u;
+constexpr uint32_t kAxRequestCallback = 0x801A1E10u;
+// r13-relative fields __AXOutInitDSP itself reads/writes: the two u16 sample-rate style fields
+// it copies into task+0x24/+0x26, the u16 it copies into task+0x10, and the "DSP task is live"
+// flag pair the guest spins on immediately after DSPAddTask returns.
+constexpr uint32_t kAxTaskField10Sda = 0x61CCu;
+constexpr uint32_t kAxTaskField24Sda = 0x61D0u;
+constexpr uint32_t kAxTaskField26Sda = 0x61CEu;
+constexpr uint32_t kAxDspLiveFlagSda = 0x5100u;
+constexpr uint32_t kAxDspLiveAuxSda = 0x5104u;
+#else
 constexpr uint32_t kAxDspTaskAddr = 0x802F81A0u;
 constexpr uint32_t kDspInitializedAddr = 0x80386608u;
 constexpr uint32_t kDspAssertPendingAddr = 0x80386610u;
@@ -46,6 +80,12 @@ constexpr uint32_t kAxInitCallback = 0x80126948u;
 constexpr uint32_t kAxResumeCallback = 0x80126954u;
 constexpr uint32_t kAxDoneCallback = 0x801269A8u;
 constexpr uint32_t kAxRequestCallback = 0x801269B8u;
+constexpr uint32_t kAxTaskField10Sda = 0x73FCu;
+constexpr uint32_t kAxTaskField24Sda = 0x7400u;
+constexpr uint32_t kAxTaskField26Sda = 0x73FEu;
+constexpr uint32_t kAxDspLiveFlagSda = 0x66D8u;
+constexpr uint32_t kAxDspLiveAuxSda = 0x66DCu;
+#endif
 
 extern uint32_t g_axTaskPtr;
 

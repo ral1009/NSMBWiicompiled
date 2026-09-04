@@ -1469,16 +1469,16 @@ void InitForAXOut(CpuContext* ctx) {
     Memory::Write32(g_axTaskPtr + 0x34u, kAxRequestCallback);
     if (ctx) {
         const uint32_t r13 = ctx->gpr[13];
-        Memory::Write32(g_axTaskPtr + 0x10u, Memory::Read16(r13 - 0x73fcu));
-        Memory::Write16(g_axTaskPtr + 0x24u, Memory::Read16(r13 - 0x7400u));
-        Memory::Write16(g_axTaskPtr + 0x26u, Memory::Read16(r13 - 0x73feu));
+        Memory::Write32(g_axTaskPtr + 0x10u, Memory::Read16(r13 - kAxTaskField10Sda));
+        Memory::Write16(g_axTaskPtr + 0x24u, Memory::Read16(r13 - kAxTaskField24Sda));
+        Memory::Write16(g_axTaskPtr + 0x26u, Memory::Read16(r13 - kAxTaskField26Sda));
     }
     Instance().ConfigureFromTask(g_axTaskPtr);
     LinkSingleDspTask(g_axTaskPtr);
     if (ctx) {
         const uint32_t r13 = ctx->gpr[13];
-        Memory::Write32(r13 - 0x66d8u, 1);
-        Memory::Write32(r13 - 0x66dcu, 0);
+        Memory::Write32(r13 - kAxDspLiveFlagSda, 1);
+        Memory::Write32(r13 - kAxDspLiveAuxSda, 0);
     }
 }
 

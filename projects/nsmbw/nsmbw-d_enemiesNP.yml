@@ -16,7 +16,7 @@ inputs:
     path: "../NSMBW-Decomp/original/wiimj2d.dol"
   rel:
     path: "../NSMBW-Decomp/original/d_enemiesNP.rel"
-    load_address: 0x809A2D90
+    load_address: 0x809A2CA0
 
 translation:
   allow_unsupported_instructions: false
@@ -24,7 +24,10 @@ translation:
     path: projects/nsmbw/function_map.txt
 
 runtime:
-  native_abi_directories: []
+  # Same native overrides the DOL translation uses: all four RELs are linked into one
+  # executable, so a function overridden there must not be re-translated here.
+  native_registration_root: projects/nsmbw/native
+  native_abi_directories: [projects/nsmbw/native]
 
 output:
   root: build/nsmbw-d_enemiesNP

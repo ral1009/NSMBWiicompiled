@@ -457,6 +457,19 @@ static void apply_xf_projection() {
   }
 
   g_gxState.stateDirty = true;
+  if (aurora::nsmbw_diag_enabled()) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      std::fprintf(stderr,
+                   "[NSMBW_PROJ] type=%d raw=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f proj m0=%.4f,%.4f,%.4f,%.4f "
+                   "m1=%.4f,%.4f,%.4f,%.4f m2=%.4f,%.4f,%.4f,%.4f m3=%.4f,%.4f,%.4f,%.4f\n",
+                   static_cast<int>(g_gxState.projType), raw[0], raw[1], raw[2], raw[3], raw[4], raw[5],
+                   proj.m0[0], proj.m0[1], proj.m0[2], proj.m0[3], proj.m1[0], proj.m1[1], proj.m1[2], proj.m1[3],
+                   proj.m2[0], proj.m2[1], proj.m2[2], proj.m2[3], proj.m3[0], proj.m3[1], proj.m3[2], proj.m3[3]);
+      std::fflush(stderr);
+    }
+  }
 }
 
 // Forward declarations for register handlers
@@ -541,7 +554,12 @@ void process(const u8* data, u32 size, bool bigEndian) {
     case CP_CMD_CALL_DL: {
       // Call display list: 8 bytes (address + size)
       CHECK(pos + 8 <= size, "call DL read overrun");
-      Log.warn("Ignoring nested GX_CMD_CALL_DL");
+      {
+        const u32 nestedAddr = read_u32(data + pos, bigEndian);
+        const u32 nestedSize = read_u32(data + pos + 4, bigEndian);
+        Log.warn("Ignoring nested GX_CMD_CALL_DL target=0x{:08X} size={} at pos {}/{}", nestedAddr,
+                 nestedSize, pos - 1, size);
+      }
       pos += 8;
       break;
     }
@@ -900,6 +918,24 @@ static void handle_bp(u32 value, bool bigEndian) {
     bool dither = bp_get(value, 1, 2) != 0;
     g_gxState.colorUpdate = bp_get(value, 1, 3) != 0;
     g_gxState.alphaUpdate = bp_get(value, 1, 4) != 0;
+    // DIAGNOSTIC (temporary): NSMBW_LOG_BP41 - this is the single authoritative place
+    // g_gxState.colorUpdate/alphaUpdate get set, from the real BP 0x41 (cmode0) register value,
+    // regardless of whether it arrived via the GXSetColorUpdate/GXSetAlphaUpdate C-API HLE (which
+    // read-modify-writes the same register) or a raw FIFO/display-list BP write. The C-API always
+    // logs en=1, yet every draw's pipeline config reads colorUpdate=0 - this traces every BP 0x41
+    // apply (raw 24-bit value + decoded bits) to find what writes it back to 0 in between. Remove
+    // once resolved.
+    if (std::getenv("NSMBW_LOG_BP41") != nullptr) {
+      static int bp41Calls = 0;
+      ++bp41Calls;
+      if (bp41Calls <= 200) {
+        std::fprintf(stderr,
+                     "[NSMBW_BP41] call#%d rawValue=0x%06X colorUpdate=%d alphaUpdate=%d blendEn=%d\n",
+                     bp41Calls, value & 0xFFFFFFu, g_gxState.colorUpdate ? 1 : 0, g_gxState.alphaUpdate ? 1 : 0,
+                     blendEn ? 1 : 0);
+        std::fflush(stderr);
+      }
+    }
     g_gxState.blendFacDst = static_cast<GXBlendFactor>(bp_get(value, 3, 5));
     g_gxState.blendFacSrc = static_cast<GXBlendFactor>(bp_get(value, 3, 8));
     bool subtract = bp_get(value, 1, 11) != 0;
@@ -2201,6 +2237,26 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
                                  HashType matrixTopologySignature,
                                  HashType geometrySignature, bool interpolationIdentityActive) {
   ZoneScoped;
+  // DIAGNOSTIC: NSMBW_LOG_DRAW_FLOW - counts every call into handle_draw_unmerged, and separately
+  // every one that gets dropped here by GX_CULL_ALL before it ever reaches
+  // push_render_pass/push_draw_command.
+  if (std::getenv("NSMBW_LOG_DRAW_FLOW") != nullptr) {
+    static uint64_t totalCalls = 0;
+    static uint64_t cullAllDrops = 0;
+    ++totalCalls;
+    const bool wouldDrop =
+        g_gxState.cullMode == GX_CULL_ALL && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS;
+    if (wouldDrop) ++cullAllDrops;
+    if (totalCalls <= 200 || totalCalls % 2000 == 0) {
+      std::fprintf(stderr,
+                   "[NSMBW_DRAW_FLOW] call#%llu prim=%u fmt=%u vtxCount=%u cullMode=%u wouldDrop=%d "
+                   "totalCalls=%llu cullAllDrops=%llu\n",
+                   (unsigned long long)totalCalls, (unsigned)prim, (unsigned)fmt, (unsigned)vtxCount,
+                   (unsigned)g_gxState.cullMode, wouldDrop ? 1 : 0, (unsigned long long)totalCalls,
+                   (unsigned long long)cullAllDrops);
+      std::fflush(stderr);
+    }
+  }
   // GX_CULL_ALL rasterizes nothing on hardware - no color, no depth.
   if (g_gxState.cullMode == GX_CULL_ALL && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS)
       UNLIKELY {
@@ -2233,6 +2289,45 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
   const auto& info = pipelineState.shaderInfo;
 
   resolve_sampled_textures(info);
+
+  // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation - real bound texture content. Remove
+  // before merging.
+  if (aurora::nsmbw_diag_enabled() && std::getenv("NSMBW_TEX_PEEK") != nullptr) {
+    static int drawsLogged = 0;
+    // Correlate with the vertex-decode finding: prim=GX_QUADS(0x80), fmt=0, vtxCount=4 was the
+    // real full-screen background quad (X spans 0..640, decoded last pass). Log every textured
+    // draw's context for the first several draws so this can be matched by hand, instead of
+    // silently keeping only the first-ever use of each texture slot (which could belong to an
+    // unrelated earlier draw).
+    if (info.sampledTextures.any() && drawsLogged < 12) {
+      ++drawsLogged;
+      for (u32 ti = 0; ti < MaxTextures; ++ti) {
+        if (!info.sampledTextures.test(ti)) {
+          continue;
+        }
+        const auto& bind = g_gxState.textures[ti];
+        if (!bind.ref || !bind.ref->texture) {
+          std::fprintf(stderr,
+                       "[NSMBW_TEXPEEK] draw#%d prim=%u fmt=%u vtxCount=%u slot=%u no resolved texture "
+                       "(sampled but ref/texture null)\n",
+                       drawsLogged, static_cast<unsigned>(prim), static_cast<unsigned>(fmt), vtxCount, ti);
+          std::fflush(stderr);
+          continue;
+        }
+        std::fprintf(stderr,
+                     "[NSMBW_TEXPEEK] draw#%d prim=%u fmt=%u vtxCount=%u slot=%u guestDataPtr=%p guestW=%u "
+                     "guestH=%u guestFmt=%u gpuSize=%ux%u\n",
+                     drawsLogged, static_cast<unsigned>(prim), static_cast<unsigned>(fmt), vtxCount, ti,
+                     bind.texObj.data, bind.texObj.width(), bind.texObj.height(),
+                     static_cast<unsigned>(bind.texObj.format()), bind.ref->size.width, bind.ref->size.height);
+        std::fflush(stderr);
+        char stageBuf[64];
+        std::snprintf(stageBuf, sizeof(stageBuf), "draw%d_slot%u", drawsLogged, ti);
+        webgpu::nsmbw_diag_peek_texture_standalone(bind.ref->texture, bind.ref->size.width, bind.ref->size.height,
+                                                   stageBuf);
+      }
+    }
+  }
 
   const auto bindGroups = build_bind_groups(info);
 

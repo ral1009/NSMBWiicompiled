@@ -2,6 +2,10 @@
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
+#include <cstdlib>
+#include <cstring>
+extern "C" void GxSyncVtxAttrFmtToAurora(uint32_t fmt);
+extern "C" void GxSyncVtxDescToAurora();
 
 // Opcode constants and the stream helpers this file shares with gx_dl.cpp /
 // gx_vertex.cpp; see gx_stream_common.h.
@@ -101,6 +105,24 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     ApplyAuroraVtxStateForRawBegin(vtxFmt);
     EnsureDefaultGxAlphaCompare();
 
+    if (std::getenv("NSMBW_LOG_VERTS") != nullptr) {
+        static int logged = 0;
+        if (logged < 5) {
+            ++logged;
+            const uint8_t* v = packet + 3;
+            const auto& posFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_POS];
+            const auto& texFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_TEX0];
+            RT_LOGF(RT_TAG_GX,
+                    "NSMBW_VERT fmt=%u prim=%u vtxCount=%u posDesc=%u nrmDesc=%u clr0Desc=%u tex0Desc=%u "
+                    "posCnt=%u posType=%u posFrac=%u tex0Cnt=%u tex0Type=%u tex0Frac=%u "
+                    "rawBytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                    (unsigned)vtxFmt, (unsigned)prim, (unsigned)vtxCount, (unsigned)g_hleGxState.vtxDesc[9],
+                    (unsigned)g_hleGxState.vtxDesc[10], (unsigned)g_hleGxState.vtxDesc[11],
+                    (unsigned)g_hleGxState.vtxDesc[13], (unsigned)posFmt.cnt, (unsigned)posFmt.type,
+                    (unsigned)posFmt.frac, (unsigned)texFmt.cnt, (unsigned)texFmt.type, (unsigned)texFmt.frac,
+                    v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
+        }
+    }
     if (!aurora::gx::fifo::submit_raw_draw(prim, vtxFmt, packet + 3, vtxCount, packetBytes - 3u)) {
         return false;
     }
@@ -449,6 +471,13 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             const uint8_t reg = data[1];
             const uint32_t cpValue = ReadBE32(data + 2);
             GxCpDecode::ApplyCpRegWrite(reg, cpValue);
+            // VCD (0x50/0x60) and VAT (0x70-0x97) only reached the HLE's own shadow state.
+            // Aurora needs them too or it cannot size the vertices of the draws that follow.
+            if (reg == 0x50u || reg == 0x60u) {
+                GxSyncVtxDescToAurora();
+            } else if (reg >= 0x70u && reg <= 0x97u) {
+                GxSyncVtxAttrFmtToAurora((reg - 0x70u) & 0x07u);
+            }
             if (!consumeBytes(6, sink)) break;
             continue;
         }
@@ -502,6 +531,18 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
                 }
             }
             if (!consumeBytes(3, sink)) break;
+
+            // A zero-vertex primitive carries no vertex data, so there is nothing to stream and
+            // nothing that would ever clear inBegin: finishVertexIfNeeded only leaves begin mode
+            // from inside `if (vertsRemaining > 0)`. Entering it here wedged the decoder
+            // permanently - and because this whole command loop runs `while (!inBegin)`, every
+            // guest FIFO byte after that point was consumed as vertex data instead of commands.
+            // Observed live: inBegin still true 24s into the frame loop, stuck on vtxFmt 7,
+            // matching the `fmt=7 n=0` draw NSMBW issues during GX bring-up; only 2 draws in an
+            // entire run ever reached the rasteriser.
+            if (vtxCount == 0) {
+                continue;
+            }
 
             g_hleGxState.currentVtxFmt = vtxFmt;
             g_hleGxState.currentPrim = prim;
@@ -720,6 +761,15 @@ static uint32_t ApplyFifoPacketsDirect(const uint8_t* data, uint32_t sizeBytes) 
             const uint16_t countWords = ReadBE16(packet + 1);
             const uint32_t packetBytes = 1u + 4u + (static_cast<uint32_t>(countWords) + 1u) * 4u;
             if (avail < packetBytes) break;
+            // GXCallDisplayList unconditionally calls aurora::gx::fifo::drain(), which blocks
+            // waiting for the frame worker's sealed phase. Every other GX entry point in this
+            // file (e.g. TrySubmitRawDirectFifoDraw, HleFifoWrite's own begin-packet handling)
+            // calls this guard first to lazily start a frame if the boot harness's initial
+            // begin/end pairing left the worker idle with none active; this call site was
+            // missing it, so the very first GX_LOAD_XF_REG_CMD packet issued before any guest
+            // frame had begun deadlocked here forever - drain() waiting on the worker, the
+            // worker waiting on a begin_frame() that no code path was ever going to send.
+            EnsureAuroraFrameActive();
             GXCallDisplayList(packet, packetBytes);
             GXMarkFrameWork();
             offset += packetBytes;

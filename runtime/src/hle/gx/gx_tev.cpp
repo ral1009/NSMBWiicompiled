@@ -96,7 +96,14 @@ extern "C" void GX__SetTevColorS10_80171e70(uint32_t id, uint32_t cp) {
     c.r=(p[0]<<8)|p[1]; c.g=(p[2]<<8)|p[3]; c.b=(p[4]<<8)|p[5]; c.a=(p[6]<<8)|p[7];
     GXSetTevColorS10((GXTevRegID)id, c);
 }
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::SetTevColorS10 -> NSMBW func_80171E70). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 PPC_NATIVE_OVERRIDE_VOID(80171e70, GX__SetTevColorS10_80171e70, (uint32_t id, uint32_t cp), (id, cp));
+#endif
 
 extern "C" void GX__SetTevKColor_80171ed4(uint32_t id, uint32_t cp) {
     if (!TevKColorOk(id)) return;

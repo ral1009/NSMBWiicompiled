@@ -54,13 +54,30 @@ bool is_offscreen() noexcept;
 }
 
 // --- Constants ---
+// __GXData pointer slot. NSMBW's was read straight out of its own GX code: GXDrawDone
+// (0x801C4FE0) and GXCopyDisp (0x801C6290) both load the GXData pointer with
+// `lwz rX, -0x4ef8(r2)`, and r2 is 0x80433360 for NSMBW, giving 0x8042E468. That word is in
+// an initialized data section and holds 0x8038FF00, which is where NSMBW's GXData actually
+// lives - so the slot is verified by its contents, not just by the addressing mode.
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+constexpr uint32_t kGXDataPtrAddr = 0x8042E468;
+#else
 constexpr uint32_t kGXDataPtrAddr = 0x803886C8;
+#endif
 constexpr uint32_t kDlFifoAddr = 0x80344090;
 constexpr uint32_t kDlWritePtrAddr = 0x803440A4;
 constexpr uint32_t kDlCountAddr = 0x803440AC;
 constexpr uint32_t kDlWrapFlagOffset = 0x20;
 constexpr uint32_t kMaxTluts = 20;
+// The byte GXDrawDone spins on. NSMBW's own GXDrawDone clears it at 0x801C5058
+// (`stb r31, -0x4dc0(r13)`) and polls it at 0x801C507C; its finish interrupt handler sets it
+// at 0x801C536C. r13 is 0x8042F980 for NSMBW, giving 0x8042ABC0. Those three sites are the
+// only references to that address in the whole DOL.
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+constexpr uint32_t kGxDrawDoneFlagAddr = 0x8042ABC0;
+#else
 constexpr uint32_t kGxDrawDoneFlagAddr = 0x803867d8;
+#endif
 
 // --- External Declarations ---
 extern "C" void GXInitTexObjTlut(GXTexObj* obj, u32 tlut);

@@ -131,7 +131,7 @@ bool ProcessSleepTimers(CpuContext* cpu)
 
         ClearOutstandingPark(threadPtr);
         cpu->gpr[3] = threadPtr;
-        OSResumeThread_HLE_801aa58c(cpu);
+        OSResumeThread_HLE_801b59a0(cpu);
 
         // OSResumeThread only peels one suspension level, so if the sleeper's count is inflated
         // (failed park, overlapping suspend) dropping the timer here would strand it. Keep it armed
@@ -215,7 +215,7 @@ bool ProcessSleepTimers(CpuContext* cpu)
                       << std::dec << " park-shaped with no pending wake timer for 100ms; "
                       << "resuming lost sleeper" << std::endl;
             cpu->gpr[3] = threadPtr;
-            OSResumeThread_HLE_801aa58c(cpu);
+            OSResumeThread_HLE_801b59a0(cpu);
         }
     }
 
@@ -274,7 +274,7 @@ extern "C" void OS__SleepTicks_HLE_801aaca8(CpuContext* ctx)
         ScheduleSleepTimer(currentThread, ticks);
         MarkParkOutstanding(currentThread);
         cpu->gpr[3] = currentThread;
-        OSSuspendThread_HLE_801aa6a8(cpu);
+        OSSuspendThread_HLE_801b5c40(cpu);
 
         // Defence in depth: SelectThread has other refusal paths (context mismatch, drained run
         // queues), and there's a fire-before-park race where the timer fires and its resume is
@@ -442,7 +442,7 @@ extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
         
         // Match the original SDK behavior: sleep yields via SelectThread(0).
         cpu->gpr[3] = 0;
-        SelectThread_801a9c08(cpu);
+        SelectThread_801b4fe0(cpu);
 
         // Defence in depth: SelectThread has other paths that return without switching (context
         // mismatch, uninitialised thread system, a run queue that drained mid-enqueue). None of

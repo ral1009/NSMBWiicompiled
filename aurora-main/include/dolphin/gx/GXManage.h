@@ -11,6 +11,10 @@ typedef void (*GXDrawSyncCallback)(u16 token);
 typedef void (*GXDrawDoneCallback)(void);
 
 GXFifoObj* GXInit(void* base, u32 size);
+// Seeds the persistent GX shadow-register-ID bytes GXInit() normally seeds internally. Exposed so
+// native product bootstrap can call it once, unconditionally, for games whose own GXInit never
+// routes through this native override (see GXManage.cpp for the full explanation).
+void GXInitShadowRegisterIds(void);
 GXDrawSyncCallback GXSetDrawSyncCallback(GXDrawSyncCallback cb);
 GXDrawDoneCallback GXSetDrawDoneCallback(GXDrawDoneCallback cb);
 void GXDrawDone(void);

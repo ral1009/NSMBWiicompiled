@@ -40,7 +40,14 @@ extern "C" void GX__DrawDone_8016eab0() {
     try { Memory::Write8(kGxDrawDoneFlagAddr, 0); } catch (...) {}
     GXDrawDone(); GX__FinishInterruptHandler_8016ed94();
 }
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::DrawDone -> NSMBW saveCurrentHeap__5mHeapFv). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 PPC_NATIVE_OVERRIDE_VOID(8016eab0, GX__DrawDone_8016eab0, (), ());
+#endif
 
 extern "C" void GX__PixModeSync_8016eb70() {
     try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {}

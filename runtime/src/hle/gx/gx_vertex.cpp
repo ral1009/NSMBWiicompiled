@@ -293,7 +293,14 @@ extern "C" void GX__End_80044b30() { g_hleGxState.inBegin=false; GXEnd(); }
 PPC_NATIVE_OVERRIDE_VOID(80044b30, GX__End_80044b30, (), ());
 
 extern "C" void GX__End_80048c30() { GX__End_80044b30(); }
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::End -> NSMBW setHipAttackOnEnemy__10daPlBase_c). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 PPC_NATIVE_OVERRIDE_VOID(80048c30, GX__End_80048c30, (), ());
+#endif
 
 extern "C" void GX__DrawSphere_80172a30(uint32_t numMajor, uint32_t numMinor) {
     constexpr uint32_t kAttrCount = 26;

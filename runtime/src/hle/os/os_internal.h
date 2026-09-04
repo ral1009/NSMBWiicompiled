@@ -38,15 +38,52 @@ constexpr uint32_t kOSRunningContextAddr = 0x800000e4u;  // Currently running th
 
 constexpr uint32_t kDefaultThreadContextAddr = 0x80347498u;
 constexpr uint32_t kIdleThreadContextAddr = 0x803478b0u;
-constexpr uint32_t kThreadQueueArrayAddr = 0x803477b0u;
+// kThreadQueueArrayAddr / kSwitchThreadCallbackPtrAddr / kSchedulerReschedCounterAddr /
+// kSchedulerPendingFlagAddr / kSchedulerIdleFlagAddr were NSMBW-wrong (this file is shared
+// with the mkwii project and these five were never re-derived for NSMBW's own link layout).
+// The guest's own SelectThread body (the real address is 0x801B4FE0 - see the
+// PPC_NATIVE_OVERRIDE_VOID in os_scheduler.cpp - NOT 0x801A9C08, which the override was
+// wrongly bound to and disassembles to an unrelated cluster of mfmsr/mtmsr/mtspr leaf
+// functions) was busy-waiting forever on 0x8042A9E8, a plain guest global this override
+// never touched, while this override's own idle loop (which does poll VI/Audio/Alarm)
+// wrote a completely different, dead address. Corrected by disassembling 0x801B4FE0 (main.dol)
+// and reading off the real lis/addi/lwz immediates it uses for each of these fields.
+constexpr uint32_t kThreadQueueArrayAddr = 0x8038EF50u;
 constexpr size_t kThreadQueueArrayBytes = 0x100u;
-constexpr uint32_t kSwitchThreadCallbackPtrAddr = 0x80385ae0u;
-constexpr uint32_t kSchedulerReschedCounterAddr = 0x8038691cu;
-constexpr uint32_t kSchedulerPendingFlagAddr = 0x80386920u;
+constexpr uint32_t kSwitchThreadCallbackPtrAddr = 0x80429828u;
+constexpr uint32_t kSchedulerReschedCounterAddr = 0x8042A9E4u;
+constexpr uint32_t kSchedulerPendingFlagAddr = 0x8042A9E8u;
 // RVL OS uses this as the OSDisableScheduler/OSEnableScheduler nesting count.
 // SelectThread exits early while the count is non-zero.
-constexpr uint32_t kSchedulerIdleFlagAddr = 0x80386918u;
+constexpr uint32_t kSchedulerIdleFlagAddr = 0x8042A9E0u;
 constexpr uint32_t kAlarmQueueOffsetFromR13 = 0x6360u;
+
+// The OSAlarm HLE is not bound for NSMBW. Two independent facts:
+//   * no guest instruction anywhere in the translated output references r13-0x6360 (the queue base
+//     this pump walks), so that address is not NSMBW's alarm queue; the memory there belongs to
+//     something else and reads back as ASCII ("iceo"/"iceg").
+//   * the OSSetAlarm override address (0x801A0870) is not OSSetAlarm either - it disassembles to a
+//     small leaf that computes `base + index*0x600 + 0x480` and stores it, the same wrong-address
+//     family as the scheduler/thread bindings corrected this session.
+// So nothing ever inserts into this queue and walking it just dereferences unrelated data - it
+// produced ~1850 caught AccessViolations in 30s, one per idle-loop pass. Until the real alarm
+// addresses are identified for this title the pump stays inert; that is strictly more correct than
+// treating arbitrary memory as an alarm list. Flip this once OSSetAlarm/the queue base are known.
+constexpr bool kAlarmQueueBoundForTitle = false;
+
+// True for an address that could plausibly be a guest RAM object pointer (MEM1/MEM2), used to
+// reject a bogus queue head before dereferencing it. kAlarmQueueOffsetFromR13 has not been
+// verified against NSMBW's own alarm code the way the scheduler/thread addresses were this
+// session, and on NSMBW it currently reads back ASCII text ("iceo"/"iceg") rather than a pointer,
+// so ProcessAlarmQueue/SanitizeAlarmQueue faulted on every idle-loop pass. Treating an implausible
+// head as "no alarms" keeps the idle loop running instead of throwing hundreds of times a second;
+// if NSMBW turns out to genuinely need alarms, the fix is to find the real queue address, not to
+// loosen this check.
+inline bool IsPlausibleGuestPointer(uint32_t addr)
+{
+    return (addr >= 0x80000000u && addr < 0x81800000u) ||
+           (addr >= 0x90000000u && addr < 0x94000000u);
+}
 
 constexpr uint32_t kThreadStateOffset = 0x2C8u;
 constexpr uint32_t kThreadAttrOffset = 0x2CAu;
@@ -151,8 +188,8 @@ extern "C" int32_t OS__RestoreInterrupts_801a65d4(int32_t level);
 extern "C" void OS__ClearContext_801a2098(uint32_t contextAddr);
 extern "C" void OS__SetCurrentContext_801a1e70(uint32_t contextAddr);
 extern "C" [[noreturn]] void OS__LoadContext_801a1f58(CpuContext* ctx);
-extern "C" void OSSuspendThread_HLE_801aa6a8(CpuContext* ctx);
-extern "C" void OSResumeThread_HLE_801aa58c(CpuContext* ctx);
+extern "C" void OSSuspendThread_HLE_801b5c40(CpuContext* ctx);
+extern "C" void OSResumeThread_HLE_801b59a0(CpuContext* ctx);
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx);
-extern "C" void SelectThread_801a9c08(CpuContext* ctx);
+extern "C" void SelectThread_801b4fe0(CpuContext* ctx);

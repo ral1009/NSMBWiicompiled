@@ -5,14 +5,39 @@
 #include <aurora/aurora.h>
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
+#include <sstream>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 using namespace std::string_view_literals;
+
+namespace aurora {
+// TEMPORARY DIAGNOSTIC: NSMBW present-source-override call-order isolation. Remove before merging.
+inline std::atomic<uint64_t> g_nsmbwDiagSeq{0};
+inline bool nsmbw_diag_enabled() noexcept {
+  static const bool enabled = std::getenv("NSMBW_LOG_PRESENT_SEQ") != nullptr;
+  return enabled;
+}
+inline void nsmbw_diag_log(const char* site, const char* detail = "") {
+  if (!nsmbw_diag_enabled()) {
+    return;
+  }
+  const uint64_t seq = g_nsmbwDiagSeq.fetch_add(1, std::memory_order_relaxed);
+  std::ostringstream tid;
+  tid << std::this_thread::get_id();
+  std::fprintf(stderr, "[NSMBW_SEQ] %06llu thread=%s site=%s %s\n",
+               static_cast<unsigned long long>(seq), tid.str().c_str(), site, detail);
+  std::fflush(stderr);
+}
+} // namespace aurora
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #ifndef SBIG

@@ -1,22 +1,50 @@
 // gx_pixel.cpp - Pixel Processing, Blending, and Fog
 #include "gx_internal.h"
+#include "runtime_log.h"
 
 // ============================================================================
 // Blend Mode
 // ============================================================================
 
 extern "C" void GX__SetBlendMode_8017277c(uint32_t t, uint32_t s, uint32_t d, uint32_t op) {
+    if (std::getenv("NSMBW_TEX_PEEK") != nullptr) {
+        static int logged = 0;
+        if (logged < 20) {
+            ++logged;
+            RT_LOGF(RT_TAG_GX, "NSMBW_BLEND type=%u src=%u dst=%u op=%u\n", t, s, d, op);
+        }
+    }
     GXSetBlendMode(static_cast<GXBlendMode>(t), static_cast<GXBlendFactor>(s),
                    static_cast<GXBlendFactor>(d), static_cast<GXLogicOp>(op));
 }
 PPC_NATIVE_OVERRIDE_VOID(8017277c, GX__SetBlendMode_8017277c, (uint32_t t, uint32_t s, uint32_t d, uint32_t op), (t, s, d, op));
 
 extern "C" void GX__SetColorUpdate_801727cc(uint32_t en) {
+    // DIAGNOSTIC (temporary): NSMBW_LOG_COLOR_UPDATE - the widened NSMBW_LOG_TEV_RAS survey found
+    // colorUpdate=0 (color writes masked off) on EVERY distinct pipeline config across a whole
+    // 20s run, which alone explains a persistently black framebuffer regardless of TEV/depth/
+    // viewport correctness. This logs every guest call into this HLE entry point (address, value,
+    // call count) to determine whether the game ever calls GXSetColorUpdate(TRUE) at all, or calls
+    // it and something else resets it back to FALSE afterward. Remove once resolved.
+    if (std::getenv("NSMBW_LOG_COLOR_UPDATE") != nullptr) {
+        static int calls = 0;
+        ++calls;
+        if (calls <= 50) {
+            RT_LOGF(RT_TAG_GX, "NSMBW_COLOR_UPDATE call#%d en=%u\n", calls, en);
+        }
+    }
     GXSetColorUpdate(static_cast<GXBool>(en));
 }
 PPC_NATIVE_OVERRIDE_VOID(801727cc, GX__SetColorUpdate_801727cc, (uint32_t en), (en));
 
 extern "C" void GX__SetAlphaUpdate_801727f8(uint32_t en) {
+    if (std::getenv("NSMBW_LOG_COLOR_UPDATE") != nullptr) {
+        static int calls = 0;
+        ++calls;
+        if (calls <= 50) {
+            RT_LOGF(RT_TAG_GX, "NSMBW_ALPHA_UPDATE call#%d en=%u\n", calls, en);
+        }
+    }
     GXSetAlphaUpdate(static_cast<GXBool>(en));
 }
 PPC_NATIVE_OVERRIDE_VOID(801727f8, GX__SetAlphaUpdate_801727f8, (uint32_t en), (en));

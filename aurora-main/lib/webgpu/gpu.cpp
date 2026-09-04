@@ -230,6 +230,12 @@ const TextureWithSampler& present_source() noexcept {
 }
 
 PresentSource current_present_source() noexcept {
+  // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation. Remove before merging.
+  if (std::getenv("NSMBW_LOG_PRESENT_SRC") != nullptr) {
+    Log.warn("[NSMBW_DIAG] current_present_source active={} bindGroup={} overrideTex={}",
+             g_presentSourceOverrideActive, static_cast<const void*>(g_presentSourceOverrideBindGroup.Get()),
+             static_cast<const void*>(g_presentSourceOverrideTexture.Get()));
+  }
   if (g_presentSourceOverrideActive && g_presentSourceOverrideBindGroup != nullptr) {
     return {
         .bindGroup = g_presentSourceOverrideBindGroup,
@@ -262,6 +268,114 @@ void clear_present_source_override() noexcept {
   g_presentSourceOverrideTexture = {};
   g_presentSourceOverrideSize = {};
   g_presentSourceOverrideFormat = wgpu::TextureFormat::Undefined;
+}
+
+// TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation, "where does magenta disappear" GPU pixel
+// readback. Reads a small RGBA8 patch near the center of `tex` and logs it once the copy (recorded
+// into the CALLER's existing, not-yet-submitted encoder, so it lands in the correct place in the
+// frame's real command order instead of racing ahead of it) actually completes on the GPU. Remove
+// before merging.
+// Standalone variant for content that is not frame-order-sensitive (e.g. an uploaded texture,
+// unlike a render target that gets rewritten every frame): creates and submits its own encoder.
+void nsmbw_diag_peek_texture_standalone(const wgpu::Texture& tex, uint32_t texWidth, uint32_t texHeight,
+                                        const char* stage) {
+  const wgpu::CommandEncoderDescriptor encDesc{.label = "NSMBW diag peek standalone encoder"};
+  wgpu::CommandEncoder encoder = g_device.CreateCommandEncoder(&encDesc);
+  nsmbw_diag_peek_texture(encoder, tex, texWidth, texHeight, stage);
+  const wgpu::CommandBufferDescriptor cmdDesc{.label = "NSMBW diag peek standalone cmd"};
+  wgpu::CommandBuffer cmdBuf = encoder.Finish(&cmdDesc);
+  g_queue.Submit(1, &cmdBuf);
+}
+
+void nsmbw_diag_peek_texture(const wgpu::CommandEncoder& encoder, const wgpu::Texture& tex, uint32_t texWidth,
+                             uint32_t texHeight, const char* stage) {
+  if (!tex || texWidth == 0 || texHeight == 0) {
+    std::fprintf(stderr, "[NSMBW_PEEK] %s: null texture or zero size (%ux%u), skipping\n", stage, texWidth,
+                 texHeight);
+    std::fflush(stderr);
+    return;
+  }
+  // DIAGNOSTIC WIDENING (temporary): sample the whole texture, not just a 64x64 top-left corner -
+  // a fixed corner patch cannot tell "nothing rendered" from "content rendered somewhere else on
+  // screen", which matters for the NSMBW_FORCE_ALPHA_255 test (content may be centered, not at
+  // origin). Still clamp to the real texture size so this stays safe against small textures (e.g.
+  // a 4x4 solid-color tile) - a fixed 64x64 patch was previously an out-of-bounds
+  // CopyTextureToBuffer against those (silently rejected by WGPU validation, readback never fires).
+  const uint32_t kPatchW = std::min<uint32_t>(texWidth, 640u);
+  const uint32_t kPatchH = std::min<uint32_t>(texHeight, 480u);
+  const uint32_t kBytesPerRow = ((kPatchW * 4u + 255u) / 256u) * 256u; // Dawn's row-alignment rule
+  const uint32_t px = 0;
+  const uint32_t py = 0;
+
+  const wgpu::BufferDescriptor bufDesc{
+      .label = "NSMBW diag peek readback",
+      .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead,
+      .size = kBytesPerRow * kPatchH,
+  };
+  wgpu::Buffer readback = g_device.CreateBuffer(&bufDesc);
+
+  const wgpu::TexelCopyTextureInfo src{
+      .texture = tex,
+      .origin = wgpu::Origin3D{.x = px, .y = py},
+  };
+  const wgpu::TexelCopyBufferInfo dst{
+      .layout =
+          wgpu::TexelCopyBufferLayout{
+              .bytesPerRow = kBytesPerRow,
+              .rowsPerImage = kPatchH,
+          },
+      .buffer = readback,
+  };
+  const wgpu::Extent3D copySize{.width = kPatchW, .height = kPatchH, .depthOrArrayLayers = 1};
+  encoder.CopyTextureToBuffer(&src, &dst, &copySize);
+  // Map now; the callback only fires once whoever owns `encoder` finishes and submits it and the
+  // queue actually executes the copy above - this call does not itself submit anything.
+
+  const std::string stageStr(stage);
+  readback.MapAsync(
+      wgpu::MapMode::Read, 0, bufDesc.size, wgpu::CallbackMode::AllowSpontaneous,
+      [readback, stageStr, px, py, kPatchW, kPatchH, kBytesPerRow](wgpu::MapAsyncStatus status,
+                                                                    wgpu::StringView message) {
+        if (status != wgpu::MapAsyncStatus::Success) {
+          std::fprintf(stderr, "[NSMBW_PEEK] %s: map failed status=%d msg=%.*s\n", stageStr.c_str(),
+                       static_cast<int>(status), static_cast<int>(message.length), message.data);
+          std::fflush(stderr);
+          return;
+        }
+        const auto* bytes = static_cast<const uint8_t*>(readback.GetConstMappedRange(0, kBytesPerRow * kPatchH));
+        if (bytes != nullptr) {
+          uint32_t nonBlackCount = 0;
+          uint32_t firstNonBlackX = UINT32_MAX, firstNonBlackY = UINT32_MAX;
+          uint8_t firstR = 0, firstG = 0, firstB = 0, firstA = 0;
+          uint8_t maxR = 0, maxG = 0, maxB = 0;
+          for (uint32_t y = 0; y < kPatchH; ++y) {
+            for (uint32_t x = 0; x < kPatchW; ++x) {
+              const uint8_t* p = bytes + y * kBytesPerRow + x * 4;
+              maxR = std::max(maxR, p[0]);
+              maxG = std::max(maxG, p[1]);
+              maxB = std::max(maxB, p[2]);
+              if (p[0] != 0 || p[1] != 0 || p[2] != 0) {
+                ++nonBlackCount;
+                if (firstNonBlackX == UINT32_MAX) {
+                  firstNonBlackX = x;
+                  firstNonBlackY = y;
+                  firstR = p[0];
+                  firstG = p[1];
+                  firstB = p[2];
+                  firstA = p[3];
+                }
+              }
+            }
+          }
+          std::fprintf(stderr,
+                       "[NSMBW_PEEK] %s: origin=(%u,%u) patch=%ux%u nonBlackPx=%u/%u maxRGB=%u,%u,%u "
+                       "firstNonBlackLocalXY=(%u,%u) firstRGBA=%u,%u,%u,%u\n",
+                       stageStr.c_str(), px, py, kPatchW, kPatchH, nonBlackCount, kPatchW * kPatchH, maxR, maxG,
+                       maxB, firstNonBlackX, firstNonBlackY, firstR, firstG, firstB, firstA);
+          std::fflush(stderr);
+        }
+        readback.Unmap();
+      });
 }
 
 Viewport calculate_present_viewport_for_aspect(uint32_t surface_width, uint32_t surface_height,

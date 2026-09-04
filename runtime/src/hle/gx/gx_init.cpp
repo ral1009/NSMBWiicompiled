@@ -24,6 +24,18 @@ extern "C" GXFifoObj* GXInit(void* base, u32 size);
  */
 extern "C" uint32_t GX__Init_8016b850(uint32_t fifoBase, uint32_t fifoSize)
 {
+    // DIAGNOSTIC (temporary): NSMBW_LOG_GXINIT_CALLS - GXInit() (the C++ implementation this HLE
+    // entry point calls) memsets the entire GX shadow-register struct to 0 on every call, including
+    // the cmode0 (blend/colorUpdate/alphaUpdate) register. The colorUpdate investigation found the
+    // C-API always sets colorUpdate/alphaUpdate to TRUE, yet every draw's pipeline state reads them
+    // as FALSE - this checks whether GXInit is being invoked more than once, which would wipe out
+    // an earlier call's default-state setup (including its colorUpdate=TRUE) mid-sequence. Remove
+    // once resolved.
+    if (std::getenv("NSMBW_LOG_GXINIT_CALLS") != nullptr) {
+        static int gxInitCalls = 0;
+        ++gxInitCalls;
+        RT_LOGF(RT_TAG_GX, "NSMBW_GXINIT call#%d fifoBase=0x%08X fifoSize=0x%08X\n", gxInitCalls, fifoBase, fifoSize);
+    }
     constexpr uint32_t kFifoObjAddr = 0x80343740u;
     constexpr uint32_t kGXDataAddr = 0x803437C0u;
     constexpr uint32_t kGXDataSize = 0x600u;

@@ -35,7 +35,14 @@ extern "C" void GX__SetTevIndWarp_80171ba0(uint32_t ts, uint32_t is, uint32_t so
     GXSetTevIndWarp((GXTevStageID)std::min(ts, 15u), (GXIndTexStageID)std::min(is, 3u),
         (GXBool)so, (GXBool)rm, (GXIndTexMtxID)ms);
 }
+#ifndef MKW_RUNTIME_PRODUCT_NSMBW
+// Not registered for NSMBW: this MKW address is a live, unrelated NSMBW function
+// (GX::SetTevIndWarp -> NSMBW func_80171BA0). The lowercase hex in the macro means the generated
+// func_ symbol never collided with the translator's uppercase one, so this went
+// unnoticed - but REGISTER_NATIVE_FUNCTION still binds the address, which would send
+// any indirect call to that NSMBW function into MKW's GX code.
 PPC_NATIVE_OVERRIDE_VOID(80171ba0, GX__SetTevIndWarp_80171ba0, (uint32_t ts, uint32_t is, uint32_t so, uint32_t rm, uint32_t ms), (ts, is, so, rm, ms));
+#endif
 
 extern "C" void GX__SetTevIndirect_801717ac(uint32_t ts, uint32_t is, uint32_t f, uint32_t bs, uint32_t ms, uint32_t ws, uint32_t wt, uint32_t ap, uint32_t il, uint32_t as) {
     GXSetTevIndirect((GXTevStageID)std::min(ts,15u), (GXIndTexStageID)std::min(is,3u), (GXIndTexFormat)f,

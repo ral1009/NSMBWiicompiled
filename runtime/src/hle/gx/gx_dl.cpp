@@ -9,6 +9,8 @@
 // The display-list scan cache validates a cached scan against the live guest
 // bytes with a 64-bit XXH3 digest (see GxDisplayListScanCache::CanReuse).
 #include <xxhash.h>
+extern "C" void GxSyncVtxAttrFmtToAurora(uint32_t fmt);
+extern "C" void GxSyncVtxDescToAurora();
 
 namespace aurora::gx::fifo {
 bool in_display_list();
@@ -821,7 +823,15 @@ struct DlInterpretVisitor {
     bool OnNop(uint8_t) { return true; }
     bool OnInvalidateVertexCache(uint8_t) { return true; }
     bool OnUnknownCommand(uint8_t) { return true; }
-    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t value) { ApplyCpRegWrite(reg, value); return true; }
+    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t value) {
+        ApplyCpRegWrite(reg, value);
+        if (reg == 0x50u || reg == 0x60u) {
+            GxSyncVtxDescToAurora();
+        } else if (reg >= 0x70u && reg <= 0x97u) {
+            GxSyncVtxAttrFmtToAurora((reg - 0x70u) & 0x07u);
+        }
+        return true;
+    }
     bool OnBpReg(const uint8_t*, uint32_t bpWord) {
         GXApplyBPReg(static_cast<uint8_t>(bpWord >> 24), bpWord & 0x00FFFFFFu);
         return true;
@@ -1187,6 +1197,53 @@ static void ApplyAuroraVtxAttrFmtForDisplayList(GXVtxFmt fmt, bool mixed) {
         return;
     }
     ApplyAuroraVtxAttrFmtAll();
+}
+
+// Publish the HLE's vertex descriptor and every vertex attribute format to Aurora.
+//
+// Aurora keeps its own g_gxState.vtxFmts / vtxDesc and needs them to compute a draw's vertex
+// size. They were only ever populated from the display-list path (ApplyAuroraVtxDesc /
+// ApplyAuroraVtxAttrFmtForDisplayList inside GX__CallDisplayList_80172f64). NSMBW drives GX
+// through the raw gather pipe instead, so that path never runs: GxCpDecode's VatA/VatB/VatC
+// updated g_hleGxState.vtxAttrFmt from the CP register writes, Aurora never heard about them,
+// and its vtxFmts stayed zero. It then computed a nonsense vertex size for the first draw using
+// a format the guest had configured (observed: fmt 6 with every attr (0,0), vtxSize 3,
+// vtxCount 16084), truncated the draw, and drain() discarded the rest of the buffer - which
+// desynchronised the stream. Only 2 draws in an entire run ever reached the rasteriser.
+// Publish one vertex attribute format row, or the vertex descriptor, from the HLE's shadow
+// state to Aurora after a raw gather-pipe CP register write.
+//
+// Why the mirror has to be cleared first: SyncAppliedVtxStateFromHleReal() memcpys
+// g_hleGxState.vtxAttrFmt straight into s_appliedVtxAttrFmt and sets s_appliedVtxAttrFmtValid /
+// s_appliedVtxStateMatchesHle, without calling Aurora's GXSetVtxAttrFmt. That is sound on the
+// display-list route, where ApplyAuroraVtxAttrFmt* has already pushed the same values - the
+// memcpy is just recording what was pushed. NSMBW drives GX through the raw gather pipe, so
+// nothing pushes first: the memcpy marks all eight rows "applied" while Aurora's
+// g_gxState.vtxFmts is still empty, and every later ApplyAuroraVtxAttrFmt skips on
+// SameVtxAttrFmt(mirror, hle) - a comparison of the HLE row against a copy of itself.
+//
+// Observed effect: Aurora sized format 5 as GX_POS_XY/GX_U8 + GX_U8 texcoord = 3 bytes per
+// vertex, while the guest's VAT A for format 5 (CP 0x75 = 0x41377009) is GX_POS_XYZ/GX_F32, so
+// position alone is 12. A 1271-vertex draw then consumed 3813 bytes instead of its real span and
+// left the parser mid-vertex, which is what desynchronised the whole FIFO.
+//
+// Clearing only s_appliedVtxAttrFmtValid is not enough: ApplyAuroraVtxAttrFmt sets it true again
+// at the end of its own call, so in an ApplyAuroraVtxAttrFmtAll sweep only format 0 would be
+// re-pushed and 1..7 would still compare against the stale mirror. Zeroing the row itself is
+// what makes the push happen, and doing it per-format keeps this off the all-formats path.
+extern "C" void GxSyncVtxAttrFmtToAurora(uint32_t fmt) {
+    if (fmt >= 8u) {
+        return;
+    }
+    std::memset(&s_appliedVtxAttrFmt[fmt][0], 0, sizeof(s_appliedVtxAttrFmt[fmt]));
+    s_appliedVtxStateMatchesHle = false;
+    ApplyAuroraVtxAttrFmt(static_cast<GXVtxFmt>(fmt));
+}
+
+extern "C" void GxSyncVtxDescToAurora() {
+    s_appliedVtxDescValid = false;
+    s_appliedVtxStateMatchesHle = false;
+    ApplyAuroraVtxDesc();
 }
 
 static void SubmitLytDrawPacket(const uint8_t* packet, uint32_t packetBytes) {

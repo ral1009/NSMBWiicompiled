@@ -13,6 +13,49 @@ static GXFifoObj sFifoObj;
 extern "C" {
 static GXDrawDoneCallback DrawDoneCB = nullptr;
 
+// Seeds every persistent shadow register's register-ID byte (bits 24-31 of each __gx field, e.g.
+// 0x41 for cmode0/blend-mode) so that GX_WRITE_RAS_REG(__gx->reg) tags its push with the correct
+// BP register address. On real hardware each SDK function's generated code has its register ID
+// baked in as a compile-time immediate; this emulation instead tracks a persistent, mutable value
+// per register and relies on this one-time seed. Root-caused for NSMBW: this used to run only
+// inside GXInit() below, but NSMBW's own guest GXInit call is never routed through this native
+// override (no NSMBW-address binding for it exists), so the guest's translated GXInit runs as
+// plain PPC code that calls the individually-bound GXSetColorUpdate/GXSetBlendMode/etc. HLE
+// functions directly - none of which know to seed IDs themselves. Left unseeded, every one of
+// those functions' GX_WRITE_RAS_REG(__gx->cmode0) pushes carried an ID byte of 0x00 instead of
+// 0x41, so command_processor.cpp's BP decode applied their payload to register 0x00 (genMode)
+// instead of 0x41 (cmode0) - which is why GXSetColorUpdate(TRUE) never reached g_gxState.colorUpdate,
+// and why genMode's own fields (including cullMode) kept getting corrupted by unrelated payload
+// bits from those misrouted writes. Called unconditionally at native engine bootstrap (independent
+// of whether the guest's own GXInit ever runs) so this holds regardless of that binding gap; also
+// still called from GXInit() below so real games whose GXInit IS natively bound behave exactly as
+// before (re-seeding here is idempotent).
+void GXInitShadowRegisterIds() {
+  u32 i;
+  SET_REG_FIELD(0, __gx->genMode, 8, 24, 0x00);
+  SET_REG_FIELD(0, __gx->bpMask, 8, 24, 0x0F);
+  SET_REG_FIELD(0, __gx->lpSize, 8, 24, 0x22);
+  for (i = 0; i < 16; i++) {
+    SET_REG_FIELD(0, __gx->tevc[i], 8, 24, 0xC0 + i * 2);
+    SET_REG_FIELD(0, __gx->teva[i], 8, 24, 0xC1 + i * 2);
+    SET_REG_FIELD(0, __gx->tevKsel[i / 2], 8, 24, 0xF6 + i / 2);
+    SET_REG_FIELD(0, __gx->tref[i / 2], 8, 24, 0x28 + i / 2);
+  }
+  SET_REG_FIELD(0, __gx->iref, 8, 24, 0x27);
+  for (i = 0; i < 8; i++) {
+    SET_REG_FIELD(0, __gx->suTs0[i], 8, 24, 0x30 + i * 2);
+    SET_REG_FIELD(0, __gx->suTs1[i], 8, 24, 0x31 + i * 2);
+  }
+  SET_REG_FIELD(0, __gx->suScis0, 8, 24, 0x20);
+  SET_REG_FIELD(0, __gx->suScis1, 8, 24, 0x21);
+  SET_REG_FIELD(0, __gx->cmode0, 8, 24, 0x41);
+  SET_REG_FIELD(0, __gx->cmode1, 8, 24, 0x42);
+  SET_REG_FIELD(0, __gx->zmode, 8, 24, 0x40);
+  SET_REG_FIELD(0, __gx->peCtrl, 8, 24, 0x43);
+  SET_REG_FIELD(0, __gx->IndTexScale0, 8, 24, 0x25);
+  SET_REG_FIELD(0, __gx->IndTexScale1, 8, 24, 0x26);
+}
+
 GXFifoObj* GXInit(void* base, u32 size) {
   GXRenderModeObj* rmode;
   f32 identity_mtx[3][4];
@@ -36,11 +79,8 @@ GXFifoObj* GXInit(void* base, u32 size) {
 
   // Initialize shadow registers: genMode, bpMask, lpSize
   __gx->genMode = 0;
-  SET_REG_FIELD(0, __gx->genMode, 8, 24, 0x00);
   __gx->bpMask = 0xFF;
-  SET_REG_FIELD(0, __gx->bpMask, 8, 24, 0x0F);
   __gx->lpSize = 0;
-  SET_REG_FIELD(0, __gx->lpSize, 8, 24, 0x22);
 
   // TEV / tref / ksel shadow registers
   for (i = 0; i < 16; i++) {
@@ -48,31 +88,16 @@ GXFifoObj* GXInit(void* base, u32 size) {
     __gx->teva[i] = 0;
     __gx->tref[i / 2] = 0;
     __gx->texmapId[i] = GX_TEXMAP_NULL;
-    SET_REG_FIELD(0, __gx->tevc[i], 8, 24, 0xC0 + i * 2);
-    SET_REG_FIELD(0, __gx->teva[i], 8, 24, 0xC1 + i * 2);
-    SET_REG_FIELD(0, __gx->tevKsel[i / 2], 8, 24, 0xF6 + i / 2);
-    SET_REG_FIELD(0, __gx->tref[i / 2], 8, 24, 0x28 + i / 2);
   }
 
   // iref and SU texture scale registers
   __gx->iref = 0;
-  SET_REG_FIELD(0, __gx->iref, 8, 24, 0x27);
   for (i = 0; i < 8; i++) {
     __gx->suTs0[i] = 0;
     __gx->suTs1[i] = 0;
-    SET_REG_FIELD(0, __gx->suTs0[i], 8, 24, 0x30 + i * 2);
-    SET_REG_FIELD(0, __gx->suTs1[i], 8, 24, 0x31 + i * 2);
   }
 
-  // Other BP command byte init
-  SET_REG_FIELD(0, __gx->suScis0, 8, 24, 0x20);
-  SET_REG_FIELD(0, __gx->suScis1, 8, 24, 0x21);
-  SET_REG_FIELD(0, __gx->cmode0, 8, 24, 0x41);
-  SET_REG_FIELD(0, __gx->cmode1, 8, 24, 0x42);
-  SET_REG_FIELD(0, __gx->zmode, 8, 24, 0x40);
-  SET_REG_FIELD(0, __gx->peCtrl, 8, 24, 0x43);
-  SET_REG_FIELD(0, __gx->IndTexScale0, 8, 24, 0x25);
-  SET_REG_FIELD(0, __gx->IndTexScale1, 8, 24, 0x26);
+  GXInitShadowRegisterIds();
 
   __gx->dirtyState = 0;
   __gx->dirtyVAT = 0;

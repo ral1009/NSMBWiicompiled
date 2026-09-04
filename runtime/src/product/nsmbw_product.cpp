@@ -10,6 +10,11 @@
 // through RuntimeCrash::FatalMissingGuestTarget (unimplemented HLE calls) rather than silently -
 // that failure, once we see it, is Phase 6's actual starting point.
 #include "abi_bridge.h"
+#include "runtime_config.h"
+#include <cstring>
+#include <cstdlib>
+#include <vector>
+#include <fstream>
 #include "fiber_manager.h"
 #include "memory.h"
 #include "runtime_product.h"
@@ -34,6 +39,15 @@
 #endif
 
 extern "C" void InitializeDataSections();
+extern "C" uint32_t g_dvdFstReservedBase;
+extern "C" uint32_t g_dvdFstReservedSize;
+extern "C" void DVDInit_8015EA1C();
+// See GXManage.cpp for the full explanation: NSMBW's own guest GXInit call is never routed
+// through the native GXInit() override (no NSMBW-address binding for it exists), so the shadow
+// GX register-ID bytes GXInit() normally seeds internally never get set, which was silently
+// misrouting GXSetColorUpdate/GXSetBlendMode/etc. writes to the wrong BP register. Seeded here,
+// once, before any guest code can issue a GX call, independent of that binding gap.
+extern "C" void GXInitShadowRegisterIds();
 
 namespace {
 
@@ -59,14 +73,27 @@ void SeedLowMemDefaults() {
     const uint32_t mem1Size = static_cast<uint32_t>(Memory::kMem1Size);
     const uint32_t mem2Size = static_cast<uint32_t>(Memory::kMem2Size);
     const uint32_t mem1End = Memory::kMem1CachedBase + mem1Size;
-    const uint32_t mem1ArenaLo = 0x8042FF20u; // wiimj2d.dol BSS end (0x8042FF1C), aligned to 0x20
-    const uint32_t mem1ArenaHi = 0x817F0000u; // same ceiling used for the stack pointer elsewhere
+    // _stack_addr, read from __init_registers (0x80004234-0x80004238: lis r1,-0x7fbd;
+    // ori r1,r1,0xff20), the same instruction pair that sets r13 = 0x8042F980. The stack
+    // sits above .bss (which ends at 0x8042FF1C) and grows down from here, so the arena
+    // cannot start until its top. Previously this was the BSS end, which put the whole
+    // stack inside the arena; OSInit's DCZeroRange(arenaLo, arenaHi - arenaLo) then wiped
+    // the live stack it was running on.
+    const uint32_t mem1ArenaLo = 0x8043FF20u;
+    const uint32_t mem1ArenaHi = 0x817F0000u; // ARENA_HI, NSMBW-Decomp system_constants.h
     const uint32_t physicalMem2End = Memory::kMem2CachedBase + mem2Size;
     constexpr uint32_t kIosReservedSize = 0x20000u;
     constexpr uint32_t kIPCArenaSize = 0x20000u;
     const uint32_t iosReservedLo = physicalMem2End - kIosReservedSize;
     const uint32_t ipcBufHi = iosReservedLo;
     const uint32_t ipcBufLo = ipcBufHi - kIPCArenaSize;
+    // Same reservation SystemBridge::Initialize() makes for MKW. NSMBW does not call that
+    // function, so without this g_dvdFstReservedBase stays 0 and BuildAndPublishRuntimeFst()
+    // has nowhere to put the FST. Arena hi is lowered to match so guest allocations cannot
+    // reach it.
+    constexpr uint32_t kDvdFstReserveSize = 0x200000u;
+    g_dvdFstReservedSize = kDvdFstReserveSize;
+    g_dvdFstReservedBase = ipcBufLo - kDvdFstReserveSize;
     constexpr uint32_t kGameCode = 0x534D4E50u;       // "SMNP", read from the real disc header
     constexpr uint32_t kMakerDiscVersion = 0x30310001u; // "01" maker, disc 0, version 1 (Rev 1)
     // Same retail-vs-NDEV test as OS__GetConsoleType_8019f33c (os_init.cpp) - kept in sync so a
@@ -108,7 +135,7 @@ void SeedLowMemDefaults() {
         {0x8000311Cu, mem2Size, "Simulated MEM2 size"},
         {0x80003120u, iosReservedLo, "MEM2 end"},
         {0x80003124u, Memory::kMem2CachedBase, "MEM2 arena lo"},
-        {0x80003128u, iosReservedLo, "MEM2 arena hi"},
+        {0x80003128u, g_dvdFstReservedBase, "MEM2 arena hi"},
         {0x80003130u, ipcBufLo, "IPC Buffer lo"},
         {0x80003134u, ipcBufHi, "IPC Buffer hi"},
         {0x80003138u, 0x00000002u, "Hollywood revision"},
@@ -167,11 +194,19 @@ constexpr uint32_t kDolCtorEnd = 0x802EDFC0u;
 // genuinely, permanently resident together for the whole session (loaded once at the health-and-
 // safety boot screen, never unlinked) - this isn't a stage-conditional alternation, so keeping all
 // four here is the architecturally correct model, not a simplification.
+// Each REL's _prolog(), which is loadAddress + sectionTable[prologSection].offset +
+// prologOffset - NOT the load address itself, which is the start of the REL header. Read out of
+// the retail .rel headers: prologSection is 1 and prologOffset is 0 for all four, and section 1
+// starts at file offset 0xF0 (0xE0 for d_profileNP), just past each header and section table.
+// Cross-checked against the translated bodies: func_80768680 is d_profileNP's real _prolog (it
+// loads its own _ctors at 0x8076A678 and returns to 0x80768698); func_807685A0 is header bytes,
+// which the translator still decoded into a function, so the old addresses called something that
+// looked callable and no REL constructor ever ran.
 constexpr uint32_t kRelPrologAddresses[] = {
-    0x8076D770u, // d_basesNP
-    0x80B1CA10u, // d_en_bossNP
-    0x809A2D90u, // d_enemiesNP
-    0x807685A0u, // d_profileNP
+    0x8076D770u, // d_basesNP    _prolog (file base 0x8076D680 + section 1 at 0xF0, prolog offset 0)
+    0x80B1CA10u, // d_en_bossNP  _prolog (file base 0x80B1C920 + section 1 at 0xF0, prolog offset 0)
+    0x809A2D90u, // d_enemiesNP  _prolog (file base 0x809A2CA0 + section 1 at 0xF0, prolog offset 0)
+    0x807685A0u, // d_profileNP  _prolog (file base 0x807684C0 + section 1 at 0xE0, prolog offset 0)
 };
 
 // A bad guest constructor must not take down the whole boot sequence - matches
@@ -218,6 +253,26 @@ void RunGuestConstructors(CpuContext& cpu) {
 
     g_suppressSehReporting = false;
 }
+
+} // namespace
+
+// Runs main.dol's .ctors and every REL's _prolog exactly once, from guest context. Called by the
+// 0x80004040 override (projects/nsmbw/native/nsmbw_guest_ctor_hook.cpp) so that it happens after
+// __start's BSS clear rather than before it.
+extern "C" void Nsmbw_RunGuestConstructorsOnce(CpuContext* cpu)
+{
+    static bool alreadyRan = false;
+    if (alreadyRan || cpu == nullptr) {
+        return;
+    }
+    alreadyRan = true;
+
+    const uint32_t savedStack = cpu->gpr[1];
+    RunGuestConstructors(*cpu);
+    cpu->gpr[1] = savedStack; // constructors repoint r1 per-call; __start still needs its own
+}
+
+namespace {
 
 // Minimal window bring-up (Phase 6 step 1: "confirm a window opens"). Deliberately not
 // main.cpp's aurora_initialize() call: that one reads Config.toml (RuntimeConfigFile::*),
@@ -438,6 +493,13 @@ int main() {
     std::printf("[nsmbw] Initializing embedded data sections...\n");
     InitializeDataSections();
     SeedLowMemDefaults();
+    // Must precede the guest entry point. NSMBW's own DVDInit (0x801CAE70) inlines
+    // __DVDFSInit, which latches OSBootInfo.FSTLocation once and early-returns when it reads
+    // zero - so the FST has to be published before the guest starts, or every disc path lookup
+    // fails for the rest of the run. This is MKW's DVDInit HLE, reused for its index build and
+    // BuildAndPublishRuntimeFst(); its trailing __DVDFSInit call targets MKW's address and is
+    // already guarded by a registry lookup, so it simply no-ops here.
+    DVDInit_8015EA1C();
 
     std::printf("[nsmbw] Opening window...\n");
     AuroraInfo auroraInfo{};
@@ -464,6 +526,9 @@ int main() {
         std::fprintf(stderr, "[nsmbw] aurora_initialize did not produce a window; continuing without one.\n");
     }
 
+    // Must precede any guest GX call - see the declaration above and GXManage.cpp for why.
+    GXInitShadowRegisterIds();
+
     InitializePersistentCpuContext();
     CpuContext& cpu = GetPersistentCpuContext();
     SeedCpuContext(cpu);
@@ -480,8 +545,14 @@ int main() {
 
     CpuContextScope cpuScope(&cpu);
 
-    RunGuestConstructors(cpu);
-    SeedCpuContext(cpu); // restore r1 - constructors run with it repointed per-call
+    // Deliberately NOT run here any more. main.dol's .ctors and the four REL _prolog()s all
+    // write guest BSS, and NSMBW's own __start (0x80004050) calls __init_data (0x80004250) which
+    // memsets BSS clean at 0x80004600 - so anything initialized before the entry point was wiped
+    // before main ever saw it. Proven with a watchpoint on fProfListMg_c::m_data_p (0x8042A698):
+    // d_profileNP's _prolog set it to 0x8076A828, then func_80004600 zeroed it, and fBase_make
+    // later virtual-called through the null list. They now run from the 0x80004040 hook in
+    // projects/nsmbw/native/nsmbw_guest_ctor_hook.cpp, which sits after __init_data and
+    // immediately before __start calls main (0x800CA080).
 
     std::printf("[nsmbw] Invoking entry point 0x%08X...\n", kNsmbwEntryAddress);
     // FatalMissingGuestTarget (an unimplemented HLE call) already exits cleanly on its own - this

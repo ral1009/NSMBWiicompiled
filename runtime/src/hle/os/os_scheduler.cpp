@@ -90,6 +90,49 @@ void PromoteThreadPriority(uint32_t threadPtr, int32_t priority)
 }
 } // namespace
 
+
+// ---------------------------------------------------------------------------
+// TEMPORARY: locate the first write that corrupts a live OSThread during the
+// SelectThread -> context switch -> resume path. Watches the game thread's
+// priority/state pair; priority legitimately holds its created value (16) until
+// SetThreadEffectivePriority runs, so priority dropping to 0 is corruption.
+// Reports the first checkpoint at which the struct has gone bad, once.
+// ---------------------------------------------------------------------------
+namespace OsSwitchDiag {
+uint32_t g_watchThread = 0;      // set at OSCreateThread
+uint32_t g_lastPrio = 0xFFFFFFFFu;
+bool g_reported = false;
+
+void Arm(uint32_t threadPtr)
+{
+    g_watchThread = threadPtr;
+    g_reported = false;
+    g_lastPrio = 0xFFFFFFFFu;
+    RT_LOGF(RT_TAG_OS, "SWDIAG: armed on thread 0x%08X\n", threadPtr);
+}
+
+void Check(const char* tag)
+{
+    if (g_watchThread == 0 || g_reported) return;
+    try {
+        const uint32_t prio = ::Memory::Read32(g_watchThread + 0x2D0u);
+        const uint16_t st = ::Memory::Read16(g_watchThread + 0x2C8u);
+        if (prio != g_lastPrio) {
+            RT_LOGF(RT_TAG_OS, "SWDIAG %s: prio=%u state=%u\n", tag, prio, (unsigned)st);
+            g_lastPrio = prio;
+        }
+        if (prio == 0 && st == 0) {
+            g_reported = true;
+            RT_LOGF(RT_TAG_OS, "SWDIAG *** CORRUPT FIRST SEEN AT %s *** thread=0x%08X\n",
+                    tag, g_watchThread);
+        }
+    } catch (const ::Memory::AccessViolation&) {
+        g_reported = true;
+        RT_LOGF(RT_TAG_OS, "SWDIAG *** UNREADABLE AT %s ***\n", tag);
+    }
+}
+} // namespace OsSwitchDiag
+
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx);
 
@@ -123,11 +166,13 @@ extern "C" void func_801A1ED8(CpuContext* ctx);
 
 // ============================================================================
 // SelectThread HLE - Thread Scheduler (Fiber-Aware)
-// Address: 0x801A9C08. Picks the next runnable thread; switches via Windows
-// Fibers instead of blocking InvokeIndirectJump.
+// Address: 0x801B4FE0 (registered in projects/nsmbw/native/nsmbw_select_thread_override.cpp -
+// see that file for why this override moved here from the wrong address, 0x801A9C08, and why
+// its PPC_NATIVE_OVERRIDE_VOID lives outside this shared runtime tree). Picks the next runnable
+// thread; switches via Windows Fibers instead of blocking InvokeIndirectJump.
 // ============================================================================
 
-extern "C" void SelectThread_801a9c08(CpuContext* ctx)
+extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     const uint32_t forceSwitch = cpu->gpr[3];
@@ -194,33 +239,26 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
             MarkRunQueuePending(prio);
         }
 
-        // If the context is not preemptible, save it and return when it resumes.
-        // This matches OSSaveContext semantics used by the original scheduler.
-        try {
-            const uint16_t modeFlags = ::Memory::Read16(runningContext + 0x1A2u);
-            if ((modeFlags & 0x0002u) == 0) {
-                cpu->gpr[3] = runningContext;
-                func_801A1ED8(cpu);
-                if (cpu->gpr[3] != 0) {
-                    cpu->gpr[3] = 0;
-                    return;
-                }
-            }
-        } catch (const ::Memory::AccessViolation& e) {
-            RT_LOG(RT_TAG_OS) << "SelectThread: failed to read mode flags @0x"
-                      << std::hex << e.address() << std::dec << std::endl;
-        }
+        // 0x801A1ED8 is NOT OSSaveContext (mid-function code ending in a spin on -0x5100(r13)).
+        // It is gone for good: its bogus non-zero return was only masking the fiber-switch path
+        // below by making SelectThread bail before reaching it. Fiber switching saves and restores
+        // the host stack, so no guest context save belongs here.
+        OsSwitchDiag::Check("A:after-requeue");
     }
 
+    OsSwitchDiag::Check("B:pre-idle-check");
     // Check if there are any runnable threads
     uint32_t reschedPending = ::Memory::Read32(kSchedulerPendingFlagAddr);
     if (reschedPending == 0) {
         // No threads to run - enter idle loop
+        OsSwitchDiag::Check("C:pre-idle-switchcb");
         TryInvokeSwitchCallback(runningContext, 0, cpu);
+        OsSwitchDiag::Check("D:post-idle-switchcb");
         ::Memory::Write32(kOSRunningContextAddr, 0);
         
         // Set current context to idle thread context
         OS__SetCurrentContext_801a1e70(kIdleThreadContextAddr);
+        OsSwitchDiag::Check("E:post-setcurctx-idle");
         
         while (true) {
             // Enable interrupts and idle until something becomes runnable.
@@ -254,7 +292,9 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
             }
         }
 
+        OsSwitchDiag::Check("F:pre-clearctx-idle");
         OS__ClearContext_801a2098(kIdleThreadContextAddr);
+        OsSwitchDiag::Check("G:post-clearctx-idle");
     }
 
     // Clear reschedule counter
@@ -317,20 +357,24 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
         ::Memory::Write32(kSchedulerPendingFlagAddr, pendingMask & mask);
     }
 
+    OsSwitchDiag::Check("H:picked-thread");
     // Clear thread's queue pointer
     ::Memory::Write32(nextThread + 0x2DCu, 0);
     
     // Set thread to RUNNING state
     ::Memory::Write16(nextThread + 0x2C8u, 2);
 
+    OsSwitchDiag::Check("I:pre-switchcb");
     // Invoke switch callback
     TryInvokeSwitchCallback(runningContext, nextThread, cpu);
+    OsSwitchDiag::Check("J:post-switchcb");
 
     // Update running context
     ::Memory::Write32(kOSRunningContextAddr, nextThread);
     
     // Set as current context
     OS__SetCurrentContext_801a1e70(nextThread);
+    OsSwitchDiag::Check("K:post-setcurctx");
 
     // Use fiber-based context switch if available
     if (Fiber::GuestFiberManager::IsInitialized()) {
@@ -341,7 +385,9 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
         // This allows the main thread to participate in fiber switching.
         if (currentGuestThread == 0 && runningContext != 0) {
             if (!Fiber::GuestFiberManager::HasFiber(runningContext)) {
+                OsSwitchDiag::Check("L:pre-register-main-fiber");
                 Fiber::GuestFiberManager::RegisterMainThreadAsFiber(runningContext, cpu);
+                OsSwitchDiag::Check("M:post-register-main-fiber");
             }
             // Whether we registered it or it already existed, use it as the current thread
             currentGuestThread = runningContext;
@@ -359,12 +405,16 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
         // If we still don't have a current guest thread (no running context),
         // we can't do a proper fiber switch. Just return and let the caller handle it.
         if (currentGuestThread == 0) {
+            OsSwitchDiag::Check("N:pre-switch-nocur");
             Fiber::GuestFiberManager::SwitchToThread(nextThread, cpu);
+            OsSwitchDiag::Check("O:post-switch-nocur");
             return;
         }
         
         // Perform the fiber switch!
+        OsSwitchDiag::Check("P:pre-switch");
         Fiber::GuestFiberManager::SwitchToThread(nextThread, cpu);
+        OsSwitchDiag::Check("Q:post-switch");
         // When we return here, we've been switched back
         return;
     }
@@ -374,7 +424,7 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
     OS__LoadContext_801a1f58(cpu);
 }
 
-PPC_NATIVE_OVERRIDE_VOID(801A9C08, SelectThread_801a9c08, (CpuContext* ctx), (ctx));
+// (registration moved to projects/nsmbw/native/nsmbw_select_thread_override.cpp)
 
 // ============================================================================
 // OSWakeupThread HLE - drain a thread queue and mark threads runnable
@@ -441,7 +491,7 @@ static void WakeupThreadQueue(CpuContext* ctx, bool allowImmediateReschedule)
 
     if (allowImmediateReschedule && resched && !VI_HLE_IsAdvancingRetrace()) {
         cpu->gpr[3] = 0;
-        SelectThread_801a9c08(cpu);
+        SelectThread_801b4fe0(cpu);
     }
 
     OS__RestoreInterrupts_801a65d4(irqState);
