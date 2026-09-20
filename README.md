@@ -16,7 +16,7 @@ Verified with screenshots (the evidence for each row is in the progress log):
 | Title screen (logo, hills, ground tiles, circle-wipe transition) | renders; sky colour not yet confirmed, Mario / "PRESS 2" not yet checked |
 | File Selection (cards, Erase/Copy, Free Mode / Coin Battle, background) | renders correctly |
 | Intro cutscene | plays fully textured for 60 s+ without crashing |
-| Input | one Wii Remote (channel 0) seeded as connected; A / 2 work |
+| Input | keyboard as one sideways Wii Remote (channel 0): **Z** = 2 (jump), **X** = 1 (run), **Enter** = A, **arrow keys** = d-pad, with held / pressed / released state delivered through `KPADRead`. B, +, −, HOME and the pointer are not bound yet |
 | Audio | AX/DSP frames now run, so sound-driven game logic advances; audible output not yet verified |
 | World map, levels | not reached yet |
 
@@ -107,6 +107,7 @@ All diagnostics are off unless their environment variable is set:
 | `NSMBW_LOG_FIFO_DESYNC=1` | ring of recent raw-FIFO draws, dumped when the parser loses sync |
 | `NSMBW_LOG_DISPLAY_LIST=1` | each guest `GXBeginDisplayList` / `GXEndDisplayList` with byte counts |
 | `NSMBW_AUTO_PRESS_SELFTEST=1`, `NSMBW_AUTO_PRESS_TICKS=<n>` | synthesise an A press every 60 ticks (for the first `n` ticks) |
+| `NSMBW_LOG_INPUT=1` | each change in the keyboard sample handed to `KPADRead` (WPAD hold/trig/release bits, raw PAD bits, SDL scancodes down) |
 | `NSMBW_GPU_PEEK*`, `NSMBW_TEST_TRIANGLE`, other `NSMBW_LOG_*` / `NSMBW_DUMP_*` | older GX bring-up probes; see the source for each |
 
 ## License

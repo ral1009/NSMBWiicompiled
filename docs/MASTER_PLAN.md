@@ -385,3 +385,24 @@ What's next:
 - Play forward from the cutscene into the world map and 1-1; log crashes with `NSMBW_LOG_STATE_CHANGES` on.
 - Boot never auto-advances the strap without a button press (8400 frames in BOOT in a no-input run); the decomp's 1200-frame `mAutoAdvanceTimer` path should. Low priority, but a real divergence.
 - Prune the pre-input `NSMBW_FORCE_GAMESETUP_ADVANCE` / `NSMBW_CHAIN_ADVANCE` experiments and the `*_diag.cpp` files whose areas are now stable (each removal needs the shard manifest regenerated).
+
+## 2026-09-20 (later) — Phase 7 (real input through KPAD) + repo restructure
+What I did:
+1. **Input now goes through `KPADRead`** (`nsmbw_kpad_overrides.cpp`). The previous scheme polled the keyboard in the VI tick pump and OR'd "just pressed" bits into `EGG::CoreController`'s field at `+0x1C` via a native `downTrigger` override, so only press edges ever existed and nothing could be *held*. Traced the game's real sampling: `func_802BD0D0` (`EGG::CoreController::beginFrame`, virtual, no static callers) calls `KPADReadEx(mNum, this+0x18, 16, &err)`, so `+0x18/+0x1C/+0x20` are `KPADStatus[0].hold/trig/release` — the old hack was poking one field of that struct. Both `KPADRead` (0x801ED4E0, `r6=0; r7=0`) and `KPADReadEx` (0x801ED4F0, `r7=1`) tail into a shared internal at 0x801ED500; that is now overridden to return one real sample per frame for channel 0 (hold/trig/release computed from a per-VI-tick keyboard snapshot so every read in a frame sees the same edge) and "no controller" for channels 1–3. The `downTrigger` override and the PAD code in the tick pump are gone; the self-test press is delivered as one frame of "A held" through the same path.
+   Keys (the remote is sideways, so the arrows are rotated to what the game expects): **Z = 2**, **X = 1**, **Enter = A**, Left/Right/Up/Down → WPAD UP/DOWN/RIGHT/LEFT.
+   Verified with injected key events and `NSMBW_LOG_INPUT` (`build_nsmbw/nsmbw_keytest.err.log`): scancode 29 → hold 0x0100 (2), 79 → 0x0004 (d-pad DOWN = screen right), 81 → 0x0001, 80 → 0x0008, each with matching trig/release; the self-test presses still carry the game strap → title → File Selection; and the developer confirmed live that keys work.
+2. **One repo instead of two.** The outer docs-only wrapper repo was removed and the fork's contents lifted to the top of `Wiicompiled/` (git history and the `ral1009` remote intact). Removed `Launcher/` (MKW installer tooling), `.github/ISSUE_TEMPLATE/` and the `function_map.txt.bak*` files; kept `projects/mkwii/` because translator tests use it. Manifests now read `NSMBW-Decomp/original/` (the clones sit inside the repo directory, gitignored). Verified by a fresh CMake configure + full rebuild + a run to the cutscene.
+   The folder was **not** renamed to match the GitHub repo: Claude Code keys its per-project memory and session transcripts to a slug of the absolute path, so a rename would have re-keyed all of it for a cosmetic gain.
+
+What broke / what I didn't expect:
+- Four local, untracked artefacts had the old absolute path baked in and each failed in turn after the move: the CMake cache (source dir is `runtime/`, not the repo root), the FetchContent sub-builds under `build_nsmbw/_deps`, the MKW shard manifest under `generated/`, and the NSMBW data initializer (`incbin` paths). Regenerated or reconfigured all of them; nothing tracked changed.
+- The first injected-key run showed a "wrong" bit for Z; on the next run with raw scancodes logged every key mapped correctly, so it was most likely a real key pressed at the same time, not a mapping bug.
+
+What I learned:
+- Inject input where the guest *samples* it (the SDK read function), not where it *consumes* it (a game class's field): the SDK struct is the contract, and everything the game derives — held state, edges, button repeat, the sideways d-pad rotation — then comes from its own code.
+- Absolute paths hide in build caches, not in the repo. After moving a tree, expect the cache, sub-builds and generated initializers to need regeneration even when `git status` is clean.
+
+What's next:
+- Bind B (Shift?), + (pause) and − / HOME; decide whether the pointer needs emulating for any menu.
+- Idle on the title screen to check the sky / Mario / "PRESS 2"; then play from the cutscene into the world map and 1-1 with real input and `NSMBW_LOG_STATE_CHANGES`.
+- Audible audio; strap auto-advance without input; prune stale `*_diag.cpp` overrides.
