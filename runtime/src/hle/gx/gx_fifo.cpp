@@ -3,6 +3,7 @@
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
 #include "abi_bridge.h"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -46,6 +47,127 @@ using namespace GxCmd;
 using namespace GxStream;
 
 HleGxState g_hleGxState;
+
+// DIAGNOSTIC (temporary): NSMBW_LOG_FIFO_DESYNC. The intro cutscene crash (aurora FATAL
+// "unmapped vtx attr 9", i.e. a draw whose VCD has no position) is preceded by dozens of
+// "GX guest pointer: memory error at 0x<float-looking address>" lines from the CALL_DL arm
+// below - the raw-FIFO parser is reading vertex float data as command bytes, so its idea of
+// the vertex size for the preceding draw differs from what the guest wrote. Each raw draw is
+// recorded here with the layout the shadow VCD/VAT produced and, for comparison, the guest's
+// own __gx VCD/VAT (vcdLo @+0x14, vcdHi @+0x18, vatA/B/C[fmt] @+0x1C/0x3C/0x5C - offsets read
+// off NSMBW's GXSetVtxDesc 0x801C3900 / GXSetVtxAttrFmt 0x801C41F0, one word less than the
+// usual SDK __GXData layout).
+// When the parser then hits an unknown command byte the ring and the next FIFO bytes are
+// dumped, so the first mismatched draw is identifiable without guessing.
+namespace {
+struct FifoDesyncDrawRecord {
+    uint32_t seq = 0;
+    uint32_t streamPos = 0; // parse position: total bytes pushed minus bytes still buffered
+    uint8_t cmd = 0;
+    uint16_t count = 0;
+    uint32_t rawVertexSize = 0;
+    bool rawPath = false;
+    uint32_t lr = 0;
+    uint32_t pc = 0;
+    uint32_t guestVcdLo = 0, guestVcdHi = 0, guestVatA = 0, guestVatB = 0, guestVatC = 0;
+    char layout[160] = {};
+};
+constexpr int kFifoDesyncRing = 24;
+FifoDesyncDrawRecord g_fifoDesyncRing[kFifoDesyncRing];
+uint32_t g_fifoDesyncSeq = 0;
+int g_fifoDesyncUnknownLogged = 0;
+// Rolling copy of the last raw bytes the guest pushed (pre-parse), so a dump shows what was
+// actually written ahead of the byte the parser could not place.
+constexpr uint32_t kFifoDesyncHist = 480;
+uint8_t g_fifoDesyncHist[kFifoDesyncHist];
+uint32_t g_fifoDesyncHistPos = 0; // doubles as the total-bytes-pushed counter
+void FifoDesyncHistPush(u32 value, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t shift = (count - 1u - i) * 8u;
+        g_fifoDesyncHist[g_fifoDesyncHistPos++ % kFifoDesyncHist] = static_cast<uint8_t>((value >> shift) & 0xFFu);
+    }
+}
+
+bool FifoDesyncEnabled() {
+    static const bool enabled = std::getenv("NSMBW_LOG_FIFO_DESYNC") != nullptr;
+    return enabled;
+}
+
+void FifoDesyncRecordDraw(uint8_t cmd, uint16_t count, uint32_t rawVertexSize, bool rawPath) {
+    auto& rec = g_fifoDesyncRing[g_fifoDesyncSeq % kFifoDesyncRing];
+    rec = FifoDesyncDrawRecord{};
+    rec.seq = g_fifoDesyncSeq++;
+    rec.streamPos = g_fifoDesyncHistPos - g_hleGxState.fifoByteCount;
+    rec.cmd = cmd;
+    rec.count = count;
+    rec.rawVertexSize = rawVertexSize;
+    rec.rawPath = rawPath;
+    if (CpuContext* cc = TryGetCpuContext()) {
+        rec.lr = static_cast<uint32_t>(cc->lr);
+        rec.pc = static_cast<uint32_t>(cc->pc);
+    }
+    const uint32_t fmt = cmd & GX_VAT_MASK_CMD;
+    constexpr uint32_t kGxDataPtrAddr = 0x80433360u - 0x4EF8u; // *(r2 - 0x4EF8) = __gx (NSMBW)
+    uint32_t gd = 0;
+    if (Memory::TryRead32(kGxDataPtrAddr, gd) && gd != 0) {
+        Memory::TryRead32(gd + 0x14u, rec.guestVcdLo);
+        Memory::TryRead32(gd + 0x18u, rec.guestVcdHi);
+        Memory::TryRead32(gd + 0x1Cu + fmt * 4u, rec.guestVatA);
+        Memory::TryRead32(gd + 0x3Cu + fmt * 4u, rec.guestVatB);
+        Memory::TryRead32(gd + 0x5Cu + fmt * 4u, rec.guestVatC);
+    }
+    size_t used = 0;
+    for (int attr = 0; attr < 26 && used + 20 < sizeof(rec.layout); ++attr) {
+        const GXAttrType type = g_hleGxState.vtxDesc[attr];
+        if (type == GX_NONE) continue;
+        const VtxAttrFmt& f = g_hleGxState.vtxAttrFmt[fmt][attr];
+        const uint32_t bytes = (type == GX_DIRECT)
+            ? DirectAttrByteSize(static_cast<GXAttr>(attr), f, true, 1u)
+            : (type == GX_INDEX8 ? 1u : 2u);
+        used += static_cast<size_t>(std::snprintf(rec.layout + used, sizeof(rec.layout) - used,
+                                                  "%d:%s/c%d/t%d/%uB ", attr,
+                                                  type == GX_DIRECT ? "D" : (type == GX_INDEX8 ? "I8" : "I16"),
+                                                  static_cast<int>(f.cnt), static_cast<int>(f.type), bytes));
+    }
+}
+
+void FifoDesyncDumpOnUnknown(const uint8_t* data, uint32_t avail) {
+    // Boot alone produces a dozen of these (stray 0xFF padding), so the budget is per scene.
+    static uint32_t lastScene = 0xFFFFFFFFu;
+    if (lastScene != g_nsmbwCurrentSceneProfile) {
+        lastScene = g_nsmbwCurrentSceneProfile;
+        g_fifoDesyncUnknownLogged = 0;
+    }
+    if (g_fifoDesyncUnknownLogged >= 10) return;
+    ++g_fifoDesyncUnknownLogged;
+    uint32_t liveVcdLo = 0, liveVcdHi = 0, liveDirty = 0, gd = 0;
+    if (Memory::TryRead32(0x80433360u - 0x4EF8u, gd) && gd != 0) {
+        Memory::TryRead32(gd + 0x14u, liveVcdLo);
+        Memory::TryRead32(gd + 0x18u, liveVcdHi);
+        Memory::TryRead32(gd + 0x5FCu, liveDirty);
+    }
+    RT_LOGF(RT_TAG_GX, "FIFO_DESYNC scene=%u unknown cmd byte 0x%02X with %u bytes buffered (event %d); guest __gx now vcd=%08X/%08X dirty=%08X; last draws (cmd=0x08 rows are VCD reg writes: n=reg vtxBytes=value):\n",
+            g_nsmbwCurrentSceneProfile, data[0], avail, g_fifoDesyncUnknownLogged, liveVcdLo, liveVcdHi, liveDirty);
+    for (int i = kFifoDesyncRing; i > 0; --i) {
+        if (g_fifoDesyncSeq < static_cast<uint32_t>(i)) continue;
+        const auto& rec = g_fifoDesyncRing[(g_fifoDesyncSeq - static_cast<uint32_t>(i)) % kFifoDesyncRing];
+        RT_LOGF(RT_TAG_GX, "  #%u @%u cmd=0x%02X n=%u vtxBytes=%u %s LR=0x%08X PC=0x%08X | guest vcd=%08X/%08X vat=%08X/%08X/%08X | shadow %s\n",
+                rec.seq, rec.streamPos, rec.cmd, rec.count, rec.rawVertexSize, rec.rawPath ? "raw" : "incr", rec.lr, rec.pc,
+                rec.guestVcdLo, rec.guestVcdHi, rec.guestVatA, rec.guestVatB, rec.guestVatC, rec.layout);
+    }
+    char hex[3 * 48 + 1] = {};
+    const uint32_t n = avail < 48u ? avail : 48u;
+    for (uint32_t i = 0; i < n; ++i) std::snprintf(hex + i * 3, 4, "%02X ", data[i]);
+    RT_LOGF(RT_TAG_GX, "  next bytes: %s\n", hex);
+    char hist[3 * kFifoDesyncHist + 1] = {};
+    const uint32_t have = g_fifoDesyncHistPos < kFifoDesyncHist ? g_fifoDesyncHistPos : kFifoDesyncHist;
+    for (uint32_t i = 0; i < have; ++i) {
+        const uint32_t idx = (g_fifoDesyncHistPos - have + i) % kFifoDesyncHist;
+        std::snprintf(hist + i * 3, 4, "%02X ", g_fifoDesyncHist[idx]);
+    }
+    RT_LOGF(RT_TAG_GX, "  last %u raw bytes written (oldest first, stream pos %u..%u): %s\n", have, g_fifoDesyncHistPos - have, g_fifoDesyncHistPos, hist);
+}
+} // namespace
 
 namespace aurora::gx::fifo {
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
@@ -871,6 +993,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
     };
 
     pushBytes(val, sizeBytes == 0 ? 4 : sizeBytes);
+    if (FifoDesyncEnabled()) FifoDesyncHistPush(val, sizeBytes == 0 ? 4 : sizeBytes);
 
     // Parse raw FIFO command packets written directly to the gather pipe
     // (e.g. NW4R/G3D paths that do not call the GXBegin wrapper function).
@@ -893,6 +1016,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             if (g_hleGxState.fifoByteCount < 5) break;
             const uint32_t bpWord = ReadBE32(data + 1);
             GXApplyBPReg(static_cast<uint8_t>(bpWord >> 24), bpWord & 0x00FFFFFFu);
+            if (FifoDesyncEnabled()) FifoDesyncRecordDraw(GX_LOAD_BP_REG_CMD, static_cast<uint16_t>(bpWord >> 24), bpWord & 0x00FFFFFFu, false);
             if (!consumeBytes(5, sink)) break;
             continue;
         }
@@ -902,6 +1026,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             const uint8_t reg = data[1];
             const uint32_t cpValue = ReadBE32(data + 2);
             GxCpDecode::ApplyCpRegWrite(reg, cpValue);
+            if (FifoDesyncEnabled()) FifoDesyncRecordDraw(GX_LOAD_CP_REG_CMD, reg, cpValue, false); // pseudo-record: CP write
             // VCD (0x50/0x60) and VAT (0x70-0x97) only reached the HLE's own shadow state.
             // Aurora needs them too or it cannot size the vertices of the draws that follow.
             if (reg == 0x50u || reg == 0x60u) {
@@ -945,6 +1070,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
                     }
                 }
             }
+            if (FifoDesyncEnabled()) FifoDesyncRecordDraw(GX_LOAD_XF_REG_CMD, ReadBE16(data + 3), packetBytes, false); // pseudo-record: XF load
             g_nsmbwXfLoadSource = 4u;
             GXCallDisplayList(data, packetBytes);
             g_nsmbwXfLoadSource = 0u;
@@ -985,11 +1111,13 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
                 if (g_hleGxState.fifoByteCount < packetBytes) {
                     break;
                 }
+                if (FifoDesyncEnabled()) FifoDesyncRecordDraw(cmd, vtxCount, rawVertexSize, true);
                 if (TrySubmitRawDirectFifoDraw(data, packetBytes, prim, vtxFmt, vtxCount)) {
                     if (!consumeBytes(packetBytes, sink)) break;
                     continue;
                 }
             }
+            if (FifoDesyncEnabled()) FifoDesyncRecordDraw(cmd, vtxCount, rawVertexSize, false);
             if (!consumeBytes(3, sink)) break;
 
             // A zero-vertex primitive carries no vertex data, so there is nothing to stream and
@@ -1015,6 +1143,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
         }
 
         // Unknown FIFO command byte outside a begin packet; discard it so stream parsing can recover.
+        if (FifoDesyncEnabled()) FifoDesyncDumpOnUnknown(data, g_hleGxState.fifoByteCount);
         if (!consumeBytes(1, sink)) break;
     }
 

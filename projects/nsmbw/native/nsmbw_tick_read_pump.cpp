@@ -199,7 +199,13 @@ void NsmbwDiagWatchWithRealInput() {
             // synthetic bit so parking actually holds.
             g_wpadTriggerPending &= ~kWpadButtonA;
         }
-        if (!parked && diagAutoPressTick <= 1200 && (diagAutoPressTick % 60) == 0) {
+        // NSMBW_AUTO_PRESS_TICKS overrides the 1200-tick (20s) window - the intro cutscene
+        // is only reachable after the save-file screens, i.e. well past 20s unattended.
+        static const int pressWindowTicks = [] {
+            const char* v = std::getenv("NSMBW_AUTO_PRESS_TICKS");
+            return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 1200;
+        }();
+        if (!parked && diagAutoPressTick <= pressWindowTicks && (diagAutoPressTick % 60) == 0) {
             g_wpadTriggerPending |= kWpadButtonA;
             std::fprintf(stderr, "[nsmbw][diag] self-test: synthesized A press (tick=%d)\n", diagAutoPressTick);
             std::fflush(stderr);
