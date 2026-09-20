@@ -1062,6 +1062,20 @@ static bool begin_frame_impl(bool clearEfb) {
     mapBuffer(g_textureUpload, TextureUploadSize);
   }
 
+  // TEMPORARY (title-screen investigation): logs the PREVIOUS frame's draw call count, gated to
+  // the STAGE scene (profile 5, which is how NSMBW's title screen is actually implemented -
+  // dScRestartCrsin_c::startTitle loads fProf::STAGE with mLevel1=STAGE_TITLE, not a separate menu
+  // scene) - checking whether any 3D geometry is even being submitted before assuming a
+  // viewport/copy-rect sizing bug is the whole story. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_DRAWCALLS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+    static int logged = 0;
+    if (logged < 200) {
+      ++logged;
+      std::fprintf(stderr, "[nsmbw][diag] frame drawCallCount=%u mergedDrawCallCount=%u\n", g_drawCallCount,
+                   g_mergedDrawCallCount);
+      std::fflush(stderr);
+    }
+  }
   g_drawCallCount = 0;
   g_mergedDrawCallCount = 0;
   if (clearEfb) {
@@ -1077,6 +1091,20 @@ static bool begin_frame_impl(bool clearEfb) {
   g_renderPasses[0].clearDepthValue = gx::clear_depth_value();
   g_renderPasses[0].clearColor = clearEfb;
   g_renderPasses[0].clearDepth = clearEfb;
+  // DIAGNOSTIC (temporary): NSMBW_LOG_CLEAR_COLOR - none of WiiStrap's 8 real texture assets
+  // contain any green pixels, yet a green rectangle is visible on screen - checking whether the
+  // guest's own GXSetCopyClear color is unexpectedly green and bleeding through (e.g. via a
+  // blend/composite gap) rather than any texture. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_CLEAR_COLOR") != nullptr) {
+    static int logged = 0;
+    if (logged < 20) {
+      ++logged;
+      const auto& c = gx::g_gxState.clearColor;
+      std::fprintf(stderr, "[NSMBW_CLEAR_COLOR] clearEfb=%d rgba=(%.3f,%.3f,%.3f,%.3f)\n", clearEfb ? 1 : 0, c.x(),
+                   c.y(), c.z(), c.w());
+      std::fflush(stderr);
+    }
+  }
   g_currentRenderPass = 0;
   // Refresh paired render viewport/scissor from logical state in case the FB size changed.
   const auto mappedRenderState = gx::map_logical_render_state();
@@ -1299,8 +1327,27 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
     render_pass_impl(pass, renderPasses, i, interpolatedFrame);
     pass.End();
     if (passInfo.resolveTarget) {
+      // TEMPORARY (title-screen investigation): the single-shot "first pass with a resolveTarget"
+      // latch below only ever captured ONE pass per frame - if a frame has several passes with
+      // resolve targets (e.g. a small HUD/portrait/minimap render alongside the main 3D scene),
+      // whichever completes first wins forever, and the real scene pass is never captured at all.
+      // NSMBW_GPU_PEEK_ALL_PASSES dumps every eligible pass this frame instead, tagged by index
+      // and command count, so the real (large, many-draws) pass can be told apart from a small
+      // decorative one. Remove once resolved.
+      if (std::getenv("NSMBW_GPU_PEEK_ALL_PASSES") != nullptr &&
+          aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
+        static int allPassesLogged = 0;
+        if (allPassesLogged < 30) {
+          ++allPassesLogged;
+          char label[128];
+          std::snprintf(label, sizeof(label), "AllPass%02u_i%u_cmds%zu_%ux%u", allPassesLogged, i,
+                        passInfo.commands.size(), passInfo.targetSize.width, passInfo.targetSize.height);
+          webgpu::nsmbw_diag_peek_texture(cmd, webgpu::g_frameBuffer.texture, passInfo.targetSize.width,
+                                          passInfo.targetSize.height, label);
+        }
+      }
       static bool firedA = false;
-      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedA && g_nsmbwDiagSeq.load() > 650) {
+      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedA && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
         firedA = true;
         webgpu::nsmbw_diag_peek_texture(cmd, webgpu::g_frameBuffer.texture, passInfo.targetSize.width,
                                         passInfo.targetSize.height, "A_colorView_after_pass_end");
@@ -1376,7 +1423,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         cmd.CopyTextureToTexture(&src, &dst, &size);
       }
       static bool firedB = false;
-      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedB && g_nsmbwDiagSeq.load() > 650) {
+      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedB && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
         firedB = true;
         webgpu::nsmbw_diag_peek_texture(cmd, passInfo.resolveTarget->texture, passInfo.resolveTarget->size.width,
                                         passInfo.resolveTarget->size.height, "B_displayCopyTexture_after_resolve");

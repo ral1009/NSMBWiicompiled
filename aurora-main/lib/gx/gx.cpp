@@ -981,6 +981,20 @@ void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
 }
 
 void set_render_scissor(const gfx::ClipRect& scissor) noexcept {
+  // TEMPORARY DIAGNOSTIC: NSMBW flat-screen isolation. Remove before merging.
+  if (nsmbw_diag_enabled()) {
+    static int logged = 0;
+    if (logged < 300) {
+      ++logged;
+      std::fprintf(stderr,
+                   "[NSMBW_SCISSOR] logical=(%d,%d,%d,%d) render=(%d,%d,%d,%d) logicalViewport=(%.1f,%.1f,%.1f,%.1f)\n",
+                   g_gxState.logicalScissor.x, g_gxState.logicalScissor.y, g_gxState.logicalScissor.width,
+                   g_gxState.logicalScissor.height, scissor.x, scissor.y, scissor.width, scissor.height,
+                   g_gxState.logicalViewport.left, g_gxState.logicalViewport.top, g_gxState.logicalViewport.width,
+                   g_gxState.logicalViewport.height);
+      std::fflush(stderr);
+    }
+  }
   g_gxState.renderScissor = scissor;
   gfx::set_scissor(scissor);
 }
@@ -2179,6 +2193,18 @@ wgpu::SamplerDescriptor aurora::gfx::TextureBind::get_descriptor() const noexcep
   u16 maxAnisotropy = wgpu_aniso(texObj.max_aniso());
   if (maxAnisotropy > 1 && !supports_wgpu_aniso(magFilter, minFilter, mipFilter)) {
     maxAnisotropy = 1;
+  }
+  // DIAGNOSTIC (temporary): NSMBW_LOG_WRAP_MODE - see gx_texture.cpp's GXInitTexObj log. This is
+  // the final wrap mode actually reaching the WebGPU sampler for each bound texture, to check
+  // whether it still matches what the guest specified at init time.
+  if (std::getenv("NSMBW_LOG_WRAP_MODE") != nullptr) {
+    static int logged = 0;
+    if (logged < 60) {
+      ++logged;
+      std::fprintf(stderr, "[NSMBW_WRAP_MODE] sampler wrapS=%d wrapT=%d (0=CLAMP,1=REPEAT,2=MIRROR)\n",
+                   static_cast<int>(texObj.wrap_s()), static_cast<int>(texObj.wrap_t()));
+      std::fflush(stderr);
+    }
   }
   return {
       .label = "Generated Filtering Sampler",

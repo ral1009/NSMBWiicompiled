@@ -2,10 +2,43 @@
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
+#include "abi_bridge.h"
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 extern "C" void GxSyncVtxAttrFmtToAurora(uint32_t fmt);
 extern "C" void GxSyncVtxDescToAurora();
+
+// Set by projects/nsmbw/native/nsmbw_create_next_scene_diag.cpp on every successful scene
+// transition (0=BOOT, per fProf::PROFILE_NAME_e) - same extern already declared/used for scene
+// gating in aurora-main/lib/internal.hpp's NSMBW_GPU_PEEK_SCENE diagnostic. Declared again here
+// (not by including that header) so this file's targeted alpha-patch experiment below can gate on
+// it without pulling in the unrelated GPU-peek diagnostic.
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+extern "C" uint32_t g_nsmbwXfLoadSource;
+
+// DIAGNOSTIC (temporary): live TEV state mirrored by aurora-main's command_processor.cpp - see
+// that file's g_nsmbwLiveTevAlpha*/g_nsmbwLiveTevColor* comments. Used by NSMBW_LOG_DRAW_TEV
+// below to check what TEV routing is actually active for a real vertex-submission draw.
+extern "C" {
+extern uint32_t g_nsmbwLiveTevColorA[16];
+extern uint32_t g_nsmbwLiveTevColorB[16];
+extern uint32_t g_nsmbwLiveTevColorC[16];
+extern uint32_t g_nsmbwLiveTevColorD[16];
+extern uint32_t g_nsmbwLiveTevAlphaA[16];
+extern uint32_t g_nsmbwLiveTevAlphaB[16];
+extern uint32_t g_nsmbwLiveTevAlphaC[16];
+extern uint32_t g_nsmbwLiveTevAlphaD[16];
+extern uint32_t g_nsmbwLiveTevTexMap[16];
+extern uint32_t g_nsmbwLiveNumTevStages;
+extern bool g_nsmbwLiveDepthCompare;
+extern uint32_t g_nsmbwLiveDepthFunc;
+extern bool g_nsmbwLiveDepthUpdate;
+extern float g_nsmbwLiveTevRegAlpha[4];
+extern float g_nsmbwLiveTevRegColorR[4];
+extern float g_nsmbwLiveTevRegColorG[4];
+extern float g_nsmbwLiveTevRegColorB[4];
+}
 
 // Opcode constants and the stream helpers this file shares with gx_dl.cpp /
 // gx_vertex.cpp; see gx_stream_common.h.
@@ -105,25 +138,423 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     ApplyAuroraVtxStateForRawBegin(vtxFmt);
     EnsureDefaultGxAlphaCompare();
 
-    if (std::getenv("NSMBW_LOG_VERTS") != nullptr) {
+    if (std::getenv("NSMBW_LOG_VERTS") != nullptr && g_hleGxState.vtxDesc[11] != GX_NONE) {
         static int logged = 0;
-        if (logged < 5) {
+        if (logged < 60000) {
             ++logged;
             const uint8_t* v = packet + 3;
             const auto& posFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_POS];
             const auto& texFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_TEX0];
+            const auto& clr0Fmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_CLR0];
+            // REDIRECTED TRACE: static .brlyt data for the strap/text panes and their vertex
+            // corner colors is confirmed fully opaque (alpha=255 everywhere, no ancestor pane has
+            // reduced alpha, no .brlan track touches them) - so a live alpha=0 in this exact
+            // vertex byte stream must come from a runtime computation, not authored data. This
+            // quad-emission call doesn't itself call further guest functions while writing raw
+            // FIFO bytes (no bl seen inside the immediate-mode loop), so ctx->lr here should still
+            // hold the return address into whatever guest function submitted THIS quad - i.e. the
+            // Pane::Draw()-equivalent caller. Logging position too, to correlate against the
+            // known-from-.brlyt static x/y/width/height of P_strap_00 and friends.
+            const uint32_t lr = GetPersistentCpuContext().lr;
+            // Disassembly of the caller at LR=0x8022DA28 (offline) shows the vertex color is
+            // written via `lwz r0,8(r27); stw r0,-0x8000(r3)` - a direct, unconditional word copy
+            // straight to the gather pipe, no transform in between. r27 is set once at function
+            // entry (`mr r27,r3`) and never reassigned before this point, so ctx->gpr[27] here
+            // should still hold that same "this" pointer, and *(r27+8) should equal the emitted
+            // color word exactly. Reading both directly to find out what object holds this value
+            // and confirm the emission site adds no corruption of its own.
+            const uint32_t r27 = GetPersistentCpuContext().gpr[27];
+            uint32_t colorAtR27Plus8 = 0;
+            bool colorReadOk = false;
+            if (r27 != 0) {
+                try {
+                    colorAtR27Plus8 = Memory::Read32(r27 + 8u);
+                    colorReadOk = true;
+                } catch (const Memory::AccessViolation&) {
+                    colorReadOk = false;
+                }
+            }
+            // A second caller (LR=0x802B6DF8, disassembled offline) uses a DIFFERENT calling
+            // convention: r31 itself is the color pointer directly (not object+8), passed in from
+            // yet another function via 0x802dd064's return values, and is null-checked before use
+            // (`cmpwi r31,0; ...; lwz r0,0(r31); stw r0,gatherpipe`) - meaning a null r31 would
+            // skip color emission entirely for that vertex. Reading it too since the r27+8 guess
+            // above doesn't apply to this caller.
+            const uint32_t r31 = GetPersistentCpuContext().gpr[31];
+            uint32_t colorAtR31 = 0;
+            bool colorAtR31Ok = false;
+            if (r31 != 0) {
+                try {
+                    colorAtR31 = Memory::Read32(r31);
+                    colorAtR31Ok = true;
+                } catch (const Memory::AccessViolation&) {
+                    colorAtR31Ok = false;
+                }
+            }
+            // Confirmed: colorAtR31 == 0xFFFFFF00 (alpha=0) is a permanently-fixed, never-varying
+            // value at a specific stable address, unlike the (legitimately animating) material
+            // color traced earlier. Dumping DiagRecentCalls the first couple of times this exact
+            // broken value is seen, to find who last touched this address.
+            if (colorAtR31Ok && colorAtR31 == 0xFFFFFF00u) {
+                static int brokenDumpCount = 0;
+                if (brokenDumpCount < 3) {
+                    ++brokenDumpCount;
+                    RT_LOGF(RT_TAG_GX, "NSMBW_BROKEN_VERTCOLOR r31=0x%08X colorAtR31=0x%08X\n", r31, colorAtR31);
+                    const uint32_t next = DiagRecentCalls::g_next.load(std::memory_order_relaxed);
+                    const uint32_t cap = static_cast<uint32_t>(DiagRecentCalls::kCapacity);
+                    for (uint32_t i = 0; i < 80; ++i) {
+                        const uint32_t slot = (next - 1u - i) % cap;
+                        RT_LOGF(RT_TAG_GX, "  [-%u] addr=0x%08X lr=0x%08X\n", i,
+                            DiagRecentCalls::g_addrs[slot], DiagRecentCalls::g_lrs[slot]);
+                    }
+                }
+            }
+            float posX = 0, posY = 0;
+            if (posFmt.type == GX_F32 && (posFmt.cnt == GX_POS_XY || posFmt.cnt == GX_POS_XYZ)) {
+                uint32_t xb, yb;
+                std::memcpy(&xb, v, 4);
+                std::memcpy(&yb, v + 4, 4);
+                xb = __builtin_bswap32(xb);
+                yb = __builtin_bswap32(yb);
+                std::memcpy(&posX, &xb, 4);
+                std::memcpy(&posY, &yb, 4);
+            }
             RT_LOGF(RT_TAG_GX,
                     "NSMBW_VERT fmt=%u prim=%u vtxCount=%u posDesc=%u nrmDesc=%u clr0Desc=%u tex0Desc=%u "
-                    "posCnt=%u posType=%u posFrac=%u tex0Cnt=%u tex0Type=%u tex0Frac=%u "
-                    "rawBytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                    "posCnt=%u posType=%u posFrac=%u clr0Cnt=%u clr0Type=%u tex0Cnt=%u tex0Type=%u tex0Frac=%u "
+                    "pos=(%.1f,%.1f) callerLR=0x%08X r27=0x%08X colorAtR27p8_ok=%d colorAtR27p8=0x%08X "
+                    "r31=0x%08X colorAtR31_ok=%d colorAtR31=0x%08X "
+                    "rawBytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
                     (unsigned)vtxFmt, (unsigned)prim, (unsigned)vtxCount, (unsigned)g_hleGxState.vtxDesc[9],
                     (unsigned)g_hleGxState.vtxDesc[10], (unsigned)g_hleGxState.vtxDesc[11],
                     (unsigned)g_hleGxState.vtxDesc[13], (unsigned)posFmt.cnt, (unsigned)posFmt.type,
-                    (unsigned)posFmt.frac, (unsigned)texFmt.cnt, (unsigned)texFmt.type, (unsigned)texFmt.frac,
-                    v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
+                    (unsigned)posFmt.frac, (unsigned)clr0Fmt.cnt, (unsigned)clr0Fmt.type,
+                    (unsigned)texFmt.cnt, (unsigned)texFmt.type, (unsigned)texFmt.frac,
+                    posX, posY, lr, r27, colorReadOk ? 1 : 0, colorAtR27Plus8,
+                    r31, colorAtR31Ok ? 1 : 0, colorAtR31,
+                    v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11],
+                    v[12], v[13], v[14], v[15], v[16], v[17], v[18], v[19]);
         }
     }
-    if (!aurora::gx::fifo::submit_raw_draw(prim, vtxFmt, packet + 3, vtxCount, packetBytes - 3u)) {
+    // DIAGNOSTIC (temporary): NSMBW_LOG_DRAW_POS decodes every vertex's POS+UV (F32 XY only) for
+    // textured quad draws (vtxCount<=8) - all sampled textures are confirmed correct on their own
+    // (NSMBW_DUMP_TEXTURES), so this checks whether the quad's own width/height and UV span match
+    // the source texture's size, or whether it's being stretched/tiled onto a much larger quad.
+    // Remove once resolved.
+    if (std::getenv("NSMBW_LOG_DRAW_POS") != nullptr && vtxCount <= 8 &&
+        g_hleGxState.vtxDesc[13] != GX_NONE) {
+        static int posLogged = 0;
+        if (posLogged < 200) {
+            const auto& posFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_POS];
+            const auto& texFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_TEX0];
+            if (posFmt.type == GX_F32 && posFmt.cnt == GX_POS_XY) {
+                ++posLogged;
+                uint32_t vertexSize = 0;
+                if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0) {
+                    char line[512];
+                    int off = std::snprintf(line, sizeof(line), "NSMBW_DRAW_POS prim=%u vtxCount=%u vtxSize=%u",
+                                             (unsigned)prim, (unsigned)vtxCount, vertexSize);
+                    const uint8_t* base = packet + 3;
+                    for (uint16_t vi = 0; vi < vtxCount; ++vi) {
+                        const uint8_t* vp = base + vi * vertexSize;
+                        uint32_t xb, yb;
+                        std::memcpy(&xb, vp, 4);
+                        std::memcpy(&yb, vp + 4, 4);
+                        xb = __builtin_bswap32(xb);
+                        yb = __builtin_bswap32(yb);
+                        float x, y;
+                        std::memcpy(&x, &xb, 4);
+                        std::memcpy(&y, &yb, 4);
+                        float u = 0.f, v2 = 0.f;
+                        if (texFmt.type == GX_F32) {
+                            const uint8_t* tp = vp + 8;
+                            uint32_t ub, vb;
+                            std::memcpy(&ub, tp, 4);
+                            std::memcpy(&vb, tp + 4, 4);
+                            ub = __builtin_bswap32(ub);
+                            vb = __builtin_bswap32(vb);
+                            std::memcpy(&u, &ub, 4);
+                            std::memcpy(&v2, &vb, 4);
+                        }
+                        off += std::snprintf(line + off, sizeof(line) - off, " v%u=(xy:%.1f,%.1f uv:%.3f,%.3f)",
+                                              vi, x, y, u, v2);
+                    }
+                    RT_LOGF(RT_TAG_GX, "%s\n", line);
+                    // DIAGNOSTIC (temporary): "every screen shows flat color instead of real
+                    // texture content" investigation. This is the draw call that's actually live
+                    // for NSMBW (confirmed by this exact log tag firing while an equivalent probe
+                    // placed in aurora-main's command_processor.cpp raw-FIFO draw handler never
+                    // fired at all - NSMBW's vertex submission goes through this HLE immediate-mode
+                    // path, not that one). Dumps the TEV color/alpha routing active RIGHT NOW, at
+                    // the moment this exact quad is submitted, via the g_nsmbwLiveTev* mirrors
+                    // (populated by aurora-main/lib/gx/command_processor.cpp's BP-register decode,
+                    // which - unlike vertex submission - genuinely is how NSMBW's GXSetTevColorIn/
+                    // AlphaIn/Order calls reach aurora, since those don't have their own HLE
+                    // override on this project's addresses). Remove once resolved.
+                    if (std::getenv("NSMBW_LOG_DRAW_TEV") != nullptr) {
+                        // NSMBW_DRAW_TEVREG: the TEV constant color registers (C0-C3, set via
+                        // GXSetTevColor) are separate from per-vertex CLR0 - if a combiner's alpha
+                        // input references a TEV reg (not vertex/texture alpha), a zeroed register
+                        // here would suppress final alpha independently of vertex color, which the
+                        // NSMBW_FORCE_ALPHA_255_V2 test (vertex-color-only) would never touch.
+                        // idx 0=TEVPREV(not a real constant reg), 1=GX_TEVREG0 ("tevreg0" in shader),
+                        // 2=GX_TEVREG1 ("tevreg1" in shader), 3=GX_TEVREG2. Print all 4 - an earlier
+                        // version of this log only printed idx 0/1 and mislabeled idx1 as "reg1",
+                        // which is actually tevreg0, not tevreg1.
+                        RT_LOGF(RT_TAG_GX,
+                            "NSMBW_DRAW_TEVREG draw#%d prev=(%.3f,%.3f,%.3f,%.3f) tevreg0=(%.3f,%.3f,%.3f,%.3f) "
+                            "tevreg1=(%.3f,%.3f,%.3f,%.3f) tevreg2=(%.3f,%.3f,%.3f,%.3f)\n",
+                            posLogged,
+                            g_nsmbwLiveTevRegColorR[0], g_nsmbwLiveTevRegColorG[0], g_nsmbwLiveTevRegColorB[0], g_nsmbwLiveTevRegAlpha[0],
+                            g_nsmbwLiveTevRegColorR[1], g_nsmbwLiveTevRegColorG[1], g_nsmbwLiveTevRegColorB[1], g_nsmbwLiveTevRegAlpha[1],
+                            g_nsmbwLiveTevRegColorR[2], g_nsmbwLiveTevRegColorG[2], g_nsmbwLiveTevRegColorB[2], g_nsmbwLiveTevRegAlpha[2],
+                            g_nsmbwLiveTevRegColorR[3], g_nsmbwLiveTevRegColorG[3], g_nsmbwLiveTevRegColorB[3], g_nsmbwLiveTevRegAlpha[3]);
+                        for (uint32_t st = 0; st < g_nsmbwLiveNumTevStages && st < 16; ++st) {
+                            RT_LOGF(RT_TAG_GX,
+                                "NSMBW_DRAW_TEV draw#%d stage=%u texMap=%u colorIn a=%u b=%u c=%u d=%u "
+                                "alphaIn a=%u b=%u c=%u d=%u\n",
+                                posLogged, st, g_nsmbwLiveTevTexMap[st],
+                                g_nsmbwLiveTevColorA[st], g_nsmbwLiveTevColorB[st],
+                                g_nsmbwLiveTevColorC[st], g_nsmbwLiveTevColorD[st],
+                                g_nsmbwLiveTevAlphaA[st], g_nsmbwLiveTevAlphaB[st],
+                                g_nsmbwLiveTevAlphaC[st], g_nsmbwLiveTevAlphaD[st]);
+                            // "Is the big instructional-text/illustration texture ever actually
+                            // drawn, or only loaded?" g_boundTexMaps[tid] (gx_internal.h) is the
+                            // real, currently-bound GXTexObj info for that slot right now - not a
+                            // load-time snapshot, so this identifies the ACTUAL texture (by its
+                            // real width/height/format/objAddr) behind whatever this draw's TEV
+                            // stage samples, directly comparable against the confirmed-correct
+                            // NSMBW_DUMP_TEXTURES dumps (e.g. 608x112 fmt5 = the strap
+                            // instruction text, 256x368 fmt4 = the hand illustration).
+                            const uint32_t tm = g_nsmbwLiveTevTexMap[st];
+                            if (tm < 8) {
+                                const auto& bound = g_boundTexMaps[tm];
+                                RT_LOGF(RT_TAG_GX,
+                                    "NSMBW_DRAW_BOUND_TEX draw#%d stage=%u tid=%u objAddr=0x%08X "
+                                    "%ux%u fmt=%u dataAddr=0x%08X\n",
+                                    posLogged, st, tm, bound.objAddr, bound.width, bound.height,
+                                    bound.format, bound.dataAddr);
+                            }
+                        }
+                        // NSMBW_DRAW_BLEND: the confirmed-correct draws (real strap-text/hand-
+                        // illustration textures, sane TEV routing, correct quad geometry) still
+                        // don't show on screen - the remaining untested piece of per-draw state
+                        // is the actual blend mode active for THIS draw. type=0(NONE) draws fully
+                        // opaque; if it's BLEND with src/dst combined to make the result always
+                        // equal the destination (e.g. src=ZERO), the correctly-rendered content
+                        // would be composited as fully invisible despite everything upstream of
+                        // it being right. g_nsmbwLastBlendDiag (gx_internal.h) is updated on every
+                        // real GXSetBlendMode call, so this reads it live, right at the draw.
+                        RT_LOGF(RT_TAG_GX,
+                            "NSMBW_DRAW_BLEND draw#%d type=%u(0=NONE,1=BLEND,2=LOGIC,3=SUBTRACT) "
+                            "src=%u dst=%u op=%u setCount=%u\n",
+                            posLogged, g_nsmbwLastBlendDiag.type, g_nsmbwLastBlendDiag.src,
+                            g_nsmbwLastBlendDiag.dst, g_nsmbwLastBlendDiag.op,
+                            g_nsmbwLastBlendDiag.setCount);
+                        // NSMBW_DRAW_DEPTH: a GPU-level frame capture proved these draws never
+                        // produce pixels - the final image is a flat, uniform clear color with
+                        // zero variation. Depth testing is the one piece of state that can discard
+                        // every fragment silently (compare_enable=1 with a Z-buffer that never got
+                        // cleared to the far plane, or the wrong compare function, would fail every
+                        // fragment's depth test regardless of correct TEV/blend/vertex data).
+                        RT_LOGF(RT_TAG_GX,
+                            "NSMBW_DRAW_DEPTH draw#%d compareEnable=%d func=%u(0=NEVER,1=LESS,2=EQUAL,"
+                            "3=LEQUAL,4=GREATER,5=NEQUAL,6=GEQUAL,7=ALWAYS) updateEnable=%d\n",
+                            posLogged, g_nsmbwLiveDepthCompare ? 1 : 0, g_nsmbwLiveDepthFunc,
+                            g_nsmbwLiveDepthUpdate ? 1 : 0);
+                    }
+                }
+            }
+        }
+    }
+    // TEMPORARY DIAGNOSTIC (v2 - redo of an inconclusive Sep-4 test): forces every direct CLR0/CLR1
+    // RGBA8 vertex's alpha byte to 0xFF in the EXACT buffer handed to submit_raw_draw (not a
+    // logging-only copy - the prior test's own writeup admits it patched "a local host-side copy
+    // ... never touching the guest-memory-adjacent fifoBytes staging array itself", which is
+    // consistent with the patch never actually reaching the real draw despite the log claiming it
+    // fired). Remove once resolved.
+    const uint8_t* vtxData = packet + 3;
+    uint32_t vtxDataBytes = packetBytes - 3u;
+    std::vector<uint8_t> patchedVtxData;
+    // TARGETED SURVEY (temporary): NSMBW_FORCE_WIISTRAP_ALPHA only tests one specific CLR0
+    // fingerprint, (255,255,255,0) - and that test turned out inconclusive, because the BOOT
+    // scene's own background fades in to solid WHITE (confirmed via GPU_PEEK captures at several
+    // frame offsets), so a WHITE quad's alpha can never be visually distinguished from the
+    // background regardless of whether it's forced opaque. The actual missing content (text/
+    // illustration) must use a non-white, contrasting color to be readable at all - this logs
+    // every DISTINCT CLR0 corner color seen during the BOOT scene (deduplicated, first-seen order)
+    // so the real candidate (a dark/colored quad, not this white one) can be identified by RGBA
+    // instead of guessing. Remove once resolved.
+    if (std::getenv("NSMBW_LOG_CLR0_HIST") != nullptr &&
+        (g_nsmbwCurrentSceneProfile == 0 || g_nsmbwCurrentSceneProfile == 5)) {
+        uint32_t vertexSize = 0;
+        if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0 &&
+            static_cast<uint64_t>(vertexSize) * vtxCount <= vtxDataBytes) {
+            uint32_t clr0Off = 0;
+            bool haveClr0 = false;
+            uint32_t clr0Size = 0;
+            uint32_t posOff = 0;
+            bool havePos = false;
+            uint32_t running = 0;
+            for (int attr = 0; attr < 26; ++attr) {
+                const GXAttrType type = g_hleGxState.vtxDesc[attr];
+                if (type == GX_NONE) continue;
+                const uint32_t attrBytes =
+                    GetDirectAttrByteSizeForFifo(static_cast<GXAttr>(attr), g_hleGxState.vtxAttrFmt[vtxFmt][attr]);
+                if (attr == GX_VA_CLR0) {
+                    haveClr0 = true;
+                    clr0Off = running;
+                    clr0Size = attrBytes;
+                }
+                if (attr == GX_VA_POS) {
+                    havePos = true;
+                    posOff = running;
+                }
+                running += attrBytes;
+            }
+            const auto& posFmt = g_hleGxState.vtxAttrFmt[vtxFmt][GX_VA_POS];
+            if (haveClr0 && clr0Size == 4) {
+                static uint32_t seen[64] = {0};
+                static int seenCount = 0;
+                // Reset the seen-cache on every scene change - it filled up during scene 0
+                // (WiiStrap) the first time this was used, and with no reset a later scene (e.g.
+                // 5/STAGE) never got a chance to log anything of its own once all 64 slots were
+                // already taken.
+                static uint32_t lastScene = 0xFFFFFFFFu;
+                if (g_nsmbwCurrentSceneProfile != lastScene) {
+                    lastScene = g_nsmbwCurrentSceneProfile;
+                    seenCount = 0;
+                }
+                for (uint16_t vi = 0; vi < vtxCount; ++vi) {
+                    const uint8_t* cp = vtxData + vi * vertexSize + clr0Off;
+                    const uint32_t word = (uint32_t(cp[0]) << 24) | (uint32_t(cp[1]) << 16) |
+                                          (uint32_t(cp[2]) << 8) | uint32_t(cp[3]);
+                    bool isNew = true;
+                    for (int i = 0; i < seenCount; ++i) {
+                        if (seen[i] == word) { isNew = false; break; }
+                    }
+                    if (isNew && seenCount < 64) {
+                        seen[seenCount++] = word;
+                        float x = 0.f, y = 0.f, z = 0.f;
+                        bool posOk = false;
+                        if (havePos && posFmt.type == GX_F32) {
+                            const uint8_t* pp = vtxData + vi * vertexSize + posOff;
+                            uint32_t xb, yb, zb = 0;
+                            std::memcpy(&xb, pp, 4);
+                            std::memcpy(&yb, pp + 4, 4);
+                            xb = __builtin_bswap32(xb);
+                            yb = __builtin_bswap32(yb);
+                            std::memcpy(&x, &xb, 4);
+                            std::memcpy(&y, &yb, 4);
+                            if (posFmt.cnt == GX_POS_XYZ) {
+                                std::memcpy(&zb, pp + 8, 4);
+                                zb = __builtin_bswap32(zb);
+                                std::memcpy(&z, &zb, 4);
+                            }
+                            posOk = true;
+                        }
+                        RT_LOGF(RT_TAG_GX,
+                                "NSMBW_CLR0_HIST new rgba=(%u,%u,%u,%u) vtxFmt=%u posType=%u posOk=%d pos=(%.1f,%.1f,%.1f) callerLR=0x%08X\n",
+                                cp[0], cp[1], cp[2], cp[3], (unsigned)vtxFmt, (unsigned)posFmt.type, posOk ? 1 : 0,
+                                x, y, z, GetPersistentCpuContext().lr);
+                    }
+                }
+            }
+        }
+    }
+    if (std::getenv("NSMBW_FORCE_ALPHA_255_V2") != nullptr) {
+        uint32_t vertexSize = 0;
+        if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0 &&
+            static_cast<uint64_t>(vertexSize) * vtxCount <= vtxDataBytes) {
+            uint32_t clr0Off = 0;
+            bool haveClr0 = false;
+            uint32_t clr0Size = 0;
+            uint32_t running = 0;
+            for (int attr = 0; attr < 26; ++attr) {
+                const GXAttrType type = g_hleGxState.vtxDesc[attr];
+                if (type == GX_NONE) continue;
+                const uint32_t attrBytes =
+                    GetDirectAttrByteSizeForFifo(static_cast<GXAttr>(attr), g_hleGxState.vtxAttrFmt[vtxFmt][attr]);
+                if (attr == GX_VA_CLR0) {
+                    haveClr0 = true;
+                    clr0Off = running;
+                    clr0Size = attrBytes;
+                }
+                running += attrBytes;
+            }
+            if (haveClr0 && clr0Size == 4) {
+                patchedVtxData.assign(vtxData, vtxData + vtxDataBytes);
+                uint32_t patched = 0;
+                for (uint16_t vi = 0; vi < vtxCount; ++vi) {
+                    patchedVtxData[vi * vertexSize + clr0Off + 3] = 0xFF;
+                    ++patched;
+                }
+                vtxData = patchedVtxData.data();
+                static int logged = 0;
+                if (logged < 10) {
+                    ++logged;
+                    RT_LOGF(RT_TAG_GX, "NSMBW_FORCE_ALPHA_V2 draw patched=%u/%u vtxCount=%u vtxFmt=%u vertexSize=%u clr0Off=%u\n",
+                            patched, (unsigned)vtxCount, (unsigned)vtxCount, (unsigned)vtxFmt, vertexSize, clr0Off);
+                }
+            }
+        }
+    }
+    // TARGETED EXPERIMENT (temporary): unlike NSMBW_FORCE_ALPHA_255_V2 above (which blanket-forces
+    // alpha=0xFF for every CLR0 vertex, and is known to break correct fade-out end-states / other
+    // legitimate alpha=0 content elsewhere - an earlier, cruder version of this same idea), this
+    // patches alpha ONLY for vertices matching the EXACT broken-pane fingerprint (RGB=(255,255,255),
+    // A=0) that nsmbw_wiistrap_execute_diag.cpp / nsmbw_wiistrap_draw_diag.cpp's watch-address
+    // tracing confirmed for the stuck WiiStrap pane, AND only while the BOOT/WiiStrap scene is
+    // active (g_nsmbwCurrentSceneProfile==0) - so it can't touch some other scene's vertices even if
+    // they happen to hit the same exact byte pattern for a legitimate reason. Purely a diagnostic to
+    // see whether forcing alpha for just this narrow pattern reveals the WiiStrap boot text/
+    // illustration; not a proposed fix either way. Remove once resolved.
+    if (std::getenv("NSMBW_FORCE_WIISTRAP_ALPHA") != nullptr && g_nsmbwCurrentSceneProfile == 0) {
+        uint32_t vertexSize = 0;
+        if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0 &&
+            static_cast<uint64_t>(vertexSize) * vtxCount <= vtxDataBytes) {
+            uint32_t clr0Off = 0;
+            bool haveClr0 = false;
+            uint32_t clr0Size = 0;
+            uint32_t running = 0;
+            for (int attr = 0; attr < 26; ++attr) {
+                const GXAttrType type = g_hleGxState.vtxDesc[attr];
+                if (type == GX_NONE) continue;
+                const uint32_t attrBytes =
+                    GetDirectAttrByteSizeForFifo(static_cast<GXAttr>(attr), g_hleGxState.vtxAttrFmt[vtxFmt][attr]);
+                if (attr == GX_VA_CLR0) {
+                    haveClr0 = true;
+                    clr0Off = running;
+                    clr0Size = attrBytes;
+                }
+                running += attrBytes;
+            }
+            if (haveClr0 && clr0Size == 4) {
+                uint32_t matched = 0;
+                for (uint16_t vi = 0; vi < vtxCount; ++vi) {
+                    const uint8_t* cp = vtxData + vi * vertexSize + clr0Off;
+                    if (cp[0] == 0xFF && cp[1] == 0xFF && cp[2] == 0xFF && cp[3] == 0x00) {
+                        if (patchedVtxData.empty()) {
+                            patchedVtxData.assign(vtxData, vtxData + vtxDataBytes);
+                            vtxData = patchedVtxData.data();
+                        }
+                        patchedVtxData[vi * vertexSize + clr0Off + 3] = 0xFF;
+                        ++matched;
+                    }
+                }
+                if (matched > 0) {
+                    static int logged = 0;
+                    if (logged < 30) {
+                        ++logged;
+                        RT_LOGF(RT_TAG_GX,
+                                "NSMBW_FORCE_WIISTRAP_ALPHA draw patched=%u/%u vtxFmt=%u vertexSize=%u clr0Off=%u\n",
+                                matched, (unsigned)vtxCount, (unsigned)vtxFmt, vertexSize, clr0Off);
+                    }
+                }
+            }
+        }
+    }
+    if (!aurora::gx::fifo::submit_raw_draw(prim, vtxFmt, vtxData, vtxCount, vtxDataBytes)) {
         return false;
     }
     GXMarkFrameWork();
@@ -487,7 +918,36 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             const uint16_t countWords = ReadBE16(data + 1);
             const uint32_t packetBytes = 1u + 4u + (static_cast<uint32_t>(countWords) + 1u) * 4u;
             if (g_hleGxState.fifoByteCount < packetBytes) break;
+            // DIAGNOSTIC (temporary): NSMBW_LOG_ZERO_MTX - raw guest XF packets that load an all-zero
+            // 3x4 matrix into PNMTX0 (XF addr 0, 12 words), with the guest return address, to find
+            // the code writing them straight to the gather pipe. Distinct callers only.
+            if (std::getenv("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u &&
+                ReadBE16(data + 3) < 0x78u) {
+                const uint32_t nWords = static_cast<uint32_t>(countWords) + 1u;
+                bool allZero = true;
+                for (uint32_t w = 0; w < nWords && w < 12u && allZero; ++w) {
+                    if (ReadBE32(data + 5 + w * 4) != 0u) allZero = false;
+                }
+                static uint64_t rawSeen = 0;
+                ++rawSeen;
+                if (rawSeen > 20000 && allZero) {
+                    static uint32_t callers[12] = {};
+                    static int nCallers = 0;
+                    CpuContext* cc = TryGetCpuContext();
+                    const uint32_t lr = cc ? static_cast<uint32_t>(cc->lr) : 0u;
+                    const uint32_t pc = cc ? static_cast<uint32_t>(cc->pc) : 0u;
+                    bool known = false;
+                    for (int i = 0; i < nCallers; ++i) if (callers[i] == lr) { known = true; break; }
+                    if (!known && nCallers < 12) {
+                        callers[nCallers++] = lr;
+                        RT_LOGF(RT_TAG_GX, "NSMBW_ZERO_MTX raw XF all-zero matrix packet: words=%u addr=0x%04X LR=0x%08X PC=0x%08X\n",
+                                nWords, ReadBE16(data + 3), lr, pc);
+                    }
+                }
+            }
+            g_nsmbwXfLoadSource = 4u;
             GXCallDisplayList(data, packetBytes);
+            g_nsmbwXfLoadSource = 0u;
             GXMarkFrameWork();
             if (!consumeBytes(packetBytes, sink)) break;
             continue;

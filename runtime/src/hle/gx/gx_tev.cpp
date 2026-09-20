@@ -20,6 +20,8 @@ inline bool TevSwapOk(uint32_t id) { return GxTevIdOk(id, GX_MAX_TEVSWAP, "TEV s
 
 } // namespace
 
+NsmbwLastTevStageDiag g_nsmbwLastTevStage[16]{};
+
 // ============================================================================
 // TEV Stage Count and Order
 // ============================================================================
@@ -43,6 +45,10 @@ PPC_NATIVE_OVERRIDE_VOID(80171c4c, GX__SetTevOp_80171c4c, (uint32_t s, uint32_t 
 
 extern "C" void GX__SetTevOrder_8017214c(uint32_t s, uint32_t c, uint32_t m, uint32_t col) {
     if (!TevStageOk(s)) return;
+    g_nsmbwLastTevStage[s].texCoord = c;
+    g_nsmbwLastTevStage[s].texMap = m;
+    g_nsmbwLastTevStage[s].channel = col;
+    ++g_nsmbwLastTevStage[s].orderSetCount;
     GXSetTevOrder((GXTevStageID)s, (GXTexCoordID)c, (GXTexMapID)m, (GXChannelID)col);
 }
 PPC_NATIVE_OVERRIDE_VOID(8017214c, GX__SetTevOrder_8017214c, (uint32_t s, uint32_t c, uint32_t m, uint32_t col), (s, c, m, col));
@@ -51,14 +57,40 @@ PPC_NATIVE_OVERRIDE_VOID(8017214c, GX__SetTevOrder_8017214c, (uint32_t s, uint32
 // TEV Color/Alpha Inputs
 // ============================================================================
 
+// KNOWN BUG (not fixed here): these four addresses (ColorIn/AlphaIn/ColorOp/AlphaOp) were
+// all copy-pasted from MKW's HLE table without re-verifying against NSMBW's own
+// function_map.txt. The real, confirmed NSMBW addresses (function_map.txt:
+// "GXSetTevColorIn"/"GXSetTevAlphaIn"/"GXSetTevColorOp"/"GXSetTevAlphaOp") are
+// 0x801C8430/0x801C8470/0x801C84B0/0x801C8510 - none of the 0x80171xxx addresses below
+// correspond to real function entry points in this build (that whole range disassembles as
+// unrelated list/allocator code), so these overrides are silently dead for NSMBW; the
+// correct TEV routing seen in diagnostics comes from the real functions running as plain
+// translated code, unassisted by any of these. Pointing PPC_NATIVE_OVERRIDE at the real
+// addresses directly breaks the NSMBW build (linker: duplicate symbol against the
+// translator's own auto-generated func_801C8430 etc.) - this file lives in the shared
+// runtime/src/hle tree, which the NSMBW shard generator (Translator.Cli
+// emit-nsmbw-build-shards --native-source-dir projects/nsmbw/native) does not scan for
+// exclusions, unlike projects/nsmbw/native/*.cpp. Properly fixing this means moving these
+// overrides into a project-specific native/ source file and regenerating the shard
+// manifest, not just correcting the address inline here.
 extern "C" void GX__SetTevColorIn_80171ce0(uint32_t s, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
     if (!TevStageOk(s)) return;
+    g_nsmbwLastTevStage[s].colorA = a;
+    g_nsmbwLastTevStage[s].colorB = b;
+    g_nsmbwLastTevStage[s].colorC = c;
+    g_nsmbwLastTevStage[s].colorD = d;
+    ++g_nsmbwLastTevStage[s].colorSetCount;
     GXSetTevColorIn((GXTevStageID)s, (GXTevColorArg)a, (GXTevColorArg)b, (GXTevColorArg)c, (GXTevColorArg)d);
 }
 PPC_NATIVE_OVERRIDE_VOID(80171ce0, GX__SetTevColorIn_80171ce0, (uint32_t s, uint32_t a, uint32_t b, uint32_t c, uint32_t d), (s, a, b, c, d));
 
 extern "C" void GX__SetTevAlphaIn_80171d20(uint32_t s, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
     if (!TevStageOk(s)) return;
+    g_nsmbwLastTevStage[s].alphaA = a;
+    g_nsmbwLastTevStage[s].alphaB = b;
+    g_nsmbwLastTevStage[s].alphaC = c;
+    g_nsmbwLastTevStage[s].alphaD = d;
+    ++g_nsmbwLastTevStage[s].alphaSetCount;
     GXSetTevAlphaIn((GXTevStageID)s, (GXTevAlphaArg)a, (GXTevAlphaArg)b, (GXTevAlphaArg)c, (GXTevAlphaArg)d);
 }
 PPC_NATIVE_OVERRIDE_VOID(80171d20, GX__SetTevAlphaIn_80171d20, (uint32_t s, uint32_t a, uint32_t b, uint32_t c, uint32_t d), (s, a, b, c, d));
@@ -88,6 +120,17 @@ extern "C" void GX__SetTevColor_80171e10(uint32_t id, uint32_t cp) {
     const uint8_t* p=Memory::GetPointer(cp, 4); GXColor c; c.r=p[0]; c.g=p[1]; c.b=p[2]; c.a=p[3];
     GXSetTevColor((GXTevRegID)id, c);
 }
+// KNOWN BUG (not fixed here): this override targets 0x80171e10, MKW's address for
+// GXSetTevColor, copy-pasted without re-verifying against NSMBW's own function_map.txt.
+// Disassembly confirmed 0x80171e10 is mid-function inside an unrelated NSMBW
+// list/allocator routine (func_80171DA0), not a real function entry point, so this override
+// silently never fires for NSMBW. The real, confirmed NSMBW GXSetTevColor - verified via
+// disassembly of original/wiimj2d.dol (matches the RA/BG BP-register-pair pattern with the
+// SDK's redundant-write-3x quirk) - is at 0x801C8570. Pointing this override there directly
+// breaks the NSMBW build (linker: duplicate symbol against the translator's own
+// auto-generated func_801C8570) because this file lives in the shared runtime/src/hle tree,
+// which the NSMBW shard generator does not scan for override exclusions (unlike
+// projects/nsmbw/native/*.cpp) - see the identical note above GXSetTevColorIn.
 PPC_NATIVE_OVERRIDE_VOID(80171e10, GX__SetTevColor_80171e10, (uint32_t id, uint32_t cp), (id, cp));
 
 extern "C" void GX__SetTevColorS10_80171e70(uint32_t id, uint32_t cp) {

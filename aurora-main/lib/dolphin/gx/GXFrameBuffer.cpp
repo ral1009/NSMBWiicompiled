@@ -428,6 +428,27 @@ void GXCopyDisp(void* dest, GXBool clear) {
       std::max<u32>(g_gxState.dispCopyDstHeight != 0 ? g_gxState.dispCopyDstHeight : static_cast<u32>(g_gxState.dispCopySrc.height), 1);
   const auto [dstWidth, dstHeight] = scale_copy_dst(logicalDstWidth, logicalDstHeight);
 
+  // DIAGNOSTIC (temporary): NSMBW_LOG_COPYDISP_GEOM. A GPU peek trace showed the EFB (stage A)
+  // containing correct full-width content while the resolve target (stage B) came out only 143px
+  // wide, centred as a narrow strip in the final image. This prints the actual inputs to that
+  // sizing decision so the wrong one is identified directly instead of inferred from the output
+  // width. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_COPYDISP_GEOM") != nullptr) {
+    static uint64_t n = 0;
+    ++n;
+    if (n <= 3 || (n % 60) == 0) {
+      std::fprintf(stderr,
+                   "[NSMBW_COPYDISP_GEOM] #%llu dispCopySrc=(%d,%d,%dx%d) dispCopyDstW=%u dispCopyDstH=%u "
+                   "-> logicalDst=%ux%u scaledDst=%ux%u rect=(%d,%d,%dx%d)\n",
+                   static_cast<unsigned long long>(n), g_gxState.dispCopySrc.x, g_gxState.dispCopySrc.y,
+                   g_gxState.dispCopySrc.width, g_gxState.dispCopySrc.height,
+                   static_cast<unsigned>(g_gxState.dispCopyDstWidth),
+                   static_cast<unsigned>(g_gxState.dispCopyDstHeight), logicalDstWidth, logicalDstHeight,
+                   dstWidth, dstHeight, rect.x, rect.y, rect.width, rect.height);
+      std::fflush(stderr);
+    }
+  }
+
   if (!g_gxState.displayCopyTexture || g_gxState.displayCopyWidth != dstWidth ||
       g_gxState.displayCopyHeight != dstHeight) {
     g_gxState.displayCopyTexture = aurora::gfx::new_render_texture(dstWidth, dstHeight, GX_TF_RGBA8, "Display Copy");

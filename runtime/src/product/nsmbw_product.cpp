@@ -11,6 +11,7 @@
 // that failure, once we see it, is Phase 6's actual starting point.
 #include "abi_bridge.h"
 #include "runtime_config.h"
+#include "settings_overlay.h"
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -475,11 +476,81 @@ LONG WINAPI DiagVectoredExceptionHandler(EXCEPTION_POINTERS* info) {
 
 } // namespace
 
+namespace {
+
+// Fresh-state policy for every NSMBW launch (requested 2026-09-19, after a crashed run left the
+// app in a state where it would not start again):
+//
+//  * The game's NAND save (title 00010004/534d4e50 = SMNP, the PAL disc) is deleted, so each run
+//    boots through the "save data created" dialog into the same clean state.
+//  * Config.toml's video/window keys are put back to windowed 640x480 at 1x. The crashed run had
+//    ended maximized/borderless at an 8x render scale, and those values are applied at startup.
+//  * The shader/pipeline caches (nsmbw_data/Cache/*.db, SQLite with write-ahead logs) are wiped
+//    ONLY if the previous run did not exit cleanly. That cache is what actually broke startup:
+//    the abort left its WAL half-written and every later launch aborted inside pipeline prewarm
+//    while loading it (Windows event log: 0xC0000409 in ucrtbase, right after "Using framebuffer
+//    size"; a fresh Cache/ booted immediately). Wiping it unconditionally would cost a full shader
+//    recompile and skipped draws on every launch, so a marker file records whether the last run
+//    reached a clean exit instead.
+//
+// This runs before aurora_initialize (which reads Config.toml) and before any guest code (which
+// reads the NAND). Set NSMBW_KEEP_STATE=1 to skip all three for a run that should carry state over.
+constexpr const char* kCrashMarkerName = ".last_run_unclean";
+
+void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
+    if (std::getenv("NSMBW_KEEP_STATE") != nullptr) {
+        std::printf("[nsmbw] NSMBW_KEEP_STATE set: keeping save, config and pipeline cache from the previous run.\n");
+        return;
+    }
+    std::error_code ec;
+
+    const auto saveDir = RuntimeConfigFile::ApplicationDataDirectory() / "NAND" / "title" / "00010004" / "534d4e50";
+    if (std::filesystem::exists(saveDir, ec)) {
+        const auto removed = std::filesystem::remove_all(saveDir, ec);
+        std::printf("[nsmbw] Reset: removed NSMBW NAND save (%llu entries) at %s\n",
+                    static_cast<unsigned long long>(removed), saveDir.string().c_str());
+    }
+
+    const bool wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(1.0f) &&
+                            RuntimeConfigFile::SetDisplayMode("windowed") &&
+                            RuntimeConfigFile::SetWindowSize(640u, 480u);
+    std::printf("[nsmbw] Reset: Config.toml video/window keys -> windowed 640x480 @1x (%s)\n",
+                wroteVideo ? "ok" : "FAILED");
+
+    const auto marker = cacheDir / kCrashMarkerName;
+    if (std::filesystem::exists(marker, ec)) {
+        std::size_t removed = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
+            const auto name = entry.path().filename().string();
+            if (name.rfind("pipeline_cache.db", 0) == 0 || name.rfind("dawn_cache.db", 0) == 0) {
+                if (std::filesystem::remove(entry.path(), ec)) ++removed;
+            }
+        }
+        std::printf("[nsmbw] Reset: previous run did not exit cleanly - wiped %zu pipeline/shader cache file(s)\n", removed);
+    }
+    // Armed for this run; cleared by the atexit hook below on a clean exit.
+    std::ofstream(marker.string()) << "1\n";
+}
+
+} // namespace
+
 int main() {
     // Unbuffered so log order is trustworthy across an abnormal termination (abort() from an
     // uncaught exception does not flush buffered stdio) - needed to tell whether a crash happens
     // before or after other printf-based milestones instead of guessing from apparent line order.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    {
+        std::error_code ec;
+        const auto cacheDir = std::filesystem::current_path() / "nsmbw_data" / "Cache";
+        std::filesystem::create_directories(cacheDir, ec);
+        ResetPersistentStateForCleanRun(cacheDir);
+        static const std::string markerPath = (cacheDir / kCrashMarkerName).string();
+        std::atexit(+[] {
+            std::error_code ec2;
+            std::filesystem::remove(markerPath, ec2);
+        });
+    }
 #if defined(_WIN32)
     ::AddVectoredExceptionHandler(1, DiagVectoredExceptionHandler);
 #endif
@@ -500,6 +571,13 @@ int main() {
     // BuildAndPublishRuntimeFst(); its trailing __DVDFSInit call targets MKW's address and is
     // already guarded by a registry lookup, so it simply no-ops here.
     DVDInit_8015EA1C();
+
+    // NSMBW's own boot sequence draws its Wii Remote strap warning as its first real content -
+    // MKW's black "WiiCompiled" title card (meant to cover the brief gap before guest rendering
+    // starts) was instead covering that warning screen and then disappearing over it partway
+    // through. See settings_overlay::DisableStartupScreen's own comment for why this is an
+    // opt-out rather than a change to the card's default behavior.
+    settings_overlay::DisableStartupScreen();
 
     std::printf("[nsmbw] Opening window...\n");
     AuroraInfo auroraInfo{};
@@ -528,6 +606,28 @@ int main() {
 
     // Must precede any guest GX call - see the declaration above and GXManage.cpp for why.
     GXInitShadowRegisterIds();
+
+    // DIAGNOSTIC (temporary): NSMBW_AUTO_SKIP_STRAP - dInfo_c::mGameFlag (0x8042A260, confirmed via
+    // projects/nsmbw/function_map.txt) has a real, game-supported GAME_FLAG_AUTO_SKIP bit (bit 19,
+    // 0x80000; see NSMBW-Decomp's d_info.hpp: "Whether to automatically skip the Wii strap and
+    // controller information screens"). dScBoot_c::executeState_WiiStrapDispEndWait's own
+    // mAutoAdvanceTimer (should expire after 1200 frames / 20s) has not fired after 120+ real
+    // seconds of observed runtime - this sets the game's own documented skip flag to test whether
+    // boot progresses past WiiStrap/ControllerInformation at all, to determine what's actually
+    // reachable, independent of (and without yet explaining) why the auto-advance timer itself
+    // isn't firing. Not a permanent fix. Remove once the real timer/state-machine issue is found.
+    if (std::getenv("NSMBW_AUTO_SKIP_STRAP") != nullptr) {
+        constexpr uint32_t kGameFlagAddr = 0x8042A260u;
+        constexpr uint32_t kGameFlagAutoSkip = 1u << 19;
+        try {
+            const uint32_t existing = Memory::Read32(kGameFlagAddr);
+            Memory::Write32(kGameFlagAddr, existing | kGameFlagAutoSkip);
+            std::printf("[nsmbw] NSMBW_AUTO_SKIP_STRAP: set dInfo_c::mGameFlag |= GAME_FLAG_AUTO_SKIP (0x%08X -> 0x%08X)\n",
+                        existing, existing | kGameFlagAutoSkip);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[nsmbw] NSMBW_AUTO_SKIP_STRAP: failed to set mGameFlag: %s\n", e.what());
+        }
+    }
 
     InitializePersistentCpuContext();
     CpuContext& cpu = GetPersistentCpuContext();

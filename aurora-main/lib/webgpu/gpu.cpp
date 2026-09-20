@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -348,6 +349,16 @@ void nsmbw_diag_peek_texture(const wgpu::CommandEncoder& encoder, const wgpu::Te
           uint32_t firstNonBlackX = UINT32_MAX, firstNonBlackY = UINT32_MAX;
           uint8_t firstR = 0, firstG = 0, firstB = 0, firstA = 0;
           uint8_t maxR = 0, maxG = 0, maxB = 0;
+          // DIAGNOSTIC (temporary): NSMBW_GPU_PEEK - a green rectangle is visible on screen, but
+          // guest-side state (textures, TEV registers) shows no green anywhere. This tracks the
+          // first "green-dominant" pixel (G noticeably higher than both R and B at the SAME
+          // pixel - maxRGB alone can't show this, since it tracks each channel's max
+          // independently, not whether they coincide) to get ground truth on whether green is
+          // really in the rendered output, and if so, exactly where and what its real RGBA is.
+          // Remove once resolved.
+          bool foundGreen = false;
+          uint32_t greenX = 0, greenY = 0;
+          uint8_t greenR = 0, greenG = 0, greenB = 0, greenA = 0;
           for (uint32_t y = 0; y < kPatchH; ++y) {
             for (uint32_t x = 0; x < kPatchW; ++x) {
               const uint8_t* p = bytes + y * kBytesPerRow + x * 4;
@@ -365,14 +376,48 @@ void nsmbw_diag_peek_texture(const wgpu::CommandEncoder& encoder, const wgpu::Te
                   firstA = p[3];
                 }
               }
+              if (!foundGreen && p[1] > static_cast<int>(p[0]) + 30 && p[1] > static_cast<int>(p[2]) + 30) {
+                foundGreen = true;
+                greenX = x;
+                greenY = y;
+                greenR = p[0];
+                greenG = p[1];
+                greenB = p[2];
+                greenA = p[3];
+              }
             }
           }
           std::fprintf(stderr,
                        "[NSMBW_PEEK] %s: origin=(%u,%u) patch=%ux%u nonBlackPx=%u/%u maxRGB=%u,%u,%u "
-                       "firstNonBlackLocalXY=(%u,%u) firstRGBA=%u,%u,%u,%u\n",
+                       "firstNonBlackLocalXY=(%u,%u) firstRGBA=%u,%u,%u,%u greenPixelFound=%d "
+                       "greenXY=(%u,%u) greenRGBA=%u,%u,%u,%u\n",
                        stageStr.c_str(), px, py, kPatchW, kPatchH, nonBlackCount, kPatchW * kPatchH, maxR, maxG,
-                       maxB, firstNonBlackX, firstNonBlackY, firstR, firstG, firstB, firstA);
+                       maxB, firstNonBlackX, firstNonBlackY, firstR, firstG, firstB, firstA, foundGreen ? 1 : 0,
+                       greenX, greenY, greenR, greenG, greenB, greenA);
           std::fflush(stderr);
+          // DIAGNOSTIC (temporary): dump the whole peeked patch as a real image so it can be
+          // looked at directly instead of inferred from aggregate stats (a 94%-non-black count is
+          // equally consistent with "correct busy screen" and "blank white background plus a
+          // little incidental content" - only actually seeing it settles which). Remove once
+          // resolved.
+          if (std::getenv("NSMBW_GPU_PEEK_DUMP") != nullptr) {
+            char path[256];
+            std::snprintf(path, sizeof(path),
+                          "C:/Users/ryanl/AppData/Local/Temp/claude/C--Users-ryanl-Wiicompiled/"
+                          "c3a26c2b-c465-4d33-9177-f391985d887b/scratchpad/nsmbw_peek_%s.ppm",
+                          stageStr.c_str());
+            std::FILE* f = std::fopen(path, "wb");
+            if (f != nullptr) {
+              std::fprintf(f, "P6\n%u %u\n255\n", kPatchW, kPatchH);
+              for (uint32_t y = 0; y < kPatchH; ++y) {
+                for (uint32_t x = 0; x < kPatchW; ++x) {
+                  const uint8_t* p = bytes + y * kBytesPerRow + x * 4;
+                  std::fwrite(p, 1, 3, f);
+                }
+              }
+              std::fclose(f);
+            }
+          }
         }
         readback.Unmap();
       });

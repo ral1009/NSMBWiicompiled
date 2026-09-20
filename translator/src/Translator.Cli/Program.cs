@@ -581,8 +581,10 @@ int RunEmitNsmbwBuildShards(string[] argsTail)
                           $"{result.OptimizationVariantCount:N0} of those disagreed only on inlining/optimization choices)");
         if (result.StateFreeAbiConflictCount > 0)
         {
-            Console.WriteLine($"  excluded {result.StateFreeAbiConflictCount:N0} caller(s) whose state-free ABI expectation " +
-                              "didn't match the target's surviving definition (cross-module optimization disagreement)");
+            Console.WriteLine($"  downgraded {result.StateFreeAbiConflictCount:N0} caller(s) to the safe InvokeDirectCpu " +
+                              "path for the specific call site(s) whose state-free ABI expectation didn't match the " +
+                              "target's surviving definition (cross-module optimization disagreement) - the callers " +
+                              "themselves are kept, not dropped");
         }
         Console.WriteLine($"  shards: {result.ShardCount:N0}");
         Console.WriteLine($"  CMake graph: {result.CMakeManifestPath}");

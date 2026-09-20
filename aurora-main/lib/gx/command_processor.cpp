@@ -17,10 +17,98 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <optional>
 #include <vector>
+
+// DIAGNOSTIC (temporary, NSMBW P_stripe_00 investigation - see gx_texture.cpp's
+// NSMBW_TARGET_WRAP_TEV comment): NSMBW's GXSetTevOrder/ColorIn/AlphaIn calls don't go through
+// the runtime's per-function HLE overrides (those are bound at MKW's own addresses and never
+// fire for NSMBW's translated code - confirmed by grepping projects/mkwii/MAP.txt), so the only
+// place NSMBW's real, live TEV alpha-combiner state exists is right here, decoded from the raw
+// BP register writes below. These mirror that decoded state into plain extern "C" globals so
+// runtime/src/hle/gx/gx_texture.cpp can read it without pulling in this library's internal
+// gx.hpp (which isn't on the runtime's include path, and shouldn't need to be for a temporary
+// probe). Remove once resolved, along with the matching extern declarations in gx_texture.cpp.
+extern "C" {
+uint32_t g_nsmbwLiveTevAlphaA[16]{};
+uint32_t g_nsmbwLiveTevAlphaB[16]{};
+uint32_t g_nsmbwLiveTevAlphaC[16]{};
+uint32_t g_nsmbwLiveTevAlphaD[16]{};
+uint32_t g_nsmbwLiveTevTexMap[16]{};
+// Alpha component of TEV constant color registers 0-3 (GX_CA_APREV/A0/A1/A2's backing store) -
+// P_stripe_00's alpha combiner reads as lerp(A0, A1, TEXA) (see gx_texture.cpp), so whatever A0
+// and A1 actually hold determines the real on-screen opacity regardless of texture data.
+float g_nsmbwLiveTevRegAlpha[4]{};
+// Active stage count (genMode, BP 0x00) - stages beyond this index hold stale state from
+// whatever material last touched that slot, so the trigger site must not treat them as live.
+uint32_t g_nsmbwLiveNumTevStages{};
+// Which color channel each TEV stage's rasterized (RASA/RASC) input actually reads, and that
+// channel's config/values - stage1's alphaIn reads RASA (see gx_texture.cpp), so whether the
+// final on-screen alpha (TEXA*RASA) is a faint fade or a bold constant depends entirely on
+// whether this channel's alpha source is a low animated constant (matSrc==GX_SRC_REG, value in
+// matColor.w) or per-vertex color data (matSrc==GX_SRC_VTX, not captured here - a vertex-level
+// probe would be a separate, bigger step).
+uint32_t g_nsmbwLiveTevChannelId[16]{};
+uint32_t g_nsmbwLiveChanMatSrc[4]{};
+float g_nsmbwLiveChanMatColorA[4]{};
+float g_nsmbwLiveChanAmbColorA[4]{};
+// DIAGNOSTIC (temporary, 2026-09 "every screen shows flat color instead of real texture content"
+// investigation): the mirrors above only ever captured the ALPHA combiner (needed for the earlier
+// P_stripe_00 fade-opacity question). Whether a pane's actual pixel COLOR comes from its bound
+// texture (GX_CC_TEXC=8) or gets replaced by a constant/vertex color (GX_CC_RASC=0, GX_CC_KONST=6,
+// GX_CC_ONE=15, etc.) was never captured until now - that's the more likely explanation for solid-
+// color panes across every screen, not a per-texture data bug. Mirrors s.colorPass, filled at the
+// same BP-decode site as the alpha mirrors above.
+uint32_t g_nsmbwLiveTevColorA[16]{};
+uint32_t g_nsmbwLiveTevColorB[16]{};
+uint32_t g_nsmbwLiveTevColorC[16]{};
+uint32_t g_nsmbwLiveTevColorD[16]{};
+// RGB of TEV color registers C0-C3 (g_nsmbwLiveTevRegAlpha above only ever captured their alpha
+// component). A colorIn formula of a=C0 b=C1 c=TEXC d=ZERO (seen on several NSMBW UI panes) uses
+// the texture as a BLEND WEIGHT between these two constant colors, not as the displayed color
+// directly - if C0 and C1 are equal (or one of them isn't being animated/set at all), the output
+// is a flat color regardless of what the texture's shape/gradient actually looks like.
+float g_nsmbwLiveTevRegColorR[4]{};
+float g_nsmbwLiveTevRegColorG[4]{};
+float g_nsmbwLiveTevRegColorB[4]{};
+// DIAGNOSTIC (temporary): a direct GPU-level frame capture (NSMBW_GPU_PEEK_DUMP) proved the
+// confirmed-correct draws (right texture, right TEV, right blend, right vertex/UV) never actually
+// produce pixels - the final presented frame is a flat, uniform color with zero variation, exactly
+// what a render target's own clear color looks like with nothing drawn on top of it. Depth
+// testing is the one piece of per-draw state never checked: a Z-buffer that isn't cleared to the
+// far plane each frame, or a wrong compare function, would silently discard every fragment during
+// rasterization without there being anything wrong in the CPU-side TEV/blend/vertex descriptors
+// already verified. Mirrors BP 0x40 (Z mode), decoded a few lines below.
+bool g_nsmbwLiveDepthCompare = false;
+uint32_t g_nsmbwLiveDepthFunc = 0;
+bool g_nsmbwLiveDepthUpdate = false;
+
+// FIX (2026-09, "every screen shows flat color instead of real texture content"): the
+// consecutive-draw merge optimization further down this file (search "Try to merge with previous
+// draw call") only starts a fresh draw batch when g_gxState.stateDirty is true, which the BP
+// register decode above sets on genuine TX_SETMODE/TX_SETIMAGE0-3 changes. NSMBW's actual texture
+// pixel-data upload does not go through that path at all: GXSetTevOrder/ColorIn/AlphaIn and
+// friends are not bound as NSMBW HLE overrides (see projects/nsmbw/native/nsmbw_gx_overrides.cpp's
+// own comment on this), so NSMBW's GXLoadTexObj HLE override
+// (runtime/src/hle/gx/gx_texture.cpp) uploads new pixel data straight into aurora's host-side
+// texture cache through a separate call path that never touched stateDirty. Reusing the same
+// GXTexMapID slot with the same format/dimensions - extremely common for a 2D layout system's many
+// same-shaped small UI icons - leaves the BP-encoded descriptor bits unchanged even though the
+// actually-bound image differs, so stateDirty stays false and the following draw gets silently
+// merged into whatever draw came right before it, both sharing the FIRST draw's texture bind
+// group. A GPU-level frame capture (NSMBW_GPU_PEEK_DUMP) confirmed the symptom directly: the final
+// rendered image was one flat, uniform color with zero variation - consistent with many
+// differently-positioned UI quads all merging into one draw call bound to a single small/flat
+// texture. Called from gx_texture.cpp right after a real upload (needsInit or
+// textureDataUploaded), so that draw starts its own fresh batch instead of merging - the same
+// effect a real BP register change already has. Inert for MKW, which never calls it.
+extern "C" void NsmbwInvalidateMergeStateForTextureUpload() {
+    aurora::gx::g_gxState.stateDirty = true;
+}
+}
 
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");
@@ -285,6 +373,12 @@ static inline void mark_pipeline_state_dirty() noexcept {
     }                                                                                                                  \
   } while (0)
 
+// DIAGNOSTIC (temporary): which path last wrote PNMTX0. The runtime sets g_nsmbwXfLoadSource before
+// handing aurora a matrix load (1=native GXLoadPosMtxImm override, 2=indexed HLE wrapper, 3=display
+// list, 4=raw guest XF packet); copy_xf_data latches it into g_nsmbwPnMtx0Source for the draw dump.
+extern "C" uint32_t g_nsmbwXfLoadSource = 0;
+extern "C" uint32_t g_nsmbwPnMtx0Source = 0;
+
 static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
   if (addr < 0x78) {
     // Position matrices (0x0000 - 0x0077)
@@ -297,6 +391,28 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
     f32* flat = reinterpret_cast<f32*>(&mtx);
     for (u32 i = 0; i < len; i++) {
       flat[i] = read_f32(data + i * 4, bigEndian);
+    }
+    if (mtxIdx == 0) g_nsmbwPnMtx0Source = g_nsmbwXfLoadSource;
+    // DIAGNOSTIC (temporary): NSMBW_LOG_PNMTX0=<profile> - every load into PNMTX0 (any path:
+    // immediate, display list, indexed) while that scene is active, sampled, so "who last loaded
+    // the view matrix the level draws use, and with what" is visible. Remove once resolved.
+    {
+      static const long pnScene = [] {
+        const char* v = std::getenv("NSMBW_LOG_PNMTX0");
+        return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
+      }();
+      if (mtxIdx == 0 && pnScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(pnScene)) {
+        static uint64_t n = 0;
+        static int lines = 0;
+        ++n;
+        if (n > 20000 && lines < 40 && (n % 97) == 0) {
+          ++lines;
+          std::fprintf(stderr, "[NSMBW_PNMTX0] load#%llu row0=(%.3f,%.3f,%.3f,%.1f) row1=(%.3f,%.3f,%.3f,%.1f) row2=(%.3f,%.3f,%.3f,%.1f)\n",
+                       static_cast<unsigned long long>(n), flat[0], flat[1], flat[2], flat[3], flat[4], flat[5], flat[6],
+                       flat[7], flat[8], flat[9], flat[10], flat[11]);
+          std::fflush(stderr);
+        }
+      }
     }
     g_gxState.stateDirty = true;
     return true;
@@ -427,14 +543,32 @@ static void apply_xf_viewport() {
   const f32 height = -sy * 2.0f;
   constexpr f32 z24Scale = 16777216.0f;
 
-  set_logical_viewport({
+  const gfx::Viewport lv{
       .left = ox - 340.0f - width / 2.0f,
       .top = oy - 340.0f - height / 2.0f,
       .width = width,
       .height = height,
       .znear = (oz - sz) / z24Scale,
       .zfar = oz / z24Scale,
-  });
+  };
+  // DIAGNOSTIC (temporary): "correctly-drawn content never appears on screen" investigation.
+  // Every per-draw GX state checked so far (texture, TEV routing, blend mode, vertex/UV geometry)
+  // is confirmed correct - the one thing never checked is whether the XF viewport (sx/sy/ox/oy,
+  // set via GXSetViewport) that maps a draw's local vertex coordinates onto the screen is sane for
+  // NSMBW's actual values, or whether it puts everything off-screen/degenerate despite the source
+  // geometry being correct. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_VIEWPORT") != nullptr) {
+    static int vpLogged = 0;
+    if (vpLogged < 20) {
+      ++vpLogged;
+      std::fprintf(stderr,
+          "[NSMBW_VIEWPORT] call#%d raw sx=%.2f sy=%.2f sz=%.2f ox=%.2f oy=%.2f oz=%.2f "
+          "-> logical left=%.2f top=%.2f width=%.2f height=%.2f znear=%.4f zfar=%.4f\n",
+          vpLogged, sx, sy, sz, ox, oy, oz, lv.left, lv.top, lv.width, lv.height, lv.znear, lv.zfar);
+      std::fflush(stderr);
+    }
+  }
+  set_logical_viewport(lv);
 }
 
 static void apply_xf_projection() {
@@ -457,10 +591,26 @@ static void apply_xf_projection() {
   }
 
   g_gxState.stateDirty = true;
-  if (aurora::nsmbw_diag_enabled()) {
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
+  // NSMBW_LOG_PROJ_SCENE (temporary): the 40-load budget below is spent during boot; this
+  // re-points it at the first 40 loads seen while a given scene profile is active (decimal
+  // fProf value, e.g. "5" for STAGE) so the 3D scene's own projections are visible.
+  static const long projScene = [] {
+    const char* v = std::getenv("NSMBW_LOG_PROJ_SCENE");
+    return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
+  }();
+  const bool sceneMatch = projScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(projScene);
+  if (aurora::nsmbw_diag_enabled() || sceneMatch) {
+    // TEMP: was a one-shot bool that only ever logged the very first projection load, silently
+    // missing every later change (including a corrupted-looking one found around draw#8 in the
+    // NSMBW garbled-screen investigation) - now logs the first 40 loads so changes are visible.
+    static int logged = 0;
+    static uint32_t lastScene = 0xFFFFFFFFu;
+    if (sceneMatch && lastScene != g_nsmbwCurrentSceneProfile) {
+      lastScene = g_nsmbwCurrentSceneProfile;
+      logged = 0;
+    }
+    if (logged < 40) {
+      ++logged;
       std::fprintf(stderr,
                    "[NSMBW_PROJ] type=%d raw=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f proj m0=%.4f,%.4f,%.4f,%.4f "
                    "m1=%.4f,%.4f,%.4f,%.4f m2=%.4f,%.4f,%.4f,%.4f m3=%.4f,%.4f,%.4f,%.4f\n",
@@ -670,6 +820,11 @@ static void handle_bp(u32 value, bool bigEndian) {
       s.colorPass.c = static_cast<GXTevColorArg>(bp_get(value, 4, 4));
       s.colorPass.b = static_cast<GXTevColorArg>(bp_get(value, 4, 8));
       s.colorPass.a = static_cast<GXTevColorArg>(bp_get(value, 4, 12));
+      // DIAGNOSTIC (temporary): see the g_nsmbwLiveTevColor* comment above this namespace.
+      g_nsmbwLiveTevColorA[stage] = static_cast<uint32_t>(s.colorPass.a);
+      g_nsmbwLiveTevColorB[stage] = static_cast<uint32_t>(s.colorPass.b);
+      g_nsmbwLiveTevColorC[stage] = static_cast<uint32_t>(s.colorPass.c);
+      g_nsmbwLiveTevColorD[stage] = static_cast<uint32_t>(s.colorPass.d);
       s.colorOp.clamp = bp_get(value, 1, 19) != 0;
       s.colorOp.outReg = static_cast<GXTevRegID>(bp_get(value, 2, 22));
       if (bp_get(value, 2, 16) == 3) {
@@ -700,6 +855,11 @@ static void handle_bp(u32 value, bool bigEndian) {
       s.alphaPass.c = static_cast<GXTevAlphaArg>(bp_get(value, 3, 7));
       s.alphaPass.b = static_cast<GXTevAlphaArg>(bp_get(value, 3, 10));
       s.alphaPass.a = static_cast<GXTevAlphaArg>(bp_get(value, 3, 13));
+      // DIAGNOSTIC (temporary): see the g_nsmbwLiveTevAlpha* comment above this namespace.
+      g_nsmbwLiveTevAlphaA[stage] = static_cast<uint32_t>(s.alphaPass.a);
+      g_nsmbwLiveTevAlphaB[stage] = static_cast<uint32_t>(s.alphaPass.b);
+      g_nsmbwLiveTevAlphaC[stage] = static_cast<uint32_t>(s.alphaPass.c);
+      g_nsmbwLiveTevAlphaD[stage] = static_cast<uint32_t>(s.alphaPass.d);
       s.alphaOp.clamp = bp_get(value, 1, 19) != 0;
       s.alphaOp.outReg = static_cast<GXTevRegID>(bp_get(value, 2, 22));
       if (bp_get(value, 2, 16) == 3) {
@@ -726,6 +886,7 @@ static void handle_bp(u32 value, bool bigEndian) {
     g_gxState.invalidateXfReg(0x3F);
     g_gxState.invalidateXfReg(0x09);
     g_gxState.numTevStages = bp_get(value, 4, 10) + 1;
+    g_nsmbwLiveNumTevStages = g_gxState.numTevStages; // DIAGNOSTIC (temporary): see comment above namespace.
     u32 hwCull = bp_get(value, 2, 14);
     // Swap front/back to match GX convention
     switch (hwCull) {
@@ -887,6 +1048,9 @@ static void handle_bp(u32 value, bool bigEndian) {
       }
       u32 chanHw = bp_get(value, 3, 7);
       s.channelId = (chanHw < 8) ? r2c[chanHw] : GX_COLOR_NULL;
+      // DIAGNOSTIC (temporary): see the g_nsmbwLiveTevAlpha* comment above this namespace.
+      g_nsmbwLiveTevTexMap[stage0] = static_cast<uint32_t>(s.texMapId);
+      g_nsmbwLiveTevChannelId[stage0] = static_cast<uint32_t>(s.channelId);
     }
     if (stage1 < MaxTevStages) {
       auto& s = g_gxState.tevStages[stage1];
@@ -897,6 +1061,8 @@ static void handle_bp(u32 value, bool bigEndian) {
       }
       u32 chanHw = bp_get(value, 3, 19);
       s.channelId = (chanHw < 8) ? r2c[chanHw] : GX_COLOR_NULL;
+      g_nsmbwLiveTevTexMap[stage1] = static_cast<uint32_t>(s.texMapId);
+      g_nsmbwLiveTevChannelId[stage1] = static_cast<uint32_t>(s.channelId);
     }
     mark_pipeline_state_dirty();
     break;
@@ -907,6 +1073,10 @@ static void handle_bp(u32 value, bool bigEndian) {
     g_gxState.depthCompare = bp_get(value, 1, 0) != 0;
     g_gxState.depthFunc = static_cast<GXCompare>(bp_get(value, 3, 1));
     g_gxState.depthUpdate = bp_get(value, 1, 4) != 0;
+    // DIAGNOSTIC (temporary): see the g_nsmbwLiveDepth* comment above this namespace.
+    g_nsmbwLiveDepthCompare = g_gxState.depthCompare;
+    g_nsmbwLiveDepthFunc = static_cast<uint32_t>(g_gxState.depthFunc);
+    g_nsmbwLiveDepthUpdate = g_gxState.depthUpdate;
     mark_pipeline_state_dirty();
     break;
   }
@@ -1019,6 +1189,18 @@ static void handle_bp(u32 value, bool bigEndian) {
     g_gxState.alphaCompare.comp0 = static_cast<GXCompare>(bp_get(value, 3, 16));
     g_gxState.alphaCompare.comp1 = static_cast<GXCompare>(bp_get(value, 3, 19));
     g_gxState.alphaCompare.op = static_cast<GXAlphaOp>(bp_get(value, 2, 22));
+    // TEMPORARY DIAGNOSTIC: NSMBW flat-screen isolation. Remove before merging.
+    if (nsmbw_diag_enabled()) {
+      static int logged = 0;
+      if (logged < 300) {
+        ++logged;
+        std::fprintf(stderr, "[NSMBW_ALPHACMP] ref0=%u ref1=%u comp0=%d comp1=%d op=%d\n",
+                     g_gxState.alphaCompare.ref0, g_gxState.alphaCompare.ref1,
+                     static_cast<int>(g_gxState.alphaCompare.comp0), static_cast<int>(g_gxState.alphaCompare.comp1),
+                     static_cast<int>(g_gxState.alphaCompare.op));
+        std::fflush(stderr);
+      }
+    }
     mark_pipeline_state_dirty();
     break;
   }
@@ -1173,6 +1355,12 @@ static void handle_bp(u32 value, bool bigEndian) {
             a |= ~0x7FF;
           cr[0] = static_cast<float>(r) / 255.f;
           cr[3] = static_cast<float>(a) / 255.f;
+          // DIAGNOSTIC (temporary): see the g_nsmbwLiveTevRegAlpha/g_nsmbwLiveTevRegColor* comments
+          // above this namespace.
+          if (idx < 4) {
+            g_nsmbwLiveTevRegAlpha[idx] = cr[3];
+            g_nsmbwLiveTevRegColorR[idx] = cr[0];
+          }
         } else {
           s32 b = bp_get(value, 11, 0);
           if (b & 0x400)
@@ -1182,6 +1370,10 @@ static void handle_bp(u32 value, bool bigEndian) {
             g |= ~0x7FF;
           cr[2] = static_cast<float>(b) / 255.f;
           cr[1] = static_cast<float>(g) / 255.f;
+          if (idx < 4) {
+            g_nsmbwLiveTevRegColorG[idx] = cr[1];
+            g_nsmbwLiveTevRegColorB[idx] = cr[2];
+          }
         }
         g_gxState.stateDirty = true;
       }
@@ -1651,23 +1843,28 @@ static void handle_xf(const u8* data, u32& pos, u32 size, bool bigEndian) {
         g_gxState.colorChannelState[GX_COLOR0].ambColor = unpack_color(val);
         g_gxState.colorChannelState[GX_ALPHA0].ambColor = unpack_color(val);
         g_gxState.stateDirty = true;
+        // DIAGNOSTIC (temporary): see g_nsmbwLiveChanMatSrc comment above this namespace.
+        g_nsmbwLiveChanAmbColorA[GX_ALPHA0] = g_gxState.colorChannelState[GX_ALPHA0].ambColor.w();
         break;
       case 0x0B:
         // Ambient color 1
         g_gxState.colorChannelState[GX_COLOR1].ambColor = unpack_color(val);
         g_gxState.colorChannelState[GX_ALPHA1].ambColor = unpack_color(val);
         g_gxState.stateDirty = true;
+        g_nsmbwLiveChanAmbColorA[GX_ALPHA1] = g_gxState.colorChannelState[GX_ALPHA1].ambColor.w();
         break;
       case 0x0C:
         // Material color 0
         g_gxState.colorChannelState[GX_COLOR0].matColor = unpack_color(val);
         g_gxState.colorChannelState[GX_ALPHA0].matColor = unpack_color(val);
+        g_nsmbwLiveChanMatColorA[GX_ALPHA0] = g_gxState.colorChannelState[GX_ALPHA0].matColor.w();
         g_gxState.stateDirty = true;
         break;
       case 0x0D:
         // Material color 1
         g_gxState.colorChannelState[GX_COLOR1].matColor = unpack_color(val);
         g_gxState.colorChannelState[GX_ALPHA1].matColor = unpack_color(val);
+        g_nsmbwLiveChanMatColorA[GX_ALPHA1] = g_gxState.colorChannelState[GX_ALPHA1].matColor.w();
         g_gxState.stateDirty = true;
         break;
       case 0x0E:
@@ -1679,6 +1876,7 @@ static void handle_xf(const u8* data, u32& pos, u32 size, bool bigEndian) {
         if (chanId < MaxColorChannels) {
           auto& chan = g_gxState.colorChannelConfig[chanId];
           chan.matSrc = static_cast<GXColorSrc>(bp_get(val, 1, 0));
+          g_nsmbwLiveChanMatSrc[chanId] = static_cast<uint32_t>(chan.matSrc); // DIAGNOSTIC (temporary)
           chan.lightingEnabled = bp_get(val, 1, 1) != 0;
           u32 lightsLo = bp_get(val, 4, 2);
           chan.ambSrc = static_cast<GXColorSrc>(bp_get(val, 1, 6));
@@ -2189,6 +2387,259 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
 
   // Push raw vertex data to buffer
   const uint8_t* vertices = data + pos;
+  // DIAGNOSTIC (temporary): NSMBW_LOG_STATE_RUNS=<profile>. Prints one line each time the
+  // (viewport, projection type, PnMtx0 zero-ness) tuple changes between draws, with the running
+  // draw index - i.e. the frame's structure as sequences of draws sharing render state. Remove
+  // once resolved.
+  {
+    static const long runsScene = [] {
+      const char* v = std::getenv("NSMBW_LOG_STATE_RUNS");
+      return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
+    }();
+    if (runsScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(runsScene)) {
+      static uint64_t drawIdx = 0;
+      static int lines = 0;
+      static float lastVp[4] = {-1.f, -1.f, -1.f, -1.f};
+      static int lastProj = -1;
+      static int lastMtxZero = -1;
+      ++drawIdx;
+      const auto& vp = g_gxState.logicalViewport;
+      const auto& M0 = g_gxState.pnMtx[std::min<u32>(g_gxState.currentPnMtx, MaxPnMtx - 1)].pos;
+      const int mtxZero = (M0.m0[0] == 0.f && M0.m1[1] == 0.f && M0.m2[2] == 0.f) ? 1 : 0;
+      const int projT = static_cast<int>(g_gxState.projType);
+      if (lines < 240 && drawIdx > 40000 &&
+          (vp.left != lastVp[0] || vp.top != lastVp[1] || vp.width != lastVp[2] || vp.height != lastVp[3] ||
+           projT != lastProj || mtxZero != lastMtxZero)) {
+        ++lines;
+        lastVp[0] = vp.left; lastVp[1] = vp.top; lastVp[2] = vp.width; lastVp[3] = vp.height;
+        lastProj = projT; lastMtxZero = mtxZero;
+        std::fprintf(stderr, "[NSMBW_STATE_RUN] draw#%llu vp=(%.0f,%.0f,%.0f,%.0f) proj=%s pnMtx[%u]=%s proj.m00=%.4f m11=%.4f\n",
+                     static_cast<unsigned long long>(drawIdx), vp.left, vp.top, vp.width, vp.height,
+                     projT == GX_ORTHOGRAPHIC ? "ortho" : "persp", g_gxState.currentPnMtx, mtxZero ? "ZERO" : "ok",
+                     g_gxState.proj.m0[0], g_gxState.proj.m1[1]);
+        std::fflush(stderr);
+      }
+    }
+  }
+  // DIAGNOSTIC (temporary): NSMBW_DUMP_DRAWS_SCENE=<profile> [NSMBW_DUMP_DRAWS_SKIP=<n>]. A test
+  // triangle proved the host pipeline (submit -> decode -> draw -> resolve -> present) works, and
+  // fixing the texture-copy register clobber made the 2D scenes render; the 3D STAGE scene still
+  // comes out black even though ~277 draws/frame reach this point, and every projection it submits
+  // is orthographic. This transforms each draw's first vertex through the live PnMtx and projection
+  // to clip space so "lands off-screen / behind the camera" can be told apart from "lands on
+  // screen but is painted black", alongside the pixel state that decides the latter. Skips the
+  // first <n> draws seen in the scene (past the fade-in), then dumps 80. Remove once resolved.
+  {
+    static const long dumpScene = [] {
+      const char* v = std::getenv("NSMBW_DUMP_DRAWS_SCENE");
+      return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
+    }();
+    if (dumpScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(dumpScene)) {
+      static const uint64_t skipDraws = [] {
+        const char* v = std::getenv("NSMBW_DUMP_DRAWS_SKIP");
+        return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : 0ull;
+      }();
+      static const uint64_t strideDraws = [] {
+        const char* v = std::getenv("NSMBW_DUMP_DRAWS_STRIDE");
+        return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : 1ull;
+      }();
+      static uint64_t seen = 0;
+      static int dumped = 0;
+      ++seen;
+      if (seen > skipDraws && dumped < 80 && ((seen - skipDraws) % strideDraws) == 0) {
+        ++dumped;
+        const auto& vf = g_gxState.vtxFmts[fmt];
+        const auto& posFmt = vf.attrs[GX_VA_POS];
+        const GXAttrType posDesc = g_gxState.vtxDesc[GX_VA_POS];
+        // Byte offset of POS within a vertex: everything from PNMTXIDX up to TEX7MTXIDX precedes it.
+        u32 posOff = 0;
+        for (int a = GX_VA_PNMTXIDX; a < GX_VA_POS; ++a) {
+          const auto attr = static_cast<GXAttr>(a);
+          switch (g_gxState.vtxDesc[a]) {
+          case GX_DIRECT: posOff += comp_type_size(attr, vf.attrs[a].type) * comp_cnt_count(attr, vf.attrs[a].cnt); break;
+          case GX_INDEX8: posOff += 1; break;
+          case GX_INDEX16: posOff += 2; break;
+          default: break;
+          }
+        }
+        const uint8_t* pb = nullptr;
+        bool posBigEndian = true;
+        u32 posIndex = 0;
+        if (posDesc == GX_DIRECT) {
+          pb = vertices + posOff;
+        } else if (posDesc == GX_INDEX8 || posDesc == GX_INDEX16) {
+          posIndex = posDesc == GX_INDEX8 ? vertices[posOff]
+                                          : static_cast<u32>((vertices[posOff] << 8) | vertices[posOff + 1]);
+          const auto& arr = g_gxState.arrays[GX_VA_POS];
+          if (arr.data != nullptr) {
+            pb = static_cast<const uint8_t*>(arr.data) + static_cast<size_t>(posIndex) * arr.stride;
+            posBigEndian = !arr.le;
+          }
+        }
+        float p[3] = {0.f, 0.f, 0.f};
+        const u32 ncomp = posFmt.cnt == GX_POS_XYZ ? 3u : 2u;
+        if (pb != nullptr) {
+          const float scale = static_cast<float>(1u << posFmt.frac);
+          for (u32 c = 0; c < ncomp; ++c) {
+            switch (posFmt.type) {
+            case GX_F32: { u32 w; std::memcpy(&w, pb + c * 4, 4); if (posBigEndian) w = __builtin_bswap32(w); std::memcpy(&p[c], &w, 4); break; }
+            case GX_S16: { u16 w; std::memcpy(&w, pb + c * 2, 2); if (posBigEndian) w = __builtin_bswap16(w); p[c] = static_cast<int16_t>(w) / scale; break; }
+            case GX_U16: { u16 w; std::memcpy(&w, pb + c * 2, 2); if (posBigEndian) w = __builtin_bswap16(w); p[c] = w / scale; break; }
+            case GX_S8: p[c] = static_cast<int8_t>(pb[c]) / scale; break;
+            case GX_U8: p[c] = pb[c] / scale; break;
+            default: break;
+            }
+          }
+        }
+        u32 mtxIdx = std::min<u32>(g_gxState.currentPnMtx, MaxPnMtx - 1);
+        if (g_gxState.vtxDesc[GX_VA_PNMTXIDX] == GX_DIRECT) {
+          mtxIdx = std::min<u32>(vertices[0] / 3u, MaxPnMtx - 1);
+        }
+        const auto& M = g_gxState.pnMtx[mtxIdx].pos;
+        const float vx = M.m0[0] * p[0] + M.m0[1] * p[1] + M.m0[2] * p[2] + M.m0[3];
+        const float vy = M.m1[0] * p[0] + M.m1[1] * p[1] + M.m1[2] * p[2] + M.m1[3];
+        const float vz = M.m2[0] * p[0] + M.m2[1] * p[1] + M.m2[2] * p[2] + M.m2[3];
+        const auto& P = g_gxState.proj;
+        const float cx = P.m0[0] * vx + P.m0[1] * vy + P.m0[2] * vz + P.m0[3];
+        const float cy = P.m1[0] * vx + P.m1[1] * vy + P.m1[2] * vz + P.m1[3];
+        const float cz = P.m2[0] * vx + P.m2[1] * vy + P.m2[2] * vz + P.m2[3];
+        const float cw = P.m3[0] * vx + P.m3[1] * vy + P.m3[2] * vz + P.m3[3];
+        const float iw = cw != 0.f ? 1.f / cw : 0.f;
+        const auto& vp = g_gxState.logicalViewport;
+        const auto& st0 = g_gxState.tevStages[0];
+        std::fprintf(stderr,
+                     "[NSMBW_DRAW_DUMP] #%d mtx0src=%u prim=%u vtx=%u posDesc=%u posType=%u cnt=%u frac=%u idx=%u "
+                     "local=(%.1f,%.1f,%.1f) mtx=%u view=(%.1f,%.1f,%.1f) projType=%d clip=(%.2f,%.2f,%.2f,w=%.2f) "
+                     "ndc=(%.3f,%.3f,%.3f) vp=(%.0f,%.0f,%.0f,%.0f,%.2f,%.2f) tev=%u tex0=%d colorUpd=%d "
+                     "z=(%d,%d,%d) cull=%d blend=%d\n",
+                     dumped, static_cast<unsigned>(g_nsmbwPnMtx0Source), static_cast<unsigned>(prim), static_cast<unsigned>(vtxCount), static_cast<unsigned>(posDesc),
+                     static_cast<unsigned>(posFmt.type), static_cast<unsigned>(posFmt.cnt), static_cast<unsigned>(posFmt.frac),
+                     posIndex, p[0], p[1], p[2], mtxIdx, vx, vy, vz, static_cast<int>(g_gxState.projType), cx, cy, cz, cw,
+                     cx * iw, cy * iw, cz * iw, vp.left, vp.top, vp.width, vp.height, vp.znear, vp.zfar,
+                     static_cast<unsigned>(g_gxState.numTevStages), static_cast<int>(st0.texMapId),
+                     g_gxState.colorUpdate ? 1 : 0, g_gxState.depthCompare ? 1 : 0, static_cast<int>(g_gxState.depthFunc),
+                     g_gxState.depthUpdate ? 1 : 0, static_cast<int>(g_gxState.cullMode), static_cast<int>(g_gxState.blendMode));
+        std::fflush(stderr);
+      }
+    }
+  }
+  // DIAGNOSTIC (temporary): NSMBW_LOG_DRAW_POS decodes the first vertex's raw POS bytes for the
+  // first several draws of this shape - used to check whether garbled/stretched on-screen content
+  // (textures individually confirmed correct via NSMBW_DUMP_TEXTURES) traces to wrong vertex
+  // screen coordinates rather than texture decode. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_DRAW_POS") != nullptr &&
+      (std::getenv("NSMBW_LOG_DRAW_POS_SCENE") == nullptr ||
+       g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(std::atoi(std::getenv("NSMBW_LOG_DRAW_POS_SCENE"))))) {
+    static int posLogged = 0;
+    // Reset the budget on every scene change so an unrelated earlier scene (e.g. boot's own UI)
+    // can't consume it before the scene actually being investigated gets a turn.
+    static uint32_t lastPosLogScene = 0xFFFFFFFFu;
+    if (g_nsmbwCurrentSceneProfile != lastPosLogScene) {
+      lastPosLogScene = g_nsmbwCurrentSceneProfile;
+      posLogged = 0;
+    }
+    // NSMBW_LOG_DRAW_POS_SKIP_NO_TEV (temporary): the original 15-draw budget was entirely
+    // consumed by a per-frame debug overlay (the on-screen FPS counter box, redrawn every single
+    // frame from frame 0 with numTevStages==0) before ever reaching real nw4r::lyt content -
+    // confirmed by NSMBW_LOG_DRAW_TEV finding zero active TEV stages on any of those 15 draws.
+    // This skips draws with no configured TEV stage so the budget is spent on actual textured
+    // game content instead. Remove once resolved.
+    const bool skipNoTev = std::getenv("NSMBW_LOG_DRAW_POS_SKIP_NO_TEV") != nullptr &&
+                           g_gxState.numTevStages == 0;
+    if (!skipNoTev && posLogged < 40 && vtxCount > 0 && vtxCount <= 8) {
+      ++posLogged;
+      const auto& posFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_POS];
+      const auto& texFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_TEX0];
+      // Decode POS (and TEX0, if F32) for every vertex of this draw - a single vertex told us
+      // nothing about the quad's actual width/height, which is what determines whether a
+      // correctly-decoded texture (confirmed via NSMBW_DUMP_TEXTURES) ends up stretched/tiled.
+      if (posFmt.type == GX_F32 && posFmt.cnt == GX_POS_XY) {
+        char line[512];
+        int off = std::snprintf(line, sizeof(line), "[NSMBW_DRAW_POS] prim=%u fmt=%u vtxCount=%u vtxSize=%u",
+                                (unsigned)prim, (unsigned)fmt, vtxCount, vtxSize);
+        for (u16 vi = 0; vi < vtxCount; ++vi) {
+          const uint8_t* vp = vertices + vi * vtxSize;
+          uint32_t xb, yb;
+          std::memcpy(&xb, vp, 4);
+          std::memcpy(&yb, vp + 4, 4);
+          xb = __builtin_bswap32(xb);
+          yb = __builtin_bswap32(yb);
+          float x, y;
+          std::memcpy(&x, &xb, 4);
+          std::memcpy(&y, &yb, 4);
+          float u = 0.f, v = 0.f;
+          if (texFmt.type == GX_F32) {
+            const uint8_t* tp = vp + 8; // POS(F32 XY)=8 bytes precede TEX0 for this fmt
+            uint32_t ub, vb;
+            std::memcpy(&ub, tp, 4);
+            std::memcpy(&vb, tp + 4, 4);
+            ub = __builtin_bswap32(ub);
+            vb = __builtin_bswap32(vb);
+            std::memcpy(&u, &ub, 4);
+            std::memcpy(&v, &vb, 4);
+          }
+          off += std::snprintf(line + off, sizeof(line) - off, " v%u=(xy:%.1f,%.1f uv:%.3f,%.3f)", vi, x, y, u, v);
+        }
+        std::fprintf(stderr, "%s\n", line);
+        std::fflush(stderr);
+      }
+      char hex[64] = {};
+      int hexLen = 0;
+      const uint32_t dumpBytes = vtxSize < 16u ? vtxSize : 16u;
+      for (uint32_t i = 0; i < dumpBytes && hexLen + 3 < (int)sizeof(hex); ++i) {
+        hexLen += std::snprintf(hex + hexLen, sizeof(hex) - hexLen, "%02x ", vertices[i]);
+      }
+      float x = 0.f, y = 0.f;
+      if (posFmt.type == GX_F32 && posFmt.cnt == GX_POS_XY) {
+        uint32_t xb, yb;
+        std::memcpy(&xb, vertices, 4);
+        std::memcpy(&yb, vertices + 4, 4);
+        xb = __builtin_bswap32(xb);
+        yb = __builtin_bswap32(yb);
+        std::memcpy(&x, &xb, 4);
+        std::memcpy(&y, &yb, 4);
+      } else if (posFmt.type == GX_S16 && posFmt.cnt == GX_POS_XY) {
+        int16_t xi, yi;
+        std::memcpy(&xi, vertices, 2);
+        std::memcpy(&yi, vertices + 2, 2);
+        xi = static_cast<int16_t>(__builtin_bswap16(static_cast<uint16_t>(xi)));
+        yi = static_cast<int16_t>(__builtin_bswap16(static_cast<uint16_t>(yi)));
+        const float scale = static_cast<float>(1 << posFmt.frac);
+        x = static_cast<float>(xi) / scale;
+        y = static_cast<float>(yi) / scale;
+      }
+      std::fprintf(stderr,
+                   "[NSMBW_DRAW_POS] prim=%u fmt=%u vtxCount=%u vtxSize=%u posType=%u posCnt=%u posFrac=%u "
+                   "decodedXY=(%.2f,%.2f) rawFirstVtx=%s\n",
+                   (unsigned)prim, (unsigned)fmt, vtxCount, vtxSize, (unsigned)posFmt.type, (unsigned)posFmt.cnt,
+                   (unsigned)posFmt.frac, x, y, hex);
+      std::fflush(stderr);
+      // DIAGNOSTIC (temporary): the earlier NSMBW_COLOR_TEV probe (gx_texture.cpp) checked TEV
+      // state at GXLoadTexObj time, which can run before the draw's own GXSetTevOrder/ColorIn
+      // calls - so it may have logged stale state left over from an unrelated earlier material,
+      // not what THIS draw actually uses. This checks it right here, at the real draw command,
+      // for whichever stage(s) are actually active right now - the only place that's guaranteed
+      // to reflect the state this specific draw will use.
+      if (std::getenv("NSMBW_LOG_DRAW_TEV") != nullptr) {
+        static int tevAtDrawLogged = 0;
+        if (tevAtDrawLogged < 40) {
+          ++tevAtDrawLogged;
+          for (uint32_t st = 0; st < g_gxState.numTevStages && st < 16; ++st) {
+            const auto& s = g_gxState.tevStages[st];
+            std::fprintf(stderr,
+                "[NSMBW_DRAW_TEV] draw#%d stage=%u texMap=%u colorIn a=%d b=%d c=%d d=%d "
+                "alphaIn a=%d b=%d c=%d d=%d\n",
+                tevAtDrawLogged, st, static_cast<unsigned>(s.texMapId),
+                static_cast<int>(s.colorPass.a), static_cast<int>(s.colorPass.b),
+                static_cast<int>(s.colorPass.c), static_cast<int>(s.colorPass.d),
+                static_cast<int>(s.alphaPass.a), static_cast<int>(s.alphaPass.b),
+                static_cast<int>(s.alphaPass.c), static_cast<int>(s.alphaPass.d));
+          }
+          std::fflush(stderr);
+        }
+      }
+    }
+  }
   gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
   pos += totalVtxBytes;
 
@@ -2292,14 +2743,16 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
 
   // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation - real bound texture content. Remove
   // before merging.
-  if (aurora::nsmbw_diag_enabled() && std::getenv("NSMBW_TEX_PEEK") != nullptr) {
+  if (aurora::nsmbw_diag_enabled() && std::getenv("NSMBW_TEX_PEEK") != nullptr &&
+      (std::getenv("NSMBW_TEX_PEEK_SCENE") == nullptr ||
+       g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(std::atoi(std::getenv("NSMBW_TEX_PEEK_SCENE"))))) {
     static int drawsLogged = 0;
     // Correlate with the vertex-decode finding: prim=GX_QUADS(0x80), fmt=0, vtxCount=4 was the
     // real full-screen background quad (X spans 0..640, decoded last pass). Log every textured
     // draw's context for the first several draws so this can be matched by hand, instead of
     // silently keeping only the first-ever use of each texture slot (which could belong to an
     // unrelated earlier draw).
-    if (info.sampledTextures.any() && drawsLogged < 12) {
+    if (info.sampledTextures.any() && drawsLogged < 80) { // TEMP: raised from 12 for one clean frame's worth of pic1 draws; revert after this check
       ++drawsLogged;
       for (u32 ti = 0; ti < MaxTextures; ++ti) {
         if (!info.sampledTextures.test(ti)) {

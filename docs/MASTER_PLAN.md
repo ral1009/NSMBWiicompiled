@@ -198,7 +198,7 @@ Order matters:
 
 ## 6. Progress log
 
-Keep entries here as work happens. Written primarily by the developer, per CLAUDE.md's documentation policy — Claude should ask questions to help produce these, not draft them wholesale.
+Keep entries here as work happens. Since 2026-09-19 these are written by Claude at the end of each working session (see CLAUDE.md's documentation policy); entries before that date were written by the developer. Either way the standard is the same: what was observed, what was ruled out and how, what the cause was, what was verified.
 
 ### Template for each entry
 ```
@@ -276,3 +276,83 @@ What I learned:
 
 What's next:
 Build our own working version of the CMake product setup for NSMBW before committing anything.
+
+## 2026-09-01 — Phase 6
+What I did:
+Got the guest's main game thread running under the recompiled runtime (commit `8a13af0`).
+
+What broke / what I didn't expect:
+Boot then hung in an infinite loop polling the EXI (external interface) queue — the guest was waiting for hardware that the host never emulates.
+
+What I learned:
+"Runs" and "progresses" are different milestones. Every SDK subsystem the guest touches (EXI, WPAD, DVD, VI, GX) needs either a real HLE implementation or a stub that returns what the guest expects, or the guest spins forever waiting.
+
+What's next:
+Get past the EXI loop and reach the first frame.
+
+## 2026-09-04 — Phase 6
+What I did:
+Two fixes, both in commit `0a4d08a`:
+1. GX register-ID seeding. `GXInit()`'s native override seeds a table that tells `GX_WRITE_RAS_REG` which BP register each state write targets. NSMBW never called that override (it was bound only at MKW's address), so the table stayed unseeded and writes like `GXSetColorUpdate`/`GXSetBlendMode` landed on BP register 0x00 (genMode) instead of 0x41 (cmode0). Net effect: colour writes masked off and cull mode corrupted by unrelated bits. Now seeded natively at boot regardless of whether the guest calls GXInit.
+2. Startup overlay dismissal. The host draws an opaque "WiiCompiled" card until a hook at MKW's `StrapScene::CheckInput` (0x800077C8) dismisses it. NSMBW never reaches that address, so the card stayed up over the (now correctly rendering) output. Added an NSMBW hook at `dScBoot_c::finalizeState_WiiStrapDispEndWait` (0x8015CFB0).
+
+What broke / what I didn't expect:
+The black screen had two independent causes stacked on top of each other. Fixing the first (register misrouting) produced no visible change because the second (the overlay) was still covering the output.
+
+What I learned:
+First instance of what turned out to be the dominant bug class in this port: an SDK function natively overridden at *Mario Kart Wii's* address in the shared runtime is silently dead for NSMBW. Symptoms look like rendering or logic bugs; the actual cause is that the function ran as translated PowerPC and its host-side side effect never happened. `projects/nsmbw/function_map.txt` has NSMBW's real addresses.
+
+What's next:
+Strap screen → title screen transition.
+
+## 2026-09-05 → 2026-09-18 — Phase 6/7 (backfilled from the uncommitted diff on 2026-09-19)
+What I did:
+This stretch was several sessions that were never committed; summarised here from the working-tree diff rather than from notes taken at the time, so it's less granular than the entries around it.
+
+1. **Input works (Phase 7, minimal).** `nsmbw_wpad_overrides.cpp`: the real un-overridden WPAD entry points (confirmed by disassembling `WPADProbe` at 0x801E1080) read the `_wpdcb[chan]` control-block struct directly rather than going through the HLE callback contract. Because `WPAD::Init` (0x801DFB90) is replaced wholesale by the HLE, the linking loop at 0x801DF930 that points `_wpdcb[i]` at its backing storage (`_wpd[]` @0x8039F660, stride 0x9C0) never ran, and `_wpdcb[0]` read as null. Fix seeds channel 0 at boot as an already-synced Wii Remote (status = WPAD_ERR_NONE, handshakeFinished = true, devType = Core). Every WPAD reader now sees a connected controller without needing the game's Bluetooth pairing state machine (`dConnect_c`).
+2. **Scene creation works.** `nsmbw_preseeded_rel_link.cpp`: `dScene_c::createNextScene()` could never build the RESTART_CRSIN scene because `fProfListMg_c::m_data_p->profileList[1..8]` read as zero at runtime. Traced: the translator's embedded data blob for `d_profileNP` is correct, and `RestoreRelImages()` copies it correctly at boot; the corruption happens later when the guest's own `DynamicModuleControlBase::link()` (0x80160080) runs `do_load()`/`do_link()` on the four pre-seeded RELs. Those four exist on disc only as `.LZ` files, which this runtime's DVD layer can't decompress, so the real load path fails and zeroes memory the pre-seed had already set up. Override skips `do_load()`/`do_link()` for exactly those four module names and reports success.
+3. **Translator: state-free ABI mismatch handling** (`NsmbwMultiModuleShardEmitter.cs`). When modules are merged and a caller's `_statefree` forward declaration disagrees with whichever module's copy of the target won, the emitter used to drop the whole caller. Now it rewrites only the affected call site(s) to the always-correct `InvokeDirectCpu` fallback and keeps the rest of the caller intact.
+4. Host startup card (`settings_overlay.cpp`) made opt-out per product via `DisableStartupScreen()` — NSMBW's strap warning is itself the first thing the guest draws, so the card was covering real content rather than a gap.
+5. A run of `TEMPORARY` diagnostics in `os_scheduler.cpp`, `os_thread.cpp`, `vi.cpp`, `nsmbw_wiistrap_dismiss.cpp` and ~15 `*_diag.cpp` override files under `projects/nsmbw/native/`, all from chasing the post-input black screen (does the scheduler go idle and never resume? does `GXCopyDisp` stop being called? does `VISetBlack(TRUE)` ever get its matching `FALSE`?). Each of these ruled something out; none found the cause.
+
+What broke / what I didn't expect:
+Roughly two weeks of chasing individual GX state setters (blend modes, TEV colours, alpha, UV data) with no visible progress. Every 2D element that did render (strap screen, save-file dialog with its confirm button, a blue rectangle, a wipe circle) was either partially drawn or drawn in the wrong place, and no 3D draw was ever correct.
+
+What I learned:
+Investigating one GX setter at a time was the wrong strategy when there was no known-good draw anywhere in the pipeline to compare against. Without a baseline, every anomaly looked equally plausible as the cause. See the next entry for what worked instead.
+
+What's next:
+Bisect the pipeline from the bottom up instead.
+
+## 2026-09-19 — Phase 6 (first 3D frame)
+What I did:
+Changed approach: instead of asking "why is draw X wrong", asked "what is the lowest layer that can be shown to work, and where is the first layer above it that fails". Then fixed each boundary in turn.
+
+1. **Baseline: one triangle through the real backend.** `NsmbwDrawTestTriangle()` in `runtime/src/hle/gx/gx_copy.cpp`, gated on `NSMBW_TEST_TRIANGLE`. Submits a single solid-colour triangle at known coordinates through the normal GX FIFO → aurora path, just before the display copy. It rendered on the first try. That proved host vertex submission, aurora decode, pipeline compile, draw, and present were all fine — the problem had to be in what the *guest* was feeding in, not in the host.
+
+2. **Texture copies were clobbering the display-copy stride.** With a known-good draw to compare against, the "143-pixel-wide strip" symptom on 2D content resolved quickly. BP register 0x4D is the EFB-copy destination stride and it is shared between display copies and texture copies; BP 0x49/0x4A are the shared copy source rectangle. NSMBW's `GXSetTexCopySrc` (0x801C5AA0), `GXSetTexCopyDst` (0x801C5B10) and `GXCopyTex` (0x801C63D0) were running as translated code and overwriting those registers before the display copy read them. Bound all three to the runtime's existing HLE wrappers in `nsmbw_gx_texcopy_overrides.cpp` → full-frame 2D.
+
+3. **Indexed matrix loads were dead.** `GXLoadPosMtxIndx` (0x801C9AD0) and `GXLoadNrmMtxIndx3x3` (0x801C9B60) — the calls nw4r::g3d uses to load node matrices from a palette by index — were the same dead-override class. Bound in `nsmbw_gx_mtxindx_overrides.cpp`.
+
+4. **3D projection never reached aurora.** NSMBW's `GXSetProjection`/`GXSetCurrentMtx` don't write XF registers immediately; they cache into the `__gx` struct (`*(0x80433360 − 0x4EF8)`) and set a dirty bit at `__gx+0x5FC`, which `__GXSetDirtyState` (0x801C5430) flushes when `GXBegin` or `GXCallDisplayList` runs. The runtime's `GXCallDisplayList` HLE didn't know about the guest's dirty-state cache, so the 3D scene's projection was set but never flushed before its display lists executed. `NsmbwCallDisplayList_801C9720` in `nsmbw_gx_overrides.cpp` now invokes 0x801C5430 when the dirty bit is set, then runs the display list.
+
+5. **Locked-cache DMA was never happening — the actual root cause of "no 3D".** nw4r::g3d computes node world/view matrices in the locked L1 cache (0xE0000000) and DMAs them back to main RAM via `LCLoadBlocks`/`LCStoreBlocks`/`LCStoreData`. Binding those functions to the runtime HLE (`nsmbw_os_lockedcache_overrides.cpp`) was necessary but *not sufficient*: the translator inlines small leaf functions into their callers (`inline leaf 0x<addr>` in the generated shards), so at the inlined call sites the override was bypassed and the guest wrote the DMAU/DMAL special-purpose registers (SPR 922/923) directly. Nothing on the host honoured those writes, so the view-matrix palettes in main RAM stayed zero and every 3D vertex collapsed. Fix in `runtime/src/ppc_helpers.cpp`, `PPC_WriteSpr`: SPR 922 stores the DMAU value; SPR 923 with the trigger bit (0x2) decodes block count/length, maps the physical main-RAM address to virtual, `memmove`s between main RAM and the locked-cache window, and calls `GxNotifyGuestRamDmaWrite` so aurora sees the updated matrices. Result: first ever correct 3D frame — the World 1-1 title backdrop (hills, bushes, flowers, clouds, fog) at `dma_t30.png`.
+
+6. **Crash on restart, and the reset-on-launch feature.** After one clean run the game was killed mid-frame, and every subsequent launch aborted with `0xC0000409` (STATUS_STACK_BUFFER_OVERRUN, from ucrtbase — this is what an `abort()` looks like in the Windows event log) right after "Using framebuffer size 640x528". Ruled out in order: `Config.toml` (reset, no change), the NAND save (moved aside, no change), the diagnostic env vars (unset, no change). Cause: the SQLite pipeline/shader cache (`nsmbw_data/Cache/pipeline_cache.db*`, `dawn_cache.db*`) had a half-written WAL from the abort, and the pipeline prewarm at boot crashed reading it. Moving `Cache/` aside → immediate boot. `ResetPersistentStateForCleanRun()` in `nsmbw_product.cpp` now runs at the top of `main()`: removes the NSMBW NAND save (`NAND/title/00010004/534d4e50`), resets the `[video]` window keys in `Config.toml` to windowed 640×480 @1×, and wipes the pipeline cache **only** if a `.last_run_unclean` marker survives from a previous run (written at start, removed by an `atexit` handler on clean exit). `NSMBW_KEEP_STATE=1` opts out. Verified across two runs: run 1 removed the save and reset the config; run 2 after a forced kill wiped 6 cache files and booted.
+
+What broke / what I didn't expect:
+- The first 3D frame appeared and then vanished when a blue rectangle (a 2D layout element) drew over it — the 2D layer's depth/blend state is still wrong, so 2D elements paint over the 3D scene instead of compositing with it.
+- On that frame the sky is black, the ground tiles are a flat grey strip, and Mario, the logo and the "press 2" prompt are not visible. Those are now bugs against a *working* 3D scene, which is a different situation from before.
+- The pipeline-cache crash was mistaken at first for a regression from the day's changes; it was pure state.
+
+What I learned:
+- **Bisect at boundaries with a known-good input.** The test triangle located the first broken stage in one run after two weeks of guessing. Now recorded in CLAUDE.md as the default approach.
+- **Inlining defeats address-based overrides.** A native override at a leaf function's address only fires at non-inlined call sites. If a bound function's HLE never logs a call, check the shards for `inline leaf` before assuming the binding is wrong. Handling the effect at the lowest level the translator can't inline away (here, the SPR write itself) is more robust than binding the wrapper functions.
+- **Locked cache** (concept, for the curriculum): the Wii CPU can lock part of its L1 data cache and treat it as 16 KB of scratch RAM at 0xE0000000, with a DMA engine that copies blocks between it and main RAM. Games use it for hot math like skinning matrices. A recompiler has to emulate the DMA explicitly, because the "cache" is just another array on the host and nothing moves data out of it otherwise.
+- **The guest's own SDK state caches matter.** Even when a GX function is correctly HLE'd, the guest's copy of that SDK may defer the actual register write into a dirty-flag mechanism that fires from a *different* function. Overriding the setter without overriding the flusher leaves the state stranded.
+- Windows crash forensics: `Get-WinEvent -LogName Application` gives the faulting module and exception code when the process dies with no console output.
+
+What's next:
+- Sky (black), ground tiles (grey strip), Mario, logo and "press 2" prompt on the title screen.
+- 2D-over-3D compositing (the blue rectangle overwrite).
+- Consider pruning the `*_diag.cpp` files whose area is now stable (each removal needs the shard manifest regenerated).

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <iostream>
 
 #include "abi_bridge.h"
@@ -175,6 +176,14 @@ extern "C" void LCLoadBlocks_HLE_801a1894(CpuContext* ctx)
     const uint32_t srcAddr = static_cast<uint32_t>(ctx->gpr[4]);
     const uint32_t blocks = DecodeLcBlockCount(static_cast<uint32_t>(ctx->gpr[5]));
     const uint32_t len = blocks * kCacheOpLineSize;
+    if (std::getenv("NSMBW_LOG_LC") != nullptr) {
+        static int logged = 0;
+        if (logged < 10) {
+            ++logged;
+            RT_LOGF(RT_TAG_OS, "NSMBW_LC LCLoadBlocks dstTag=0x%08X src=0x%08X rawBlocks=%u -> len=%u\n", dstAddr, srcAddr,
+                    static_cast<uint32_t>(ctx->gpr[5]), len);
+        }
+    }
     if (CopyGuestRange(dstAddr, srcAddr, len, "LCLoadBlocks")) {
         // RAM->LC loads are DMA reads on console, but the destination range is
         // still a guest RAM alias as far as the runtime is concerned; notify it
@@ -200,6 +209,15 @@ extern "C" uint32_t LCStoreData_HLE_801a18dc(CpuContext* ctx)
     const uint32_t dstAddr = static_cast<uint32_t>(ctx->gpr[3]);
     const uint32_t srcAddr = static_cast<uint32_t>(ctx->gpr[4]);
     const uint32_t len = static_cast<uint32_t>(ctx->gpr[5]);
+    // DIAGNOSTIC (temporary): NSMBW_LOG_LC - confirms the g3d CALC_WORLD store-back from the
+    // locked cache actually reaches this HLE (NSMBW binds it via nsmbw_os_lockedcache_overrides).
+    if (std::getenv("NSMBW_LOG_LC") != nullptr) {
+        static int logged = 0;
+        if (logged < 10) {
+            ++logged;
+            RT_LOGF(RT_TAG_OS, "NSMBW_LC LCStoreData dst=0x%08X src=0x%08X len=%u\n", dstAddr, srcAddr, len);
+        }
+    }
     if (CopyGuestRange(dstAddr, srcAddr, len, "LCStoreData") && len != 0) {
         GxNotifyGuestRamDmaWrite(dstAddr, len);
     }

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #if !defined(_LIBCPP_VERSION)
 #include <execution>
@@ -612,11 +613,65 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
   const Mat4x4<float> effectiveProj = effective_projection();
   stage(&effectiveProj, sizeof(effectiveProj));
 
+  // DIAGNOSTIC (temporary): NSMBW_LOG_TEV_REGS - none of WiiStrap's real texture assets contain
+  // any green content, so a visible green rectangle must come from somewhere else. TEV color
+  // registers (GX_CC_C0/C1/C2, set via GXSetTevColor) are explicitly designed to persist across
+  // draws on real hardware - if a material's TEV combiner blends one in (rather than pure
+  // TEXC/RASC passthrough) and that register holds stale data left over from an unrelated earlier
+  // draw, it would inject unexpected color independent of the bound texture. This dumps every
+  // textured draw's TEV stage 0 colorPass/alphaPass and the current colorRegs[0..3] values, for
+  // correlation against NSMBW_LOG_PANE_IDENTITY's pane names. Remove once resolved.
+  if (std::getenv("NSMBW_LOG_TEV_REGS") != nullptr && info.sampledTextures.any()) {
+    static int tevRegsLogged = 0;
+    if (tevRegsLogged < 60) {
+      ++tevRegsLogged;
+      const auto& st = g_gxState.tevStages[0];
+      std::fprintf(stderr,
+                   "[NSMBW_TEV_REGS] call#%d texMapId=%u colorPass(a,b,c,d)=(%u,%u,%u,%u) "
+                   "alphaPass(a,b,c,d)=(%u,%u,%u,%u) colorRegs: C0=(%.2f,%.2f,%.2f,%.2f) "
+                   "C1=(%.2f,%.2f,%.2f,%.2f) C2=(%.2f,%.2f,%.2f,%.2f)\n",
+                   tevRegsLogged, (unsigned)st.texMapId, (unsigned)st.colorPass.a, (unsigned)st.colorPass.b,
+                   (unsigned)st.colorPass.c, (unsigned)st.colorPass.d, (unsigned)st.alphaPass.a,
+                   (unsigned)st.alphaPass.b, (unsigned)st.alphaPass.c, (unsigned)st.alphaPass.d,
+                   g_gxState.colorRegs[1].x(), g_gxState.colorRegs[1].y(), g_gxState.colorRegs[1].z(),
+                   g_gxState.colorRegs[1].w(), g_gxState.colorRegs[2].x(), g_gxState.colorRegs[2].y(),
+                   g_gxState.colorRegs[2].z(), g_gxState.colorRegs[2].w(), g_gxState.colorRegs[3].x(),
+                   g_gxState.colorRegs[3].y(), g_gxState.colorRegs[3].z(), g_gxState.colorRegs[3].w());
+      std::fflush(stderr);
+    }
+  }
+
   const size_t positionOffset = stagedSize;
   for (u32 i = 0; i < layout.postexCount; ++i) {
     const u32 slot =
         layout.postexSlots[i] == UniformMatrixLayout::kCurrentPnMtx ? currentPostexSlot
                                                                     : layout.postexSlots[i];
+    // DIAGNOSTIC (temporary): NSMBW_LOG_MVP dumps the effective projection and the position
+    // matrix actually uploaded for the first several draws - texture decode and viewport are
+    // both confirmed correct, and vertex source data looks plausible for a centered NW4R layout
+    // space, so this checks whether the modelview/projection transform is what's misplacing
+    // otherwise-correct content on screen. Remove once resolved.
+    if (std::getenv("NSMBW_LOG_MVP") != nullptr) {
+      static int mvpLogged = 0;
+      if (mvpLogged < 10) {
+        ++mvpLogged;
+        const auto& p = effectiveProj;
+        const auto* m = slot < MaxPnMtx ? &g_gxState.pnMtx[slot].pos : nullptr;
+        std::fprintf(stderr,
+                     "[NSMBW_MVP] slot=%u proj_row0=(%.4f,%.4f,%.4f,%.4f) row1=(%.4f,%.4f,%.4f,%.4f) "
+                     "row2=(%.4f,%.4f,%.4f,%.4f) row3=(%.4f,%.4f,%.4f,%.4f)\n",
+                     slot, p[0][0], p[0][1], p[0][2], p[0][3], p[1][0], p[1][1], p[1][2], p[1][3], p[2][0],
+                     p[2][1], p[2][2], p[2][3], p[3][0], p[3][1], p[3][2], p[3][3]);
+        if (m != nullptr) {
+          std::fprintf(stderr,
+                       "[NSMBW_MVP]   posMtx row0=(%.4f,%.4f,%.4f,%.4f) row1=(%.4f,%.4f,%.4f,%.4f) "
+                       "row2=(%.4f,%.4f,%.4f,%.4f)\n",
+                       m->m0[0], m->m0[1], m->m0[2], m->m0[3], m->m1[0], m->m1[1], m->m1[2], m->m1[3], m->m2[0],
+                       m->m2[1], m->m2[2], m->m2[3]);
+        }
+        std::fflush(stderr);
+      }
+    }
     stage(slot < MaxPnMtx ? &g_gxState.pnMtx[slot].pos : &g_gxState.texMtxs[slot - MaxPnMtx],
           sizeof(Mat3x4<float>));
   }

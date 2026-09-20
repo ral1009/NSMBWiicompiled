@@ -1,6 +1,7 @@
 #include "gx.hpp"
 #include "__gx.h"
 #include "../../gx/fifo.hpp"
+#include "../../internal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -439,6 +440,16 @@ static void write_color_attr(u8 r, u8 g, u8 b, u8 a) {
   ensure_vtx_cache(sBeginVtxFmt);
   const GXAttr attr = select_implicit_attr(GX_VA_CLR0, GX_VA_CLR1);
   const AttrCacheEntry& entry = attr_cache(attr);
+  // TEMPORARY DIAGNOSTIC: NSMBW flat-screen isolation. Remove before merging.
+  if (aurora::nsmbw_diag_enabled()) {
+    static int logged = 0;
+    if (logged < 100) {
+      ++logged;
+      std::fprintf(stderr, "[NSMBW_WRITECOLOR] attr=%d entryType=%d rgba=(%u,%u,%u,%u)\n", static_cast<int>(attr),
+                   static_cast<int>(entry.type), r, g, b, a);
+      std::fflush(stderr);
+    }
+  }
   if (entry.type == GX_NONE) {
     return;
   }

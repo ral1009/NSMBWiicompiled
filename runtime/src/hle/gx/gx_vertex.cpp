@@ -178,8 +178,18 @@ PPC_NATIVE_OVERRIDE_VOID(8016e2b8, GX__GetVtxAttrFmtv_8016e2b8, (uint32_t vf, ui
 // Vertex Arrays
 // ============================================================================
 
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 extern "C" void GX__SetArray_8016e32c(uint32_t a, uint32_t ba, uint32_t str) {
     const uint32_t attr = CanonicalVtxAttr(a);
+    // DIAGNOSTIC (temporary): NSMBW_LOG_MTX_LOADS - see gx_transform.cpp. Reports whether the
+    // guest ever registers the matrix arrays (attr >= GX_POS_MTX_ARRAY) during the 3D scene.
+    if (attr >= GX_POS_MTX_ARRAY && std::getenv("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+        static int logged = 0;
+        if (logged < 12) {
+            ++logged;
+            RT_LOGF(RT_TAG_GX, "NSMBW_MTX GXSetArray attr=%u base=0x%08X stride=%u\n", attr, ba, str);
+        }
+    }
     if(attr<26){ g_hleGxState.vtxArray[attr].base=ba; g_hleGxState.vtxArray[attr].stride=str; }
 }
 PPC_NATIVE_OVERRIDE_VOID(8016e32c, GX__SetArray_8016e32c, (uint32_t a, uint32_t ba, uint32_t str), (a, ba, str));

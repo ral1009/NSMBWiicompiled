@@ -150,11 +150,55 @@ extern "C" void GX__LoadPosMtxImm_8017310c(uint32_t ma, uint32_t id) {
 }
 PPC_NATIVE_OVERRIDE_VOID(8017310c, GX__LoadPosMtxImm_8017310c, (uint32_t ma, uint32_t id), (ma, id));
 
+// DIAGNOSTIC (temporary): NSMBW_LOG_MTX_LOADS - NSMBW's 3D draws all transform to view=(0,0,0)
+// (every position matrix in aurora reads as zero). This reports whether the indexed loader is
+// reached at all, whether it bails because GXSetArray(GX_POS_MTX_ARRAY) never populated the HLE
+// table, and what values it actually fetches when it does run. Remove once resolved.
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+extern "C" uint32_t g_nsmbwXfLoadSource;
+static bool NsmbwMtxLogEnabled() {
+    static const bool enabled = std::getenv("NSMBW_LOG_MTX_LOADS") != nullptr;
+    return enabled && g_nsmbwCurrentSceneProfile == 5u;
+}
+
 extern "C" void GX__LoadPosMtxIndx_8017315c(uint32_t mi, uint32_t id) {
     const auto& arr=g_hleGxState.vtxArray[GX_POS_MTX_ARRAY];
-    if(arr.base==0||arr.stride==0) return;
+    static int logged = 0;
+    if(arr.base==0||arr.stride==0) {
+        if (NsmbwMtxLogEnabled() && logged < 12) {
+            ++logged;
+            RT_LOGF(RT_TAG_GX, "NSMBW_MTX PosMtxIndx mi=%u id=%u BAILED: POS_MTX_ARRAY base=0x%08X stride=%u\n",
+                    mi, id, arr.base, arr.stride);
+        }
+        return;
+    }
     const uint32_t* raw=(const uint32_t*)GuestToHostPtr(arr.base+mi*arr.stride, 48);
-    if(raw){ float m[12]; SwapBeF32ArrayToHost(raw,m,12); GXLoadPosMtxImm((float(*)[4])m,id); }
+    if(raw){
+        float m[12]; SwapBeF32ArrayToHost(raw,m,12);
+        // DIAGNOSTIC (temporary): NSMBW_LOG_ZERO_MTX - indexed loads that fetch an all-zero palette
+        // entry in steady-state STAGE, with the palette base/index and guest return address.
+        if (std::getenv("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+            static uint64_t seen = 0;
+            ++seen;
+            if (seen > 5000 && m[0] == 0.f && m[5] == 0.f && m[10] == 0.f && m[3] == 0.f) {
+                static int lines = 0;
+                if (lines < 12 && (seen % 61) == 0) {
+                    ++lines;
+                    CpuContext* cc = TryGetCpuContext();
+                    RT_LOGF(RT_TAG_GX, "NSMBW_ZERO_MTX PosMtxIndx mi=%u id=%u base=0x%08X stride=%u ZERO entry, LR=0x%08X\n",
+                            mi, id, arr.base, arr.stride, cc ? static_cast<uint32_t>(cc->lr) : 0u);
+                }
+            }
+        }
+        if (NsmbwMtxLogEnabled() && logged < 12) {
+            ++logged;
+            RT_LOGF(RT_TAG_GX, "NSMBW_MTX PosMtxIndx mi=%u id=%u base=0x%08X stride=%u row0=(%.3f,%.3f,%.3f,%.3f) row1=(%.3f,%.3f,%.3f,%.3f)\n",
+                    mi, id, arr.base, arr.stride, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7]);
+        }
+        g_nsmbwXfLoadSource = 2u;
+        GXLoadPosMtxImm((float(*)[4])m,id);
+        g_nsmbwXfLoadSource = 0u;
+    }
 }
 PPC_NATIVE_OVERRIDE_VOID(8017315c, GX__LoadPosMtxIndx_8017315c, (uint32_t mi, uint32_t id), (mi, id));
 

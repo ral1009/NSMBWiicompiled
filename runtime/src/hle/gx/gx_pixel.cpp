@@ -6,7 +6,10 @@
 // Blend Mode
 // ============================================================================
 
+NsmbwLastBlendDiag g_nsmbwLastBlendDiag{};
+
 extern "C" void GX__SetBlendMode_8017277c(uint32_t t, uint32_t s, uint32_t d, uint32_t op) {
+    g_nsmbwLastBlendDiag = {t, s, d, op, g_nsmbwLastBlendDiag.setCount + 1};
     if (std::getenv("NSMBW_TEX_PEEK") != nullptr) {
         static int logged = 0;
         if (logged < 20) {

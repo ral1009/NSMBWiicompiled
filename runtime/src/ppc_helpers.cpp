@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <limits>
 
@@ -484,6 +485,58 @@ extern "C" uint32_t PPC_ReadSpr(uint32_t spr)
     }
 }
 
+// Defined in runtime/src/hle/gx (gx_internal.h); lets a DMA that lands in guest RAM invalidate
+// any GX-side caches over that range, the same way the LC* HLE wrappers do.
+extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
+
+namespace {
+// Locked-cache DMA (Gekko/Broadway DMAU/DMAL, SPR 922/923). The OS LC* helpers program these
+// two registers and the hardware performs the copy between main memory and the 16KB locked L1
+// cache at 0xE0000000. Register layout, as written by this build's LCLoadBlocks/LCStoreBlocks
+// (0x801AC850/0x801AC880):
+//   DMAU: bits 31..5 = physical memory address (32-byte aligned), bits 4..0 = length high 5 bits
+//   DMAL: bits 31..5 = locked-cache address, bit 4 = LD (1: memory -> LC, 0: LC -> memory),
+//         bits 3..2 = length low 2 bits, bit 1 = T (trigger), bit 0 = F (flush queue)
+//   length is in 32-byte blocks; 0 encodes 128.
+// The runtime already HLEs the LC* functions as synchronous copies at their call addresses, but
+// the translator inlines the small ones (LCLoadBlocks, LCStoreBlocks, LCQueueLength) into their
+// callers, where the register writes below are the only trace of the transfer. Performing the copy
+// on the trigger write makes every path equivalent, inlined or not.
+uint32_t g_lcDmau = 0;
+
+uint32_t LcDmaPhysicalToVirtual(uint32_t physical)
+{
+    // DMAU carries the physical address (LCLoadBlocks masks with 0x1FFFFFFF). MEM1 is 24MB at
+    // physical 0, MEM2 64MB at physical 0x10000000; both map to the cached virtual views.
+    if (physical < 0x01800000u) return physical | 0x80000000u;
+    if (physical >= 0x10000000u && physical < 0x14000000u) return physical + 0x80000000u;
+    return physical;
+}
+
+void LcDmaTrigger(uint32_t dmal)
+{
+    const uint32_t blocks = ((g_lcDmau & 0x1Fu) << 2) | ((dmal >> 2) & 0x3u);
+    const uint32_t len = (blocks == 0 ? 128u : blocks) * 32u;
+    const uint32_t memAddr = LcDmaPhysicalToVirtual(g_lcDmau & ~0x1Fu);
+    const uint32_t lcAddr = dmal & ~0x1Fu;
+    const bool load = (dmal & 0x10u) != 0;
+    const uint32_t dst = load ? lcAddr : memAddr;
+    const uint32_t src = load ? memAddr : lcAddr;
+    try
+    {
+        auto* d = ::Memory::GetPointer(dst, len);
+        auto* s = ::Memory::GetPointer(src, len);
+        std::memmove(d, s, len);
+        GxNotifyGuestRamDmaWrite(dst, len);
+    }
+    catch (const ::Memory::AccessViolation& e)
+    {
+        RT_LOG(RT_TAG_OS) << "LC DMA (DMAU/DMAL): memory access failed @0x" << std::hex << e.address()
+                          << " len=0x" << len << std::dec << " (" << e.reason() << ")" << std::endl;
+    }
+}
+} // namespace
+
 extern "C" void PPC_WriteSpr(uint32_t spr, uint32_t value)
 {
     CpuContext* cpu = TryGetCpuContext();
@@ -499,6 +552,10 @@ extern "C" void PPC_WriteSpr(uint32_t spr, uint32_t value)
 
     switch (spr)
     {
+        case 922: g_lcDmau = value; return;              // DMAU
+        case 923:                                         // DMAL
+            if (value & 0x2u) LcDmaTrigger(value);
+            return;
         case 8: if (cpu) cpu->lr = value; return;
         case 9: if (cpu) cpu->ctr = value; return;
         case 1: if (cpu) cpu->xer = value; return;

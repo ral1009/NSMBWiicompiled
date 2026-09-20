@@ -198,6 +198,13 @@ constexpr std::array<std::string_view, 3> kDisplayModeConfigNames = {
 uint64_t g_presentedFrame = 0;
 std::atomic_bool g_strapInputAccepted = false;
 std::atomic_uint64_t g_startupDismissFrame = UINT64_MAX;
+// Set by settings_overlay::DisableStartupScreen() for products (currently NSMBW) whose own
+// boot sequence draws its own full-screen content immediately - MKW's black "WiiCompiled" title
+// card exists to cover the brief gap before its guest code starts drawing, but NSMBW's Wii
+// Remote strap warning is itself the first thing the guest draws, so this card was instead
+// covering that real content and then vanishing over it. Left as an opt-out rather than
+// deleting DrawStartupScreen()/the Draw() call site, since MKW still wants this screen.
+std::atomic_bool g_startupScreenDisabled = false;
 constexpr uint64_t kStrapTransitionCoverFrames = 60;
 
 constexpr std::array<ResolutionItem, 8> kResolutions = {{
@@ -1001,8 +1008,15 @@ void Draw() noexcept {
 }
 
 bool StartupScreenVisible() noexcept {
+    if (g_startupScreenDisabled.load(std::memory_order_relaxed)) {
+        return false;
+    }
     return !g_strapInputAccepted.load(std::memory_order_acquire) ||
            g_presentedFrame < g_startupDismissFrame.load(std::memory_order_relaxed);
+}
+
+void DisableStartupScreen() noexcept {
+    g_startupScreenDisabled.store(true, std::memory_order_relaxed);
 }
 
 void NotifyStrapInputAccepted() noexcept {

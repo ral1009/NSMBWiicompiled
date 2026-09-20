@@ -13,22 +13,36 @@ I (the developer) am learning C, PowerPC, and this whole toolchain largely *thro
 - Prefer smaller, explainable changes over large ones I can't reasonably review. If a change is big, break it down and walk through it in pieces.
 - When something breaks, help me understand the failure (compiler error vs linker error vs logic error, which layer it's in) before jumping to the fix.
 
-## Documentation policy — read this carefully
+## Documentation policy
 
-**Any documentation that gets committed or pushed (updates to `docs/MASTER_PLAN.md`, especially its Progress Log section, README updates, commit messages, code comments explaining design decisions) must be written primarily by me, not generated wholesale by you.**
+**Claude writes the documentation.** (Changed 2026-09-19 — the earlier policy had me writing every devlog entry and commit message myself; I've decided the project moves faster and the record stays more accurate if Claude does it, since Claude has the full evidence trail from each debugging session in front of it.)
 
-This isn't a style preference — it's the actual point of the project. The devlog and documentation are meant to be evidence that I understand what happened, not a record of what an AI produced on my behalf. If you write it for me, it stops being true.
+What that means in practice:
 
-Concretely, when it's time to write something that will be committed:
-
-- **Ask me first**, rather than drafting it and showing me the draft. Good questions: "What was the actual problem here?" / "Walk me through what you tried before this worked." / "How would you explain this to someone who hasn't seen the code?"
-- Help me **structure and tighten** what I say — fixing grammar, suggesting organization, pointing out where I've skipped a step someone else would need — but the substance and explanation should come from me answering your questions, not from you inferring it from the diff and writing it up.
-- If I'm clearly struggling to articulate something because I don't actually understand it yet, say so directly rather than papering over the gap with polished prose. That's a signal I need to go back and learn the thing, not a documentation problem to solve.
-- It's fine for you to write a rough scaffold/outline of *what sections a doc needs* — it's not fine for you to fill in the technical explanations inside those sections on my behalf.
-- Exception: purely mechanical stuff (a table of install commands, a checksum list, boilerplate license headers) doesn't need this treatment — the policy is about explanatory/technical writing, not everything with words in it.
+- After meaningful work — a fix that changed observable behaviour, a root cause found, a milestone reached — update `docs/MASTER_PLAN.md`'s Progress Log with an entry in the existing template (What I did / What broke / What I learned / What's next). Write it so that I, or someone who wasn't in the session, can follow the reasoning: what was observed, what was ruled out and how, what the actual cause was, and what the fix does. Evidence over narrative.
+- Write commit messages the same way: a short subject, then a body that explains *why*, names the root cause, and lists what was verified. Don't pad; don't claim more than was actually confirmed.
+- Code comments explaining a non-obvious design decision (why an override exists, why a value is what it is, what fails without it) are welcome and should cite the evidence (an address, a log line, a disassembly detail) rather than restate the code.
+- Keep `CLAUDE.md` itself current when the way we work changes.
+- Still keep me in the loop: when a doc update goes beyond recording what happened — e.g. changing the phase plan, scope, or a stated decision — say so in chat rather than silently rewriting it.
+- I still want to *understand* what's being written. If an entry relies on a concept I probably haven't met yet, add a one-line explanation of it in the entry rather than assuming it.
 
 ## General working style
 
 - Terse, evidence-based feedback over encouragement or padding.
 - If you're not sure whether something is correct, say so — don't present a guess as settled.
+- Never declare something fixed or working without direct evidence (a screenshot, a log line, a before/after comparison). "It should work now" is not a result.
+- When a screenshot or log is ambiguous, say what is actually visible in it rather than what you expected to see. I will check.
 - I own a legally dumped copy of the relevant discs. Don't ask about this repeatedly; it's established.
+
+## Repo layout and git
+
+- This directory (`Wiicompiled/`) is the project repo: docs, `CLAUDE.md`, scaffolding. `MKWiicompiled/`, `NSMBW-Decomp/`, `NSMBW-Files/`, `NSMBW-Maps/` are separate clones / data and are gitignored here.
+- `MKWiicompiled/` is its own git repo (the WiiCompiled fork with the NSMBW product). Its push target is the `ral1009` remote, never `origin` (that's upstream WiiCompiled).
+- Build: `cmake --build MKWiicompiled/build_nsmbw --target NSMBWCompiled`. Any new `PPC_NATIVE_OVERRIDE` address under `MKWiicompiled/projects/nsmbw/native/` needs the shard manifest regenerated first (`dotnet run --project translator/src/Translator.Cli -- emit-nsmbw-build-shards --project projects/nsmbw/nsmbw.yml --modules-file projects/nsmbw/modules.txt --native-source-dir projects/nsmbw/native`, run from `MKWiicompiled/`) — forgetting it, including when an override file is *removed*, produces a `missing_target` crash at that address.
+
+## Debugging approach that has worked
+
+- Bisect at boundaries, don't fix things blind. A hand-written test draw (`NSMBW_TEST_TRIANGLE`) through the real pipeline, plus the GPU peek captures at pass end / after resolve / after blit, located the first broken stage in one run after weeks of guessing at individual GX setters.
+- The recurring bug class in this port: an SDK function is natively overridden at **Mario Kart Wii's** address in the shared runtime and therefore silently dead for NSMBW. Symptoms look like rendering/logic bugs; the cause is "this function ran as translated code and its side effect never reached the host". Check `projects/nsmbw/function_map.txt` (real NSMBW addresses) before suspecting the host implementation.
+- A second recurring class: the translator inlines small leaf functions into their callers, so a native override at that leaf's address is bypassed at those call sites. If a bound function's HLE never logs a call, check the generated shards for `inline leaf 0x<addr>`.
+- Most diagnostics in this tree are env-var gated (`NSMBW_LOG_*`, `NSMBW_DUMP_*`, `NSMBW_GPU_PEEK*`, `NSMBW_TEST_TRIANGLE`, `NSMBW_AUTO_PRESS_SELFTEST` / `_STOP_SCENE`). They cost nothing when unset and are worth keeping until the area they cover is stable.

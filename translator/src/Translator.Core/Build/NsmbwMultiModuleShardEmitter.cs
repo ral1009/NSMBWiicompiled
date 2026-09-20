@@ -186,7 +186,11 @@ public static partial class TranslatedBuildShardEmitter
                     NormalizeStateFreeSignature(match.Groups["ret"].Value, match.Groups["params"].Value);
             }
         }
-        var stateFreeMismatchedCallers = new HashSet<uint>();
+        // Per caller, which target addresses' _statefree forward declarations disagree with
+        // whatever module's copy of that target actually won the merge above. Keyed by target
+        // address (not just a caller/mismatched flag) because a caller can have several
+        // state-free call sites and only some of them may be affected.
+        var mismatchedTargetsByCaller = new Dictionary<uint, HashSet<uint>>();
         foreach (var record in activeFunctions)
         {
             foreach (Match match in StateFreeSignatureRegex().Matches(SourceOf(record)))
@@ -196,22 +200,61 @@ public static partial class TranslatedBuildShardEmitter
                 // Absent, not just mismatched, is just as unsafe: it means every module that
                 // defined this exact _statefree variant lost the merge, so nothing in the build
                 // actually provides the symbol this caller forward-declared.
-                if (!definedStateFreeSignatures.TryGetValue(symbol, out var authoritative))
+                var mismatched = !definedStateFreeSignatures.TryGetValue(symbol, out var authoritative)
+                    || !string.Equals(
+                        NormalizeStateFreeSignature(match.Groups["ret"].Value, match.Groups["params"].Value),
+                        authoritative, StringComparison.Ordinal);
+                if (!mismatched) continue;
+
+                // The address is embedded in the symbol itself (func_XXXXXXXX_statefree[_vN]) -
+                // no separate lookup needed to know which call site(s) to downgrade below.
+                var targetAddress = uint.Parse(
+                    symbol.AsSpan("func_".Length, 8),
+                    System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture);
+                if (!mismatchedTargetsByCaller.TryGetValue(record.Address, out var targets))
                 {
-                    stateFreeMismatchedCallers.Add(record.Address);
-                    continue;
+                    targets = new HashSet<uint>();
+                    mismatchedTargetsByCaller[record.Address] = targets;
                 }
-                var declared = NormalizeStateFreeSignature(match.Groups["ret"].Value, match.Groups["params"].Value);
-                if (!string.Equals(declared, authoritative, StringComparison.Ordinal))
-                {
-                    stateFreeMismatchedCallers.Add(record.Address);
-                }
+                targets.Add(targetAddress);
             }
         }
-        if (stateFreeMismatchedCallers.Count > 0)
+        var stateFreeMismatchedCallers = mismatchedTargetsByCaller.Count;
+        if (mismatchedTargetsByCaller.Count > 0)
         {
+            // Downgrade just the affected call site(s) to their already-correct, unconditional
+            // InvokeDirectCpu fallback instead of dropping the whole caller - the fallback works
+            // regardless of what state-free shape (if any) the winning definition of the target
+            // actually has, since it never touches the state-free symbol at all. This keeps every
+            // other line of the caller (its real logic) intact rather than losing the function
+            // outright over a merge disagreement about one unrelated callee's ABI narrowing.
             activeFunctions = activeFunctions
-                .Where(record => !stateFreeMismatchedCallers.Contains(record.Address))
+                .Select(record =>
+                {
+                    if (!mismatchedTargetsByCaller.TryGetValue(record.Address, out var targets))
+                        return record;
+                    var rewritten = SourceOf(record);
+                    foreach (var target in targets)
+                        rewritten = DowngradeStateFreeCallSiteToSafePath(rewritten, target);
+                    return new FunctionRecord
+                    {
+                        Address = record.Address,
+                        Symbol = record.Symbol,
+                        Name = record.Name,
+                        SourcePath = record.SourcePath,
+                        SourceFingerprint = record.SourceFingerprint,
+                        RegistrationKind = record.RegistrationKind,
+                        Priority = record.Priority,
+                        ModuleId = record.ModuleId,
+                        PreservesNonvolatileFprs = record.PreservesNonvolatileFprs,
+                        NonvolatileFprWriteMask = record.NonvolatileFprWriteMask,
+                        DirectCalls = record.DirectCalls,
+                        CompileCostWeight = record.CompileCostWeight,
+                        SourceText = rewritten,
+                        ExcludedByNativeOverride = record.ExcludedByNativeOverride,
+                    };
+                })
                 .ToArray();
         }
 
@@ -256,13 +299,95 @@ public static partial class TranslatedBuildShardEmitter
         PruneStaleShardSources(outputRoot, shards, registration, Array.Empty<string>());
 
         return new NsmbwShardResult(
-            activeFunctions.Count, duplicateCount, optimizationVariantCount, stateFreeMismatchedCallers.Count,
+            activeFunctions.Count, duplicateCount, optimizationVariantCount, stateFreeMismatchedCallers,
             shards.Count, cmakeManifestPath);
     }
 
     [GeneratedRegex(
         """extern\s+"C"\s+(?:MKW_PPC_\w+\s+)*(?<ret>[\w:<>]+)\s+(?<sym>func_[0-9A-Fa-f]{8}_statefree(?:_v\d+)?)\s*\((?<params>[^)]*)\)\s*(?<semi>;)?""")]
     private static partial Regex StateFreeSignatureRegex();
+
+    /// <summary>
+    /// Replaces one specific state-free call site -
+    /// <c>if (MkwStateFreeAbiEnabled(0x&lt;targetAddress&gt;u) &amp;&amp; ...) { &lt;fast path&gt; } else { &lt;safe path&gt; }</c>
+    /// - with just the safe path's body, for every occurrence targeting <paramref name="targetAddress"/>
+    /// in <paramref name="body"/>, then strips that address's now-unreferenced <c>_statefree</c>/
+    /// <c>_statefree_vN</c> forward declarations. The safe path is a plain
+    /// <c>InvokeDirectCpu&lt;target&gt;(ctx)</c> call that never touches the target's _statefree symbol,
+    /// so it stays correct regardless of what state-free shape (if any) the winning cross-module
+    /// definition of that target actually has. Leaving the mismatched declaration in place after the
+    /// call site no longer uses it is not just dead code: if another function sharing this caller's
+    /// shard declares or defines the same symbol with its own (correct) signature, two conflicting
+    /// declarations of one extern "C" symbol in one translation unit is a hard compile error, not a
+    /// harmless duplicate - confirmed the hard way for func_801C9BA0_statefree_v1 the first time this
+    /// rewrite only touched the call site. Used instead of dropping a whole caller over one mismatched
+    /// call site inside it - see the merge step in <see cref="EmitNsmbw"/>. Other state-free call sites
+    /// in the same body, targeting other addresses, are left untouched.
+    /// </summary>
+    private static string DowngradeStateFreeCallSiteToSafePath(string body, uint targetAddress)
+    {
+        var prefix = $"if (MkwStateFreeAbiEnabled(0x{targetAddress:X8}u)";
+        var search = 0;
+        while ((search = body.IndexOf(prefix, search, StringComparison.Ordinal)) >= 0)
+        {
+            var open = body.IndexOf('{', search);
+            if (open < 0) break;
+            var trueClose = FindMatchingBrace(body, open);
+            if (trueClose < 0) break;
+            var cursor = trueClose + 1;
+            while (cursor < body.Length && char.IsWhiteSpace(body[cursor])) ++cursor;
+            if (!body.AsSpan(cursor).StartsWith("else", StringComparison.Ordinal))
+            {
+                search = trueClose + 1;
+                continue;
+            }
+            cursor += "else".Length;
+            while (cursor < body.Length && char.IsWhiteSpace(body[cursor])) ++cursor;
+            if (cursor >= body.Length || body[cursor] != '{')
+            {
+                search = trueClose + 1;
+                continue;
+            }
+            var falseOpen = cursor;
+            var falseClose = FindMatchingBrace(body, falseOpen);
+            if (falseClose < 0) break;
+            var safeBody = body[(falseOpen + 1)..falseClose];
+            body = body[..search] + safeBody + body[(falseClose + 1)..];
+            search += safeBody.Length;
+        }
+
+        // Every call site targeting this address is now gone, so every forward declaration of one
+        // of this address's _statefree symbols in this file is unreferenced dead weight - and, per
+        // the mismatch that got us here, potentially a conflicting redeclaration if kept. Matched via
+        // the same regex the mismatch detector uses so "what counts as this address's symbol" can
+        // never drift between detection and cleanup.
+        foreach (Match declaration in StateFreeSignatureRegex().Matches(body).Reverse())
+        {
+            if (!declaration.Groups["semi"].Success) continue; // a definition, not a forward declaration
+            var symbol = declaration.Groups["sym"].Value;
+            var symbolAddress = uint.Parse(
+                symbol.AsSpan("func_".Length, 8),
+                System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (symbolAddress != targetAddress) continue;
+            var lineStart = body.LastIndexOf('\n', declaration.Index) + 1;
+            var lineEnd = body.IndexOf('\n', declaration.Index + declaration.Length);
+            lineEnd = lineEnd < 0 ? body.Length : lineEnd + 1;
+            body = body.Remove(lineStart, lineEnd - lineStart);
+        }
+        return body;
+
+        static int FindMatchingBrace(string text, int open)
+        {
+            var depth = 0;
+            for (var index = open; index < text.Length; ++index)
+            {
+                if (text[index] == '{') ++depth;
+                else if (text[index] == '}' && --depth == 0) return index;
+            }
+            return -1;
+        }
+    }
 
     private static void WriteNsmbwCMakeManifest(
         string path,

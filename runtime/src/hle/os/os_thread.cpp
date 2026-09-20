@@ -604,6 +604,13 @@ extern "C" void OSSuspendThread_HLE_801b5c40(CpuContext* ctx)
 
         if (suspendCount == 0) {
             const uint16_t state = ::Memory::Read16(threadPtr + kThreadStateOffset);
+            // TEMPORARY diagnostic for the post-input-fix black-screen investigation: this
+            // thread's own state right before this call determines which branch below runs,
+            // and whether a resched gets requested at all - print it once per call so we can
+            // see which case a newly-created (EGG::Thread::initialize) thread hits when it
+            // suspends itself, and whether anything ever resumes it afterward.
+            RT_LOGF(RT_TAG_OS, "[nsmbw][diag] OSSuspendThread: threadPtr=0x%08X state=%u\n",
+                    threadPtr, static_cast<unsigned>(state));
             if (state < 3u) {
                 if (state == kThreadStateReady) {
                     RemoveThreadFromQueue(threadPtr);
@@ -625,7 +632,10 @@ extern "C" void OSSuspendThread_HLE_801b5c40(CpuContext* ctx)
                 Fiber::GuestFiberManager::SuspendGuestThread(threadPtr);
             }
 
-            if (::Memory::Read32(kSchedulerReschedCounterAddr) != 0) {
+            const uint32_t reschedCounter = ::Memory::Read32(kSchedulerReschedCounterAddr);
+            RT_LOGF(RT_TAG_OS, "[nsmbw][diag] OSSuspendThread: reschedCounter=%u (will %scall SelectThread)\n",
+                    reschedCounter, reschedCounter != 0 ? "" : "NOT ");
+            if (reschedCounter != 0) {
                 cpu->gpr[3] = 0;
                 SelectThread_801b4fe0(cpu);
             }

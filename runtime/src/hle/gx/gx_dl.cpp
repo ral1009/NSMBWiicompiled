@@ -1346,8 +1346,12 @@ extern "C" void GxNotifyDisplayListMemoryWrite(uint32_t addr, uint32_t size) {
     GxGuestWrite::NotifyWrite(addr, size);
 }
 
+extern "C" uint32_t g_nsmbwXfLoadSource;
 extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes) {
     if (nbytes == 0 || listAddr == 0) return;
+    // DIAGNOSTIC (temporary): tag matrix loads that originate inside display lists (see aurora
+    // command_processor.cpp g_nsmbwXfLoadSource).
+    struct SourceTag { SourceTag() { g_nsmbwXfLoadSource = 3u; } ~SourceTag() { g_nsmbwXfLoadSource = 0u; } } sourceTag;
     try {
         const uint8_t* list = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
         if (!list) return;

@@ -26,6 +26,60 @@ inline bool nsmbw_diag_enabled() noexcept {
   static const bool enabled = std::getenv("NSMBW_LOG_PRESENT_SEQ") != nullptr;
   return enabled;
 }
+// NSMBW_GPU_PEEK_SEQ (temporary): the 3 nsmbw_diag_peek_texture call sites all gated on a
+// hardcoded "> 650" so they'd fire together on the same later frame - too late to see the WiiStrap
+// boot screen, which finishes well under 650 present calls in. Overridable via env var so the same
+// peek mechanism can be pointed at an earlier frame without moving the hardcoded threshold every
+// investigation. Remove alongside the rest of this diagnostic.
+inline uint64_t nsmbw_gpu_peek_seq_threshold() noexcept {
+  static const uint64_t threshold = [] {
+    const char* v = std::getenv("NSMBW_GPU_PEEK_SEQ");
+    return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : 650u;
+  }();
+  return threshold;
+}
+
+// NSMBW_GPU_PEEK_SCENE (temporary): the sequence-count threshold above turned out unusable for
+// reliably catching a specific scene's first frame - present-call counts to reach the same scene
+// vary hugely run to run (confirmed: one run created the BOOT/WiiStrap scene around present-seq
+// 606, immediately adjacent to the default 650 threshold, while other runs reach it at wildly
+// different counts), because scene progression speed itself is not tied to present-call count in
+// any fixed way. g_nsmbwCurrentSceneProfile (set by
+// projects/nsmbw/native/nsmbw_create_next_scene_diag.cpp on every successful scene transition) is
+// actual game state instead of a wall-clock-ish counter, so gating on it catches the right frame
+// regardless of how fast/slow this particular run's boot happens to be. NSMBW_GPU_PEEK_SCENE is a
+// decimal fProf::PROFILE_NAME_e value (0=BOOT, 5=STAGE, 10=GAME_SETUP, ...); unset keeps the old
+// sequence-threshold behavior so this stays backward compatible. Remove alongside the rest of this
+// diagnostic.
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+// NSMBW_GPU_PEEK_SCENE_FRAME (temporary): the very first frame after a scene transition is too
+// early - confirmed directly (NSMBW_GPU_PEEK_SCENE=0 alone caught a perfectly uniform clear-color
+// frame, every pixel exactly 64,64,64): the new scene's own child process is often still mid-
+// creation at that point (checkChildProcessCreateState reports BLOCKED right after
+// createNextScene succeeds), so nothing has actually been drawn into it yet. This counts how many
+// times the target scene has been seen ready and only reports ready once that count is reached,
+// so the peek lands a few frames into the scene instead of on its very first, empty one.
+inline bool nsmbw_gpu_peek_ready(uint64_t seq) noexcept {
+  static const char* const sceneEnv = std::getenv("NSMBW_GPU_PEEK_SCENE");
+  if (sceneEnv != nullptr) {
+    static const uint32_t wantScene = static_cast<uint32_t>(std::strtoul(sceneEnv, nullptr, 10));
+    static const uint32_t wantFrameOffset = [] {
+      const char* v = std::getenv("NSMBW_GPU_PEEK_SCENE_FRAME");
+      return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    static uint32_t lastSeenScene = 0xFFFFFFFFu;
+    static uint32_t seenCount = 0;
+    if (g_nsmbwCurrentSceneProfile != wantScene) {
+      return false;
+    }
+    if (lastSeenScene != wantScene) {
+      lastSeenScene = wantScene;
+      seenCount = 0;
+    }
+    return seenCount++ >= wantFrameOffset;
+  }
+  return seq > nsmbw_gpu_peek_seq_threshold();
+}
 inline void nsmbw_diag_log(const char* site, const char* detail = "") {
   if (!nsmbw_diag_enabled()) {
     return;

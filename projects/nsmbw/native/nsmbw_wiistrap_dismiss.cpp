@@ -1,4 +1,5 @@
 #include "hle_stubs.h"
+#include <cstdio>
 
 // Forward-declared instead of #include "settings_overlay.h" - that header transitively pulls in
 // aurora/event.h (SDL3/SDL_events.h), which isn't on this project's native-source include path
@@ -24,6 +25,14 @@ void NotifyStrapInputAccepted() noexcept;
 extern "C" void NsmbwWiiStrap_FinalizeDispEndWait_8015CFB0(uint32_t thisPtr)
 {
     (void)thisPtr;
+    // TEMPORARY (shared black-screen root-cause check): does this ever actually fire? If the
+    // 20-second mAutoAdvanceTimer (NSMBW-Decomp source/dol/bases/d_s_boot.cpp) never completes and
+    // no button press is ever simulated, this dismiss call - and the one-time
+    // g_strapInputAccepted latch it sets - never happens, meaning the host's opaque startup
+    // overlay (settings_overlay.cpp) stays up covering EVERY later scene indefinitely, regardless
+    // of whether that scene's own content is otherwise correct.
+    std::fprintf(stderr, "[nsmbw][diag] NsmbwWiiStrap_FinalizeDispEndWait FIRED - dismissing startup overlay\n");
+    std::fflush(stderr);
     settings_overlay::NotifyStrapInputAccepted();
 }
 PPC_NATIVE_OVERRIDE_VOID(8015CFB0, NsmbwWiiStrap_FinalizeDispEndWait_8015CFB0, (uint32_t thisPtr), (thisPtr));

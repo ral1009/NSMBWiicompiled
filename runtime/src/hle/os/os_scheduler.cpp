@@ -251,20 +251,31 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
     uint32_t reschedPending = ::Memory::Read32(kSchedulerPendingFlagAddr);
     if (reschedPending == 0) {
         // No threads to run - enter idle loop
+        // TEMPORARY diagnostic for the post-input-fix black-screen investigation: report
+        // every time the scheduler goes idle (rare enough not to spam) so we can see what
+        // was running right before it, and then confirm via the counter below whether this
+        // specific idle period ever actually ends.
+        RT_LOGF(RT_TAG_OS, "[nsmbw][diag] SelectThread: entering idle loop, runningContext=0x%08X\n",
+                runningContext);
         OsSwitchDiag::Check("C:pre-idle-switchcb");
         TryInvokeSwitchCallback(runningContext, 0, cpu);
         OsSwitchDiag::Check("D:post-idle-switchcb");
         ::Memory::Write32(kOSRunningContextAddr, 0);
-        
+
         // Set current context to idle thread context
         OS__SetCurrentContext_801a1e70(kIdleThreadContextAddr);
         OsSwitchDiag::Check("E:post-setcurctx-idle");
-        
+
+        uint64_t diagIdleSpins = 0;
         while (true) {
             // Enable interrupts and idle until something becomes runnable.
             OS__EnableInterrupts_801a65c0();
 
             while (::Memory::Read32(kSchedulerPendingFlagAddr) == 0) {
+                if ((++diagIdleSpins % 2000000) == 0) {
+                    RT_LOGF(RT_TAG_OS, "[nsmbw][diag] SelectThread: still idle after %llu spins\n",
+                            static_cast<unsigned long long>(diagIdleSpins));
+                }
                 ProcessSleepTimers(cpu);
                 // Dolphin models DSP audio DMA as an independent 4 kHz timing
                 // event.  Poll it from the guest scheduler instead of batching

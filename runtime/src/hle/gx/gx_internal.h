@@ -97,6 +97,31 @@ inline void GXMarkFrameWork() {
     g_auroraFrameHadWork.store(true, std::memory_order_release);
 }
 
+// DIAGNOSTIC (temporary): tracks the most recently applied GXSetBlendMode args so a texture-load
+// site (gx_texture.cpp) can report what blend state is active for the draw it's about to make,
+// without needing its own copy of the sequencing logic. Updated unconditionally (cheap - four
+// uint32 stores) on every GXSetBlendMode call, read only under NSMBW_LOG_WRAP_MODE. Remove once
+// the P_stripe_00 investigation (see gx_texture.cpp's NSMBW_TARGET_WRAP_PANE_ID comment) resolves.
+struct NsmbwLastBlendDiag {
+    uint32_t type = 0, src = 0, dst = 0, op = 0, setCount = 0;
+};
+extern NsmbwLastBlendDiag g_nsmbwLastBlendDiag;
+
+// DIAGNOSTIC (temporary): same idea as NsmbwLastBlendDiag, one slot per TEV stage - tracks the
+// most recent GXSetTevOrder/ColorIn/AlphaIn args so gx_texture.cpp can report, for whichever
+// stage has this draw's texture bound (order.texMap matches the GXLoadTexObj tid), what actually
+// feeds that stage's alpha output. Blend mode alone (confirmed SRCALPHA/INVSRCALPHA) doesn't
+// prove the texture's own alpha reaches the blender - if alphaIn is wired to GX_CA_KONST or
+// GX_CA_ZERO instead of GX_CA_TEXA, the draw is still "blended" but with a constant alpha,
+// which looks identical to fully-opaque for a texture meant to fade in via its own alpha.
+// Remove once the P_stripe_00 investigation resolves.
+struct NsmbwLastTevStageDiag {
+    uint32_t texCoord = 0xFFu, texMap = 0xFFu, channel = 0xFFu, orderSetCount = 0;
+    uint32_t colorA = 0, colorB = 0, colorC = 0, colorD = 0, colorSetCount = 0;
+    uint32_t alphaA = 0, alphaB = 0, alphaC = 0, alphaD = 0, alphaSetCount = 0;
+};
+extern NsmbwLastTevStageDiag g_nsmbwLastTevStage[16];
+
 // --- Global State ---
 extern "C" {
 extern int g_gxFrameCount;

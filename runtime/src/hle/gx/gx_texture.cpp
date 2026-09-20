@@ -5,6 +5,41 @@
 #include <algorithm>
 #include <cstdlib>
 
+// DIAGNOSTIC (temporary): live TEV alpha-combiner state mirrored by aurora-main's
+// command_processor.cpp - see that file's g_nsmbwLiveTevAlpha* comment for why this exists and
+// why it's plain extern "C" globals instead of reading aurora's internal gx.hpp directly. Remove
+// once the P_stripe_00 investigation (NSMBW_TARGET_WRAP_TEV below) resolves.
+extern "C" {
+extern uint32_t g_nsmbwLiveTevAlphaA[16];
+extern uint32_t g_nsmbwLiveTevAlphaB[16];
+extern uint32_t g_nsmbwLiveTevAlphaC[16];
+extern uint32_t g_nsmbwLiveTevAlphaD[16];
+extern uint32_t g_nsmbwLiveTevTexMap[16];
+extern float g_nsmbwLiveTevRegAlpha[4];
+extern uint32_t g_nsmbwLiveNumTevStages;
+extern uint32_t g_nsmbwLiveTevChannelId[16];
+extern uint32_t g_nsmbwLiveChanMatSrc[4];
+extern float g_nsmbwLiveChanMatColorA[4];
+extern float g_nsmbwLiveChanAmbColorA[4];
+// DIAGNOSTIC (temporary): live TEV COLOR-combiner routing, mirrored the same way as the alpha
+// state above but never captured before now - see command_processor.cpp's g_nsmbwLiveTevColor*
+// comment. Used by NSMBW_LOG_COLOR_TEV below to check whether panes across every screen (not
+// just P_stripe_00) are actually sampling their bound texture's color (GX_CC_TEXC=8) or getting a
+// constant/vertex color instead (GX_CC_RASC=0, GX_CC_KONST=6, GX_CC_ONE=15, GX_CC_ZERO=16, ...).
+extern uint32_t g_nsmbwLiveTevColorA[16];
+extern uint32_t g_nsmbwLiveTevColorB[16];
+extern uint32_t g_nsmbwLiveTevColorC[16];
+extern uint32_t g_nsmbwLiveTevColorD[16];
+extern float g_nsmbwLiveTevRegColorR[4];
+extern float g_nsmbwLiveTevRegColorG[4];
+extern float g_nsmbwLiveTevRegColorB[4];
+// FIX: forces aurora's consecutive-draw merge optimization to start a fresh batch after this
+// texture upload, since that optimization's stateDirty flag is otherwise never set by this native
+// upload path - see the function's own definition (aurora-main/lib/gx/command_processor.cpp) for
+// the full reasoning.
+void NsmbwInvalidateMergeStateForTextureUpload();
+}
+
 // Helper to write GXTexObj structure to guest memory in SDK format
 // This is needed because other code may read the structure directly
 static void WriteGuestTexObj(uint32_t addr, uint32_t dataAddr, uint16_t width, uint16_t height, 
@@ -243,6 +278,21 @@ static uint32_t ComputeMaxMipLevel(uint16_t width, uint16_t height) noexcept {
 }
 
 extern "C" void GX__InitTexObj_801707f8(uint32_t oa, uint32_t da, uint32_t w, uint32_t h, uint32_t f, uint32_t ws, uint32_t wt, uint32_t m) {
+    // DIAGNOSTIC (temporary): NSMBW_LOG_WRAP_MODE - confirms exactly what wrapS/wrapT the guest
+    // passes into GXInitTexObj for the specific GXTexObj (oa=0x8043FC48) shared by P_back_00 and
+    // P_mask_00, the two panes identified via NSMBW_LOG_PANE_IDENTITY as sharing one texture
+    // object. The real .brlyt asset specifies wrapS=wrapT=0 (GX_CLAMP) for both; this checks
+    // whether that value survives correctly, or whether wrap ends up wrong (e.g. GX_REPEAT),
+    // which - since P_back_00 stretches a small text texture across a much larger 850x456 quad -
+    // would tile/repeat it into exactly the banded pattern seen on screen. Remove once resolved.
+    if (std::getenv("NSMBW_LOG_WRAP_MODE") != nullptr) {
+        static int logged = 0;
+        if (logged < 40) {
+            ++logged;
+            RT_LOGF(RT_TAG_GX, "NSMBW_WRAP_MODE GXInitTexObj oa=0x%08X w=%u h=%u fmt=%u ws=%u wt=%u\n", oa, w, h,
+                    f, ws, wt);
+        }
+    }
     if (w == 0 || h == 0) {
         auto* cpu = TryGetCpuContext();
         RT_LOGF(RT_TAG_GX,
@@ -446,7 +496,155 @@ static void BindUnloadableTexturePlaceholder(uint32_t tid) {
     GXLoadTexObj(&s_placeholder, (GXTexMapID)tid);
 }
 
+// DIAGNOSTIC (temporary): NSMBW_LOG_PANE_IDENTITY - ground-truth identification of which real
+// nw4r::lyt Pane/Material object is behind a given GXLoadTexObj call, instead of inferring it from
+// texture dimensions (which turned out ambiguous - multiple panes in WiiStrap.brlyt legitimately
+// share texture sizes/content by design). nw4r::lyt::Pane stores its resource name as a
+// null-terminated ASCII string at offset +0xBC (confirmed from NSMBW-Decomp's lyt_pane.h:
+// `char mName[NW4R_LYT_RES_NAME_LEN + 1]; // at 0xBC`). This scans every GPR live at the moment
+// GXLoadTexObj is called for one that looks like a Pane* (its +0xBC bytes decode as a short,
+// printable ASCII string), which - since GXLoadTexObj is reached via Picture::DrawSelf ->
+// Material::LoadTexture with the Pane/Picture `this` typically still resident in a callee-saved
+// register - identifies the actual pane by name with certainty, rather than by guessing from
+// texture size. Remove once resolved.
+// Shared by NsmbwLogPaneIdentityForTexLoad (the general 60-call survey) and the narrower
+// NSMBW_TARGET_WRAP_PANE_ID trigger below, which needs its own budget so a screen that only
+// shows up after the general survey's 60 calls are already spent (e.g. anything past the
+// WiiStrap screens) can still be identified.
+static void NsmbwScanForPaneName(const char* logPrefix, int callIndex, uint32_t oa, uint32_t tid) {
+    CpuContext* ctx = TryGetCpuContext();
+    RT_LOGF(RT_TAG_GX, "%s call#%d oa=0x%08X tid=%u lr=0x%08X\n", logPrefix, callIndex, oa, tid,
+            ctx ? ctx->lr : 0u);
+    if (ctx == nullptr) return;
+    auto tryCandidate = [logPrefix](const char* label, uint32_t candidate) {
+        if (candidate < 0x80000000u || candidate > 0x817FFFFFu) return; // must look like a MEM1 pointer
+        char name[17] = {};
+        bool ok = true;
+        int len = 0;
+        try {
+            for (int i = 0; i < 16; ++i) {
+                const uint8_t b = Memory::Read8(candidate + 0xBC + i);
+                if (b == 0) { name[i] = 0; break; }
+                if (b < 0x21 || b > 0x7E) { ok = false; break; } // require printable, non-space (real names have no spaces)
+                name[i] = static_cast<char>(b);
+                ++len;
+            }
+        } catch (...) {
+            return;
+        }
+        // Real pane names in this layout are all >= 5 chars (e.g. "P_back_00") - filter out
+        // single/double-char coincidental matches from unrelated data.
+        if (ok && len >= 5) {
+            RT_LOGF(RT_TAG_GX, "%s   %s=0x%08X +0xBC(name-if-Pane)=\"%s\"\n", logPrefix, label, candidate, name);
+        }
+    };
+    for (int r = 3; r <= 31; ++r) {
+        char label[8];
+        std::snprintf(label, sizeof(label), "r%d", r);
+        tryCandidate(label, ctx->gpr[r]);
+    }
+    // Also scan a window of guest stack memory below r1 (the stack pointer) for spilled
+    // callee-saved registers that might hold the Pane/Picture `this` a few frames up the chain.
+    const uint32_t sp = ctx->gpr[1];
+    for (uint32_t off = 0; off <= 0x200; off += 4) {
+        uint32_t word = 0;
+        try {
+            word = Memory::Read32(sp + off);
+        } catch (...) {
+            break;
+        }
+        char label[16];
+        std::snprintf(label, sizeof(label), "stack+0x%03X", off);
+        tryCandidate(label, word);
+    }
+}
+
+// Set by nsmbw_create_next_scene_diag.cpp on every successful scene transition; lets this
+// survey gate on "which fProf::PROFILE_NAME_e scene is active" instead of a guessed call count.
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+
+static void NsmbwLogPaneIdentityForTexLoad(uint32_t oa, uint32_t tid) {
+    static const bool s_enabled = std::getenv("NSMBW_LOG_PANE_IDENTITY") != nullptr;
+    if (!s_enabled) return;
+    static uint32_t s_totalCalls = 0;
+    const uint32_t callIndex = s_totalCalls++;
+    // NSMBW_LOG_PANE_IDENTITY_SCENE (temporary): the original 60-call budget below only
+    // covers the very first GXLoadTexObj calls in the run (the WiiStrap screens, scene
+    // profile 0). Screens that show up thousands of calls later - e.g. the STAGE-profile
+    // (0x5) demo/attract screen sitting between CRSIN and GAME_SETUP - never get surveyed
+    // because the budget is long spent by the time they're reached. This env var (a decimal
+    // fProf::PROFILE_NAME_e value, e.g. "5" for STAGE) re-points the 60-call survey window at
+    // whichever scene is currently active, using g_nsmbwCurrentSceneProfile instead of a
+    // guessed call-count offset. Remove once resolved.
+    static const long s_sceneFilter = [] {
+        const char* v = std::getenv("NSMBW_LOG_PANE_IDENTITY_SCENE");
+        return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
+    }();
+    if (s_sceneFilter >= 0 && g_nsmbwCurrentSceneProfile != static_cast<uint32_t>(s_sceneFilter)) return;
+    static int logged = 0;
+    if (logged >= 60) return;
+    ++logged;
+    NsmbwScanForPaneName("NSMBW_PANE_ID", static_cast<int>(callIndex), oa, tid);
+
+    // NSMBW_LOG_COLOR_TEV (temporary): "every screen shows flat color instead of real texture
+    // content" investigation. The P_stripe_00 probe further down this file only ever checked the
+    // ALPHA combiner (needed for that fade-opacity question) - whether a pane's actual COLOR
+    // comes from its bound texture (GX_CC_TEXC=8) or gets replaced by a constant/vertex color
+    // (GX_CC_RASC=0, GX_CC_KONST=6, GX_CC_ONE=15, GX_CC_ZERO=16, ...) was never checked. This
+    // dumps every active stage whose texMap matches this GXLoadTexObj call's tid, right after the
+    // pane-name scan above so each line can be matched to a specific pane by call index. Shares
+    // that scan's budget/scene-gating so both surveys point at the same window of the run.
+    if (std::getenv("NSMBW_LOG_COLOR_TEV") != nullptr) {
+        bool any = false;
+        for (uint32_t st = 0; st < g_nsmbwLiveNumTevStages && st < 16; ++st) {
+            if (g_nsmbwLiveTevTexMap[st] != tid) continue;
+            any = true;
+            RT_LOGF(RT_TAG_GX,
+                "NSMBW_COLOR_TEV call#%d oa=0x%08X tid=%u stage=%u colorIn a=%u b=%u c=%u d=%u "
+                "(colorArg per dolphin/gx/GXEnum.h GXTevColorArg: 0=CPREV,1=APREV,2=C0,3=A0,4=C1,"
+                "5=A1,6=C2,7=A2,8=TEXC,9=TEXA,10=RASC,11=RASA,12=ONE,13=HALF,14=KONST,15=ZERO)\n",
+                static_cast<int>(callIndex), oa, tid, st,
+                g_nsmbwLiveTevColorA[st], g_nsmbwLiveTevColorB[st],
+                g_nsmbwLiveTevColorC[st], g_nsmbwLiveTevColorD[st]);
+            // WipeCircle follow-up (2026-09-19): color combiner alone can't explain the on-screen
+            // blue - C0/C1 both read (0,0,0), which interpolates to black regardless of the
+            // texture-driven blend factor. Dumping this stage's ALPHA combiner and the active
+            // blend-src/dst/op alongside it, since either one could be why the visible pixel isn't
+            // simply black: e.g. a low/zero alpha here would let whatever's UNDER this draw show
+            // through instead (a separate earlier draw, or the raw framebuffer clear color).
+            RT_LOGF(RT_TAG_GX,
+                "NSMBW_ALPHA_TEV call#%d stage=%u alphaIn a=%u b=%u c=%u d=%u "
+                "(alphaArg: 0=APREV,1=A0,2=A1,3=A2,4=TEXA,5=RASA,6=KONST,7=ZERO) "
+                "regAlpha APREV=%.3f A0=%.3f A1=%.3f A2=%.3f | "
+                "blend type=%u(0=NONE,1=BLEND,2=LOGIC,3=SUBTRACT) src=%u dst=%u op=%u\n",
+                static_cast<int>(callIndex), st,
+                g_nsmbwLiveTevAlphaA[st], g_nsmbwLiveTevAlphaB[st],
+                g_nsmbwLiveTevAlphaC[st], g_nsmbwLiveTevAlphaD[st],
+                g_nsmbwLiveTevRegAlpha[0], g_nsmbwLiveTevRegAlpha[1],
+                g_nsmbwLiveTevRegAlpha[2], g_nsmbwLiveTevRegAlpha[3],
+                g_nsmbwLastBlendDiag.type, g_nsmbwLastBlendDiag.src, g_nsmbwLastBlendDiag.dst,
+                g_nsmbwLastBlendDiag.op);
+        }
+        // idx into g_nsmbwLiveTevRegColor* follows GXTevRegID (GXEnum.h): 0=TEVPREV(CPREV,
+        // colorArg value 0), 1=TEVREG0(C0, colorArg value 2), 2=TEVREG1(C1, colorArg value 4),
+        // 3=TEVREG2(C2, colorArg value 6).
+        RT_LOGF(RT_TAG_GX,
+            "NSMBW_COLOR_TEV_REGS call#%d CPREV=(%.3f,%.3f,%.3f) C0=(%.3f,%.3f,%.3f) "
+            "C1=(%.3f,%.3f,%.3f) C2=(%.3f,%.3f,%.3f)\n",
+            static_cast<int>(callIndex),
+            g_nsmbwLiveTevRegColorR[0], g_nsmbwLiveTevRegColorG[0], g_nsmbwLiveTevRegColorB[0],
+            g_nsmbwLiveTevRegColorR[1], g_nsmbwLiveTevRegColorG[1], g_nsmbwLiveTevRegColorB[1],
+            g_nsmbwLiveTevRegColorR[2], g_nsmbwLiveTevRegColorG[2], g_nsmbwLiveTevRegColorB[2],
+            g_nsmbwLiveTevRegColorR[3], g_nsmbwLiveTevRegColorG[3], g_nsmbwLiveTevRegColorB[3]);
+        if (!any) {
+            RT_LOGF(RT_TAG_GX, "NSMBW_COLOR_TEV call#%d oa=0x%08X tid=%u: no active stage bound to this tid\n",
+                    static_cast<int>(callIndex), oa, tid);
+        }
+    }
+}
+
 extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
+    NsmbwLogPaneIdentityForTexLoad(oa, tid);
     static uint32_t s_invalidMetaLogCount = 0;
     static uint32_t s_invalidTidLogCount = 0;
     static uint32_t s_invalidDimLogCount = 0;
@@ -529,6 +727,215 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         }
         BindUnloadableTexturePlaceholder(tid);
         return;
+    }
+    // WipeCircle follow-up (2026-09-19): TEV/blend state for W_circle_00 (oa=0x8043FB38, confirmed
+    // stable across runs via NSMBW_LOG_PANE_IDENTITY) is a legitimate alpha-masked black wipe
+    // (alphaIn passes TEXA straight through; blend is SRCALPHA/INVSRCALPHA) - so a uniformly-zero
+    // (or uniformly-one, but the screen isn't black) alpha channel in the bound texture itself
+    // would explain "renders as one flat color" better than a TEV misconfiguration does. I4/I8/
+    // IA4/IA8 are all tile-blocked (not simple raster order), so picking a "center texel" byte
+    // offset by hand would need the tiling geometry worked out first and could easily land on the
+    // wrong texel. Scanning the WHOLE decoded buffer for its min/max byte value sidesteps that
+    // entirely: min==max==0 across the full buffer means "genuinely all zero, no gradient exists
+    // anywhere in this data," while any spread proves real gradient data is present (wherever it
+    // physically sits in the tiling). Remove once resolved.
+    if (oa == 0x8043FB38u && std::getenv("NSMBW_LOG_WIPECIRCLE_TEXDATA") != nullptr) {
+        static int wipeTexLogged = 0;
+        if (wipeTexLogged < 8) {
+            ++wipeTexLogged;
+            const uint8_t* src = static_cast<const uint8_t*>(GuestToHostPtr(meta.dataAddr, size));
+            uint8_t minB = 0xFF, maxB = 0x00;
+            uint32_t zeroCount = 0, ffCount = 0;
+            if (src != nullptr) {
+                for (uint32_t i = 0; i < size; ++i) {
+                    const uint8_t b = src[i];
+                    minB = std::min(minB, b);
+                    maxB = std::max(maxB, b);
+                    if (b == 0x00) ++zeroCount;
+                    if (b == 0xFF) ++ffCount;
+                }
+            }
+            RT_LOGF(RT_TAG_GX,
+                    "NSMBW_WIPECIRCLE_TEXDATA #%d dataAddr=0x%08X fmt=%u(0=I4,1=I8,2=IA4,3=IA8,4=RGB565,"
+                    "5=RGB5A3,6=RGBA8,8=CMPR) %ux%u mip=%u size=%u hostPtrNull=%d min=0x%02X max=0x%02X "
+                    "zeroBytes=%u/%u ffBytes=%u/%u\n",
+                    wipeTexLogged, meta.dataAddr, meta.format, meta.width, meta.height,
+                    meta.mipmap ? 1u : 0u, size, src == nullptr, minB, maxB, zeroCount, size, ffCount, size);
+        }
+    }
+    // DIAGNOSTIC (temporary): NSMBW_LOG_WRAP_MODE, narrowed to the exact object flagged in
+    // GX__InitTexObj_801707f8's comment above (oa=0x8043FC48, P_back_00/P_mask_00's shared
+    // GXTexObj). That function's own wrap-mode log never fired even once this run (grep for
+    // "NSMBW_WRAP_MODE GXInitTexObj" turns up nothing), so this object's wrap mode is not
+    // arriving through GX__InitTexObj_801707f8 at all - it must be getting its meta from
+    // TryGetOrExtractTexObjMeta's guest-memory fallback instead. This prints what THAT path
+    // actually read for wrapS/wrapT, right before GXLoadTexObj applies it. Remove once resolved.
+    if (oa == 0x8043FC48u && std::getenv("NSMBW_LOG_WRAP_MODE") != nullptr) {
+        RT_LOGF(RT_TAG_GX, "NSMBW_TARGET_WRAP oa=0x%08X raw wrapS=%u wrapT=%u fmt=%u %ux%u\n",
+                oa, meta.wrapS, meta.wrapT, meta.format, meta.width, meta.height);
+        // DIAGNOSTIC (temporary): P_back_00's own source bytes - user-reported symptom is the
+        // whole WiiStrap screen rendering solid white, not just the P_stripe_00 accent this block
+        // was originally added for. Since GXLoadTexObj logs zero rejections for this run (every
+        // texture, including this one, passes the meta/format/dimension/data-range checks and
+        // gets uploaded), the failure - if it is a data problem at all - has to be in what's
+        // actually AT meta.dataAddr, not in whether the load was attempted. RGB5A3 is 2 bytes/
+        // texel, no block tiling like I4 (see GXGetTexBufferSize) - print the first 8 texels
+        // (16 bytes) as raw shorts, same GuestToHostPtr access pattern the I4 dump above uses.
+        // Remove once resolved.
+        if (std::getenv("NSMBW_LOG_PBACK_RAWBYTES") != nullptr) {
+            static int pbackRawLogged = 0;
+            if (pbackRawLogged < 5) {
+                ++pbackRawLogged;
+                // Wider scan (temporary, same removal note as above): is the RARC container
+                // (magic 55 AA 38 2D, confirmed from the real WiiStrap.arc file on disc) present
+                // anywhere near dataAddr at all, or is this address disconnected from the loaded
+                // archive entirely? Scans 64KB back from dataAddr in 4-byte steps - generous
+                // enough to cover the whole archive if dataAddr sits somewhere past its start.
+                {
+                    constexpr uint32_t kScanBack = 64 * 1024;
+                    const uint32_t scanStart = meta.dataAddr > kScanBack ? meta.dataAddr - kScanBack : 0;
+                    bool foundMagic = false;
+                    uint32_t magicAt = 0;
+                    for (uint32_t addr = scanStart; addr + 4 <= meta.dataAddr + 4; addr += 4) {
+                        const uint8_t* p4 = static_cast<const uint8_t*>(GuestToHostPtr(addr, 4));
+                        if (p4 && p4[0] == 0x55 && p4[1] == 0xAA && p4[2] == 0x38 && p4[3] == 0x2D) {
+                            foundMagic = true;
+                            magicAt = addr;
+                            break;
+                        }
+                    }
+                    RT_LOGF(RT_TAG_GX,
+                            "NSMBW_PBACK_RARC_SCAN dataAddr=0x%08X scanStart=0x%08X foundMagic=%d magicAt=0x%08X (offset=%d)\n",
+                            meta.dataAddr, scanStart, foundMagic ? 1 : 0, magicAt,
+                            foundMagic ? static_cast<int32_t>(meta.dataAddr - magicAt) : -1);
+                }
+                const uint8_t* src = static_cast<const uint8_t*>(GuestToHostPtr(meta.dataAddr, 16));
+                char hex[3 * 16 + 1] = {};
+                char* p = hex;
+                for (uint32_t i = 0; i < 16; ++i) {
+                    const uint8_t b = src ? src[i] : 0xFF;
+                    p += std::snprintf(p, 4, "%02X ", b);
+                }
+                RT_LOGF(RT_TAG_GX,
+                        "NSMBW_PBACK_RAWBYTES dataAddr=0x%08X hostPtrNull=%d fmt=%u %ux%u bytes: %s\n",
+                        meta.dataAddr, src == nullptr, meta.format, meta.width, meta.height, hex);
+            }
+        }
+        // NSMBW_TARGET_WRAP_PANE_ID: identify which pane this REPEAT load belongs to. This
+        // object's wrap mode was CLAMP for the whole WiiStrap screen (confirmed above) but
+        // later loads on this same reused GXTexObj slot come back REPEAT for an 8x8 texture -
+        // want to know whether that's the save-data-created dialog before treating it as a bug
+        // rather than an intentionally tiled background. Own budget (5), separate from
+        // NSMBW_LOG_PANE_IDENTITY's 60-call general survey, so it still fires even after that
+        // survey's budget is long spent by the time this screen shows up. Remove once resolved.
+        if (meta.wrapS == GX_REPEAT || meta.wrapT == GX_REPEAT) {
+            if (std::getenv("NSMBW_LOG_PANE_IDENTITY") != nullptr) {
+                static int targetRepeatLogged = 0;
+                if (targetRepeatLogged < 5) {
+                    ++targetRepeatLogged;
+                    NsmbwScanForPaneName("NSMBW_TARGET_WRAP_PANE_ID", targetRepeatLogged, oa, tid);
+                }
+            }
+            // NSMBW_TARGET_WRAP_BLEND: identified pane is P_stripe_00, a decorative tile whose
+            // REPEAT wrap is presumably correct by design - the reference screenshot shows it as
+            // a faint watermark, not bold bands, so the more likely bug is that it's compositing
+            // at full opacity instead of blended low-alpha. This reports the blend state active
+            // for this draw (type 0=NONE means blending is off entirely - texture alpha is
+            // ignored and it draws fully opaque, which would explain bold-instead-of-faint).
+            // Gated on wrapS/wrapT==REPEAT so it only fires for P_stripe_00's own loads, not the
+            // earlier CLAMP-wrapped P_back_00/P_mask_00 loads on this same reused slot. Remove
+            // once resolved.
+            static int targetBlendLogged = 0;
+            if (targetBlendLogged < 20) {
+                ++targetBlendLogged;
+                RT_LOGF(RT_TAG_GX,
+                        "NSMBW_TARGET_WRAP_BLEND type=%u(0=NONE,1=BLEND,2=LOGIC,3=SUBTRACT) src=%u dst=%u op=%u setCount=%u\n",
+                        g_nsmbwLastBlendDiag.type, g_nsmbwLastBlendDiag.src, g_nsmbwLastBlendDiag.dst,
+                        g_nsmbwLastBlendDiag.op, g_nsmbwLastBlendDiag.setCount);
+            }
+            // NSMBW_TARGET_WRAP_TEV: blend mode is confirmed correct (SRCALPHA/INVSRCALPHA), so
+            // whether that actually fades P_stripe_00 in/out depends on whether the TEV stage
+            // bound to this GXTexMapID (tid) actually routes the I4 texture's intensity value
+            // into its alpha output (GX_CA_TEXA=4), versus a constant (GX_CA_KONST=6/GX_CA_ONE)
+            // that would make every texel fully opaque regardless of the (possibly-correct)
+            // texture data. An earlier version of this probe read g_nsmbwLastTevStage, populated
+            // by this file's own GX__SetTevOrder/ColorIn/AlphaIn overrides - those turned out to
+            // be bound at MKW's addresses (confirmed via projects/mkwii/MAP.txt) and never fire
+            // for NSMBW, so that array stayed all-zero. This reads aurora's actual live BP-decoded
+            // state instead, mirrored into g_nsmbwLiveTev* by command_processor.cpp (that file's
+            // own comment has the full reasoning). Remove once resolved, along with the mirror
+            // globals and their extern declarations below.
+            static int targetTevLogged = 0;
+            if (targetTevLogged < 10) {
+                ++targetTevLogged;
+                // Dumps every ACTIVE stage (0..numTevStages-1), not just the one bound to this
+                // texture: a later stage could still read APREV (the previous stage's alpha
+                // output) and multiply it by a low RASA/KONST value from a fade animation, which
+                // would make the final on-screen alpha much lower than TEXA alone suggests.
+                // Stages at/beyond numTevStages hold stale state from an unrelated earlier
+                // material and must not be read as if they were part of this draw.
+                for (uint32_t st = 0; st < g_nsmbwLiveNumTevStages && st < 16; ++st) {
+                    RT_LOGF(RT_TAG_GX,
+                            "NSMBW_TARGET_WRAP_TEV numStages=%u stage=%u texMap=%u channelId=%u "
+                            "alphaIn a=%u b=%u c=%u d=%u "
+                            "(alphaArg: 0=APREV,1=A0,2=A1,3=A2,4=TEXA,5=RASA,6=KONST,7=ZERO) | "
+                            "regAlpha APREV=%.3f A0=%.3f A1=%.3f A2=%.3f\n",
+                            g_nsmbwLiveNumTevStages, st, g_nsmbwLiveTevTexMap[st], g_nsmbwLiveTevChannelId[st],
+                            g_nsmbwLiveTevAlphaA[st],
+                            g_nsmbwLiveTevAlphaB[st], g_nsmbwLiveTevAlphaC[st], g_nsmbwLiveTevAlphaD[st],
+                            g_nsmbwLiveTevRegAlpha[0], g_nsmbwLiveTevRegAlpha[1],
+                            g_nsmbwLiveTevRegAlpha[2], g_nsmbwLiveTevRegAlpha[3]);
+                    // GX_COLOR0A0=4 -> alpha comes from channel index GX_ALPHA0(=2)'s config/values;
+                    // GX_COLOR1A1=5 -> GX_ALPHA1(=3). Other channelId values (bump/zero) don't use
+                    // matSrc/matColor this way and are skipped. (channelId enum: GX_COLOR0=0,
+                    // GX_COLOR1=1, GX_ALPHA0=2, GX_ALPHA1=3, GX_COLOR0A0=4, GX_COLOR1A1=5.)
+                    uint32_t alphaChanIdx = 0xFFu;
+                    if (g_nsmbwLiveTevChannelId[st] == 4u) alphaChanIdx = 2u;
+                    else if (g_nsmbwLiveTevChannelId[st] == 5u) alphaChanIdx = 3u;
+                    if (alphaChanIdx < 4u) {
+                        RT_LOGF(RT_TAG_GX,
+                                "NSMBW_TARGET_WRAP_CHAN stage=%u alphaChanIdx=%u matSrc=%u(0=REG,1=VTX) "
+                                "matColor.a=%.3f ambColor.a=%.3f\n",
+                                st, alphaChanIdx, g_nsmbwLiveChanMatSrc[alphaChanIdx],
+                                g_nsmbwLiveChanMatColorA[alphaChanIdx], g_nsmbwLiveChanAmbColorA[alphaChanIdx]);
+                    }
+                }
+            }
+            // NSMBW_TARGET_WRAP_RAWBYTES: the alpha formula is now confirmed to be a straight
+            // passthrough of the I4 texture's own intensity (output_alpha = TEXA, since A0=0/
+            // A1=1 are just lerp anchors) - so every piece of *configuration* between texture and
+            // screen (wrap, blend, TEV routing, TEV constants) checks out. The only thing left
+            // unverified is the actual decoded pixel data. An 8x8 I4 texture is exactly one GX
+            // tile (block size 8x8 for I4/C4/CMPR, per aurora's texture_convert.cpp), stored as
+            // 64 4-bit texels = 32 bytes, two texels per byte, high nibble first, in simple
+            // row-major order within the tile (no sub-tiling possible since the whole texture is
+            // one block). This dumps those 32 raw bytes so they can be hand-decoded and checked
+            // against what TextureDecoderI4 produces, and against whether high-intensity (near-
+            // white/opaque) values here are actually correct source data (wrong asset/wrong
+            // dataAddr) or a decode bug. Remove once resolved.
+            static int targetRawBytesLogged = 0;
+            if (targetRawBytesLogged < 3 && meta.format == GX_TF_I4 && meta.width == 8 && meta.height == 8) {
+                ++targetRawBytesLogged;
+                // meta.dataAddr is already CanonicalizeGxMainRamAddress()'d (a physical, non-
+                // 0x80000000-prefixed offset - see that function's own comment for the MEM1/MEM2
+                // scheme). Memory::Read8 expects the original virtual guest address instead (used
+                // that way everywhere else in this file, e.g. NsmbwScanForPaneName's direct
+                // 0x80000000-0x817FFFFF reads) - an earlier version of this dump called
+                // Memory::Read8(meta.dataAddr + i) directly, which is the wrong address format for
+                // an already-canonicalized value and produced meaningless bytes. GuestToHostPtr is
+                // what the real upload path (GXInitTexObjData below) already calls on this exact
+                // meta.dataAddr, so it's used the same way here.
+                char hex[3 * 32 + 1] = {};
+                char* p = hex;
+                const uint8_t* src = static_cast<const uint8_t*>(GuestToHostPtr(meta.dataAddr, 32));
+                for (uint32_t i = 0; i < 32; ++i) {
+                    const uint8_t b = src ? src[i] : 0xFF;
+                    p += std::snprintf(p, 4, "%02X ", b);
+                }
+                RT_LOGF(RT_TAG_GX, "NSMBW_TARGET_WRAP_RAWBYTES dataAddr=0x%08X hostPtrNull=%d bytes: %s\n",
+                        meta.dataAddr, src == nullptr, hex);
+            }
+        }
     }
     const GXTexWrapMode wrapS = SanitizeWrapMode(meta.wrapS);
     const GXTexWrapMode wrapT = SanitizeWrapMode(meta.wrapT);
@@ -613,6 +1020,13 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         GetTexObjMeta(oa) = meta;
         if (!canSkipHostLoad) {
             GXLoadTexObj(obj, (GXTexMapID)tid);
+            // FIX: see NsmbwInvalidateMergeStateForTextureUpload's own comment
+            // (aurora-main/lib/gx/command_processor.cpp) for the full reasoning. This upload path
+            // never touches aurora's BP-register-driven stateDirty flag, so without this, aurora's
+            // consecutive-draw merge optimization can silently batch this draw together with
+            // whatever draw came before it, sharing that earlier draw's texture bind group instead
+            // of this slot's newly-bound one.
+            NsmbwInvalidateMergeStateForTextureUpload();
         }
     } catch (const std::exception& ex) {
         if (s_hostExceptionLogCount++ < 64) {

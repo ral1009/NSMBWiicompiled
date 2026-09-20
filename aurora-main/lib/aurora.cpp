@@ -1207,7 +1207,7 @@ void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
     pass.Draw(3);
     pass.End();
     static bool firedC = false;
-    if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedC && g_nsmbwDiagSeq.load() > 650) {
+    if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedC && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
       firedC = true;
       webgpu::nsmbw_diag_peek_texture(encoder, image.texture.texture, image.texture.size.width,
                                       image.texture.size.height, "C_finalImage_after_blit");

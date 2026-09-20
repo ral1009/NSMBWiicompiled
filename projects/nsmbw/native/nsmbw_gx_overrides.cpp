@@ -38,6 +38,7 @@
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
+#include "memory.h"
 
 #include <cstdint>
 
@@ -105,7 +106,42 @@ extern "C" void GX__SetDispCopyDst_8016f4b8(uint32_t w, uint32_t h);
 PPC_NATIVE_OVERRIDE_VOID(801C4FE0, GX__DrawDone_8016eab0, (), ());
 PPC_NATIVE_OVERRIDE_VOID(801C5340, GX__FinishInterruptHandler_8016ed94, (), ());
 PPC_NATIVE_OVERRIDE_VOID(801C6290, GX__CopyDisp_8016fc38, (uint32_t destAddr, uint32_t clear), (destAddr, clear));
-PPC_NATIVE_OVERRIDE_VOID(801C9720, GX__CallDisplayList_80172f64, (uint32_t listAddr, uint32_t nbytes), (listAddr, nbytes));
+// GXCallDisplayList must first flush the guest's pending GX dirty state.
+//
+// Root cause of "the 3D scene never gets its perspective projection or view matrix": NSMBW's
+// GXSetProjection (0x801C9980), GXSetCurrentMtx and the other SDK setters that are not natively
+// bound here do not write the FIFO. They cache into the __gx struct and set a bit in the
+// dirty-state word at __gx+0x5FC; the SDK flushes that cache to the GPU inside
+// __GXSetDirtyState (0x801C5430), which GXBegin and GXCallDisplayList call just before a draw.
+// The translated GXBegin still does that (which is why 2D layout draws, all immediate-mode, keep
+// getting their orthographic projections), but this native GXCallDisplayList replaced the guest's,
+// and aurora's own dirty-state flush only knows about state set through aurora's API - so every
+// display-list draw (every nw4r::g3d model) ran with whatever projection/matrix the LAST layout
+// GXBegin had flushed: the 32x32 HUD ortho and a zero PnMtx0 (confirmed by NSMBW_LOG_STATE_RUNS:
+// the main 640x352 viewport arrives, because GXSetViewport IS natively bound and applies
+// immediately, while the projection under it stays the HUD ortho every frame).
+//
+// MKW's runtime stubs __GXSetDirtyState to just clear the flags, which is right for MKW because
+// all of its setters are native and already applied. NSMBW still depends on the guest flush for
+// its unbound setters, so this runs the guest's real __GXSetDirtyState first when anything is
+// dirty: its raw FIFO writes are parsed synchronously by HleFifoWrite into aurora, in order,
+// before the list is processed. __gx is at *(r2 - 0x4EF8) = *(0x8042E468) (r2 = 0x80433360 for
+// this build).
+extern "C" void NsmbwCallDisplayList_801C9720(uint32_t listAddr, uint32_t nbytes)
+{
+    constexpr uint32_t kGxDataPtrAddr = 0x80433360u - 0x4EF8u;
+    constexpr uint32_t kSetDirtyStateAddr = 0x801C5430u;
+    uint32_t gd = 0;
+    if (Memory::TryRead32(kGxDataPtrAddr, gd) && gd != 0) {
+        uint32_t dirty = 0;
+        if (Memory::TryRead32(gd + 0x5FCu, dirty) && dirty != 0) {
+            auto& cpu = GetPersistentCpuContext();
+            InvokeIndirectCpu(kSetDirtyStateAddr, &cpu);
+        }
+    }
+    GX__CallDisplayList_80172f64(listAddr, nbytes);
+}
+PPC_NATIVE_OVERRIDE_VOID(801C9720, NsmbwCallDisplayList_801C9720, (uint32_t listAddr, uint32_t nbytes), (listAddr, nbytes));
 PPC_NATIVE_OVERRIDE_VOID(801C48C0, GX__SetArray_8016e32c, (uint32_t attr, uint32_t base, uint32_t stride), (attr, base, stride));
 PPC_NATIVE_OVERRIDE_VOID(801C7600, GX__LoadTexObj_80170f2c, (uint32_t oa, uint32_t tid), (oa, tid));
 PPC_NATIVE_OVERRIDE_VOID(801C8F00, GX__SetBlendMode_8017277c, (uint32_t t, uint32_t s, uint32_t d, uint32_t op), (t, s, d, op));

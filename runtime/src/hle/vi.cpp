@@ -389,6 +389,21 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
         const bool shouldPresentBlack = isBlack && frameActive;
         const bool shouldSubmit = frameActive && (shouldPresentXfb || shouldPresentBlack);
 
+        // TEMPORARY diagnostic for the post-input-fix black-screen investigation.
+        static uint64_t gateCallCount = 0;
+        static bool lastShouldSubmit = true; // force a print the first time shouldSubmit is false
+        ++gateCallCount;
+        if (!shouldSubmit && (lastShouldSubmit || (gateCallCount % 2000) == 0)) {
+            RT_LOGF(RT_TAG_VI,
+                    "[nsmbw][diag] present-gate: frameActive=%d hasXfbReady=%d isBlack=%d "
+                    "xfbMatches=%d (readyXfb=0x%08X currentFb=0x%08X) shouldPresentXfb=%d "
+                    "shouldPresentBlack=%d shouldSubmit=%d hadWork=%d\n",
+                    frameActive, hasXfbReady, isBlack, xfbMatches, readyXfb, currentFb,
+                    shouldPresentXfb, shouldPresentBlack, shouldSubmit,
+                    g_auroraFrameHadWork.load(std::memory_order_acquire));
+        }
+        lastShouldSubmit = shouldSubmit;
+
         if (shouldSubmit) {
             if (!isBlack || settings_overlay::StartupScreenVisible()) {
                 // Normal presentation: draw overlay on top of GX content
@@ -671,6 +686,16 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
 // This marks that we now have valid framebuffer data to present.
 // -----------------------------------------------------------------------------
 void VI_HLE_SetXfbReady(uint32_t xfbAddr) {
+    // TEMPORARY diagnostic for the post-input-fix black-screen investigation: confirm
+    // whether GXCopyDisp is still completing frames after the title-scene transition, or
+    // whether it stops being called (which would explain a frozen-on-last-frame black
+    // screen even with a perfectly healthy CPU/scheduler loop).
+    static uint64_t callCount = 0;
+    ++callCount;
+    if (callCount <= 20 || (callCount % 500) == 0) {
+        RT_LOGF(RT_TAG_VI, "[nsmbw][diag] VI_HLE_SetXfbReady: call #%llu xfbAddr=0x%08X\n",
+                static_cast<unsigned long long>(callCount), xfbAddr);
+    }
     std::lock_guard<std::mutex> lock(g_viMutex);
     g_vi.hasValidXfb = true;
     g_vi.readyXfb = xfbAddr;
@@ -955,6 +980,13 @@ PPC_NATIVE_OVERRIDE_VOID(801BAB24, VIGetNextFrameBuffer_HLE_801bab24, (CpuContex
 extern "C" void VISetBlack_HLE_801bab2c(CpuContext* ctx)
 {
     const bool makeBlack = ctx ? (ctx->gpr[3] != 0) : false;
+    // TEMPORARY diagnostic for the post-input-fix black-screen investigation: the screen
+    // can be legitimately forced black by the guest (VISetBlack(TRUE), e.g. during a fade
+    // transition) - if that's what's happening, this should show a TRUE call followed by a
+    // FALSE call once the next scene is ready. If TRUE never gets followed by FALSE, that's
+    // the bug: whatever's supposed to un-black the screen for the new scene never runs.
+    RT_LOGF(RT_TAG_VI, "[nsmbw][diag] VISetBlack(%s) called-from lr=0x%08X\n",
+            makeBlack ? "TRUE" : "FALSE", ctx ? ctx->lr : 0);
     {
         std::lock_guard<std::mutex> lock(g_viMutex);
         EnsureInitializedLocked();
