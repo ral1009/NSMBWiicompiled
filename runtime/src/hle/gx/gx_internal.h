@@ -327,14 +327,20 @@ struct GxDisplayListState {
     uint32_t size = 0;
     uint32_t writePtr = 0;
     uint32_t count = 0;
+    // Guest GXFifoObj the SDK's GXBeginDisplayList points the CPU FIFO at. The wrap flag
+    // (+kDlWrapFlagOffset), read pointer (+0x14) and count (+0x1C) are published to it so the
+    // guest's own bookkeeping stays consistent. MKW's is kDlFifoAddr; NSMBW's is 0x803907D0
+    // (lis 0x8039 / addi 2000 in the translated GXBeginDisplayList 0x801C95B0), same layout.
+    uint32_t fifoObjAddr = kDlFifoAddr;
     bool active = false;
 };
 extern GxDisplayListState g_dlRecordState;
 
 inline bool IsDisplayListActive() noexcept { return g_dlRecordState.active; }
 
-// Mirrors GX__BeginDisplayList_80172e00's guest-side initialization.
-void BeginDisplayListRecording(uint32_t listAddr, uint32_t sizeBytes);
+// Mirrors GX__BeginDisplayList_80172e00's guest-side initialization. fifoObjAddr selects the
+// guest GXFifoObj that receives the wrap flag / cursor / count writes (see GxDisplayListState).
+void BeginDisplayListRecording(uint32_t listAddr, uint32_t sizeBytes, uint32_t fifoObjAddr = kDlFifoAddr);
 // Flushes the shadow cursor/count back into guest memory and stops recording.
 void EndDisplayListRecording();
 

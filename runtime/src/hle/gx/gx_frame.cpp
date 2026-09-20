@@ -5,11 +5,12 @@
 
 GxDisplayListState g_dlRecordState{};
 
-void BeginDisplayListRecording(uint32_t listAddr, uint32_t sizeBytes) {
+void BeginDisplayListRecording(uint32_t listAddr, uint32_t sizeBytes, uint32_t fifoObjAddr) {
     g_dlRecordState.base = listAddr;
     g_dlRecordState.size = sizeBytes;
     g_dlRecordState.writePtr = listAddr;
     g_dlRecordState.count = 0;
+    g_dlRecordState.fifoObjAddr = fifoObjAddr;
     g_dlRecordState.active = listAddr != 0 && sizeBytes != 0;
 }
 
@@ -22,10 +23,23 @@ void EndDisplayListRecording() {
     // kDlFifoAddr matches exactly what the per-write guest updates produced
     // before the state was cached runtime-side.
     try {
-        Memory::Write32(kDlWritePtrAddr, g_dlRecordState.writePtr);
-        Memory::Write32(kDlCountAddr, g_dlRecordState.count);
+        // kDlWritePtrAddr / kDlCountAddr are MKW's GXFifoObj rdPtr (+0x14) and count (+0x1C);
+        // apply the same offsets to whichever product's object is recording.
+        Memory::Write32(g_dlRecordState.fifoObjAddr + (kDlWritePtrAddr - kDlFifoAddr), g_dlRecordState.writePtr);
+        Memory::Write32(g_dlRecordState.fifoObjAddr + (kDlCountAddr - kDlFifoAddr), g_dlRecordState.count);
     } catch (const Memory::AccessViolation&) {
     }
+}
+
+// C-linkage entry points for per-product native override files (projects/*/native), which
+// cannot include gx_internal.h (its transitive aurora/SDL includes are not on their include
+// path). NSMBW's GXBeginDisplayList/GXEndDisplayList overrides use these; see
+// projects/nsmbw/native/nsmbw_gx_displaylist_overrides.cpp.
+extern "C" void GxHle_BeginDisplayListRecording(uint32_t listAddr, uint32_t sizeBytes, uint32_t fifoObjAddr) {
+    BeginDisplayListRecording(listAddr, sizeBytes, fifoObjAddr);
+}
+extern "C" void GxHle_EndDisplayListRecording() {
+    EndDisplayListRecording();
 }
 
 void WriteDisplayListData(uint32_t val, uint32_t sizeBytes) {
@@ -54,7 +68,7 @@ void WriteDisplayListData(uint32_t val, uint32_t sizeBytes) {
             // The wrap flag is read straight out of guest memory by
             // GX__EndDisplayList_80172eb4, so keep writing it through. Wrapping
             // is a once-per-overflow event, not a per-write cost.
-            Memory::Write8(kDlFifoAddr + kDlWrapFlagOffset, 1);
+            Memory::Write8(dl.fifoObjAddr + kDlWrapFlagOffset, 1);
             nextPtr = dl.base + (nextPtr - end);
         }
 
