@@ -623,14 +623,18 @@ ConvertedTexture convert_texture(u32 format, uint32_t width, uint32_t height, ui
   // (mip 0 only) to PPM files, to check whether decode itself produces a recognizable image or
   // garbage - used to localize a garbled on-screen result to texture decode vs. vertex/UV/blend
   // state. Remove once resolved.
-  if (std::getenv("NSMBW_DUMP_TEXTURES") != nullptr && !converted.empty()) {
+  // NSMBW_DUMP_TEXTURES=<directory>; NSMBW_DUMP_TEXTURES_SCENE=<profile> restricts to one scene.
+  static const char* s_dumpDir = std::getenv("NSMBW_DUMP_TEXTURES");
+  static const char* s_dumpSceneEnv = std::getenv("NSMBW_DUMP_TEXTURES_SCENE");
+  static const long s_dumpScene = s_dumpSceneEnv ? std::strtol(s_dumpSceneEnv, nullptr, 10) : -1L;
+  if (s_dumpDir != nullptr && *s_dumpDir && !converted.empty() &&
+      (s_dumpScene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_dumpScene))) {
     static int dumped = 0;
-    if (dumped < 15) {
+    if (dumped < 40) {
       char path[256];
       std::snprintf(path, sizeof(path),
-                    "C:/Users/ryanl/AppData/Local/Temp/claude/C--Users-ryanl-Wiicompiled/"
-                    "c3a26c2b-c465-4d33-9177-f391985d887b/scratchpad/nsmbw_tex_%02d_%ux%u_fmt%d.ppm",
-                    dumped, width, height, static_cast<int>(format));
+                    "%s/nsmbw_tex_%02d_%ux%u_fmt%d.ppm",
+                    s_dumpDir, dumped, width, height, static_cast<int>(format));
       std::FILE* f = std::fopen(path, "wb");
       if (f != nullptr) {
         std::fprintf(f, "P6\n%u %u\n255\n", width, height);
@@ -645,9 +649,8 @@ ConvertedTexture convert_texture(u32 format, uint32_t width, uint32_t height, ui
       // byte 0) would look identical to a working one in that file alone.
       char alphaPath[256];
       std::snprintf(alphaPath, sizeof(alphaPath),
-                    "C:/Users/ryanl/AppData/Local/Temp/claude/C--Users-ryanl-Wiicompiled/"
-                    "c3a26c2b-c465-4d33-9177-f391985d887b/scratchpad/nsmbw_tex_%02d_%ux%u_fmt%d_alpha.pgm",
-                    dumped, width, height, static_cast<int>(format));
+                    "%s/nsmbw_tex_%02d_%ux%u_fmt%d_alpha.pgm",
+                    s_dumpDir, dumped, width, height, static_cast<int>(format));
       std::FILE* af = std::fopen(alphaPath, "wb");
       if (af != nullptr) {
         std::fprintf(af, "P5\n%u %u\n255\n", width, height);

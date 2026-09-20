@@ -673,6 +673,22 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         return;
     }
 
+    // DIAGNOSTIC (temporary): NSMBW_LOG_TEXFMT[=<scene profile>] lists what the guest binds -
+    // format / size / tlut / data address per GXLoadTexObj - to check whether the broken 2D
+    // layout screens use palette formats (CI4/CI8 = 8/9) or something else. Remove once resolved.
+    {
+        static const char* s_texFmtEnv = std::getenv("NSMBW_LOG_TEXFMT");
+        static const long s_texFmtScene = s_texFmtEnv && *s_texFmtEnv ? std::strtol(s_texFmtEnv, nullptr, 10) : -1L;
+        static int s_texFmtLogged = 0;
+        if (s_texFmtEnv && (s_texFmtScene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_texFmtScene)) &&
+            s_texFmtLogged < 400) {
+            ++s_texFmtLogged;
+            RT_LOGF(RT_TAG_GX, "NSMBW_TEXFMT scene=%u oa=0x%08X tid=%u fmt=%u %ux%u tlut=%u data=0x%08X mip=%d wrap=%u/%u minF=%u magF=%u lod=%.2f..%.2f bias=%.2f\n",
+                    g_nsmbwCurrentSceneProfile, oa, tid, meta.format, meta.width, meta.height, meta.tlut,
+                    meta.dataAddr, meta.mipmap ? 1 : 0, meta.wrapS, meta.wrapT, meta.minFilter, meta.magFilter, meta.minLod, meta.maxLod, meta.lodBias);
+        }
+    }
+
     if (meta.dataAddr == 0 || meta.width == 0 || meta.height == 0) {
         if (s_invalidMetaLogCount++ < 64) {
             RT_LOGF(RT_TAG_GX,
@@ -1045,7 +1061,32 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         BindUnloadableTexturePlaceholder(tid);
         return;
     }
-    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) { Memory::Write32(gd + 0x5FCu, Memory::Read32(gd + 0x5FCu) | 1u); Memory::Write16(gd + 2, 0); } } catch (...) {}
+    try {
+        uint32_t gd = Memory::Read32(kGXDataPtrAddr);
+        if (gd) {
+#ifdef MKW_RUNTIME_PRODUCT_NSMBW
+            // The SDK's GXLoadTexObj also caches the object's image0/mode0 words in __GXData
+            // (tImage0[id] / tMode0[id]) for __GXSetSUTexRegs, which derives the SU_TS0/1
+            // texture-size registers (BP 0x30/0x31) from them at the next dirty-state flush.
+            // MKW HLEs __GXSetSUTexRegs natively so it never reads these; NSMBW runs the guest's
+            // own (0x801C7A10 -> __SetSURegs 0x801C7980, which reads __gx+0x564+4*idx and
+            // __gx+0x584+4*idx and writes __gx+0x108/+0x128). With this override replacing the
+            // SDK body those words stayed zero, every 2D layout draw ran with SU scale 1x1
+            // (NSMBW_LOG_DRAW_TEXGEN: "suScale=1/1" against 628x96 textures), and aurora - which
+            // samples at uv * su_scale / texture_size - magnified a one-texel sliver across each
+            // pane. Guest GXTexObj layout: word0 = mode0, word2 = image0 (see
+            // ExtractTexObjMetaFromGuest).
+            constexpr uint32_t kNsmbwGxTImage0Off = 0x564u;
+            constexpr uint32_t kNsmbwGxTMode0Off = 0x584u;
+            if (tid < 8u) {
+                Memory::Write32(gd + kNsmbwGxTImage0Off + tid * 4u, Memory::Read32(oa + 0x08u));
+                Memory::Write32(gd + kNsmbwGxTMode0Off + tid * 4u, Memory::Read32(oa + 0x00u));
+            }
+#endif
+            Memory::Write32(gd + 0x5FCu, Memory::Read32(gd + 0x5FCu) | 1u);
+            Memory::Write16(gd + 2, 0);
+        }
+    } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(80170f2c, GX__LoadTexObj_80170f2c, (uint32_t oa, uint32_t tid), (oa, tid));
 

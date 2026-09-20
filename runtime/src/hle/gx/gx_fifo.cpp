@@ -1112,6 +1112,26 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
                     break;
                 }
                 if (FifoDesyncEnabled()) FifoDesyncRecordDraw(cmd, vtxCount, rawVertexSize, true);
+                // DIAGNOSTIC (temporary): NSMBW_LOG_TEXFMT[=<scene>] - interleaves each raw draw with
+                // the GXLoadTexObj lines gx_texture.cpp prints under the same variable, so the guest's
+                // real load->draw order is visible (is the texture bound before or after the draw?).
+                {
+                    static const char* s_env = std::getenv("NSMBW_LOG_TEXFMT");
+                    static const long s_scene = s_env && *s_env ? std::strtol(s_env, nullptr, 10) : -1L;
+                    static int s_logged = 0;
+                    if (s_env && (s_scene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_scene)) && s_logged < 400) {
+                        ++s_logged;
+                        float x0 = 0.f, y0 = 0.f;
+                        if (rawVertexSize >= 8) {
+                            const uint32_t xb = ReadBE32(data + 3), yb = ReadBE32(data + 7);
+                            std::memcpy(&x0, &xb, 4); std::memcpy(&y0, &yb, 4);
+                        }
+                        uint32_t lr = 0;
+                        if (CpuContext* cc = TryGetCpuContext()) lr = static_cast<uint32_t>(cc->lr);
+                        RT_LOGF(RT_TAG_GX, "NSMBW_RAWDRAW scene=%u prim=0x%02X n=%u vtxBytes=%u v0=(%.1f,%.1f) LR=0x%08X\n",
+                                g_nsmbwCurrentSceneProfile, cmd & GX_OPCODE_MASK_CMD, vtxCount, rawVertexSize, x0, y0, lr);
+                    }
+                }
                 if (TrySubmitRawDirectFifoDraw(data, packetBytes, prim, vtxFmt, vtxCount)) {
                     if (!consumeBytes(packetBytes, sink)) break;
                     continue;

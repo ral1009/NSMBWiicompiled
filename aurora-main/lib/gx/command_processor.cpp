@@ -2314,6 +2314,109 @@ static const CachedPipelineState& resolve_pipeline_state(GXPrimitive prim, GXVtx
   return state;
 }
 
+// DIAGNOSTIC (temporary): NSMBW_LOG_DRAW_TEXGEN=<scene profile> - see body. Called from both the
+// process() draw path and submit_raw_draw (the HLE's raw 2D path, which the layout screens use).
+static void nsmbw_log_draw_texgen(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, u16 vtxCount, u32 vtxSize) {
+// draw their I8 gradient strips stretched across whole panes even though NSMBW_DUMP_TEXTURES
+// shows the textures decode correctly, so this prints, per draw in that scene, the texgen
+// config each active TEV stage samples through (type/src/mtx/postMtx), the texture matrix
+// rows it references, the bound texture size, and the first vertex's raw UV. Remove once
+// resolved.
+{
+static const long tgScene = [] {
+  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN");
+  return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
+}();
+static int tgLogged = 0;
+if (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene) &&
+    g_gxState.numTevStages > 0 && tgLogged < 160) {
+  ++tgLogged;
+  const auto& texFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_TEX0];
+  const auto& posFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_POS];
+  float u = 0.f, v = 0.f, x = 0.f, y = 0.f;
+  if (posFmt.type == GX_F32 && posFmt.cnt == GX_POS_XY && vtxSize >= 8) {
+    uint32_t w[5] = {};
+    std::memcpy(w, vertices, vtxSize >= 20 ? 20 : 8);
+    for (auto& q : w) q = __builtin_bswap32(q);
+    std::memcpy(&x, &w[0], 4); std::memcpy(&y, &w[1], 4);
+    if (vtxSize >= 20 && texFmt.type == GX_F32) { std::memcpy(&u, &w[3], 4); std::memcpy(&v, &w[4], 4); }
+  }
+  std::fprintf(stderr, "[NSMBW_TEXGEN] draw#%d prim=%u n=%u vtxSize=%u numTexGens=%u numTev=%u v0=(%.1f,%.1f uv %.3f,%.3f)\n",
+               tgLogged, (unsigned)prim, vtxCount, vtxSize, g_gxState.numTexGens, g_gxState.numTevStages, x, y, u, v);
+  for (uint32_t st = 0; st < g_gxState.numTevStages && st < 16; ++st) {
+    const auto& s = g_gxState.tevStages[st];
+    const int tc = static_cast<int>(s.texCoordId);
+    const int tm = static_cast<int>(s.texMapId);
+    const auto& lt = (tm >= 0 && tm < static_cast<int>(MaxTextures)) ? g_gxState.loadedTextures[tm] : g_gxState.loadedTextures[0];
+    char tcgLine[200] = "tc=null";
+    if (tc >= 0 && tc < static_cast<int>(MaxTexCoord)) {
+      const auto& tcg = g_gxState.tcgs[tc];
+      const int mi = static_cast<int>(tcg.mtx);
+      char mtxLine[120] = "";
+      if (mi >= 30 && mi < 30 + 3 * static_cast<int>(MaxTexMtx) && (mi - 30) % 3 == 0) {
+        const auto& m = g_gxState.texMtxs[(mi - 30) / 3];
+        std::snprintf(mtxLine, sizeof(mtxLine), " mtx=[%.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f]",
+                      m.m0.x(), m.m0.y(), m.m0.z(), m.m0.w(), m.m1.x(), m.m1.y(), m.m1.z(), m.m1.w());
+      }
+      const auto& tcs = g_gxState.texCoordScales[tc];
+      std::snprintf(tcgLine, sizeof(tcgLine), "tc=%d type=%d src=%d mtxIdx=%d post=%d norm=%d suScale=%u/%u%s", tc,
+                    static_cast<int>(tcg.type), static_cast<int>(tcg.src), mi, static_cast<int>(tcg.postMtx),
+                    tcg.normalize ? 1 : 0, tcs.scaleS + 1u, tcs.scaleT + 1u, mtxLine);
+    }
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   stage%u texMap=%d %ux%u fmt=%d wrap=%d/%d %s\n", st, tm,
+                 lt.width(), lt.height(), static_cast<int>(lt.format()),
+                 static_cast<int>(lt.wrap_s()), static_cast<int>(lt.wrap_t()), tcgLine);
+  }
+  {
+    const auto& cc0 = g_gxState.colorChannelConfig[GX_COLOR0];
+    const auto& ca0 = g_gxState.colorChannelConfig[GX_ALPHA0];
+    const auto& cs0 = g_gxState.colorChannelState[GX_COLOR0];
+    const auto& as0 = g_gxState.colorChannelState[GX_ALPHA0];
+    const auto& ac = g_gxState.alphaCompare;
+    std::fprintf(stderr,
+                 "[NSMBW_TEXGEN]   numChans=%u chan0 matSrc=%d ambSrc=%d light=%d matColor=(%.2f,%.2f,%.2f,%.2f) amb=(%.2f,%.2f,%.2f,%.2f)"
+                 " alpha0 matSrc=%d light=%d matA=%.2f | blend mode=%d src=%d dst=%d op=%d | alphaCmp c0=%d r0=%u op=%d c1=%d r1=%u"
+                 " | z cmp=%d upd=%d fn=%d | colorUpd=%d alphaUpd=%d dstAlpha=%u\n",
+                 g_gxState.numChans, static_cast<int>(cc0.matSrc), static_cast<int>(cc0.ambSrc), cc0.lightingEnabled ? 1 : 0,
+                 cs0.matColor.x(), cs0.matColor.y(), cs0.matColor.z(), cs0.matColor.w(),
+                 cs0.ambColor.x(), cs0.ambColor.y(), cs0.ambColor.z(), cs0.ambColor.w(),
+                 static_cast<int>(ca0.matSrc), ca0.lightingEnabled ? 1 : 0, as0.matColor.w(),
+                 static_cast<int>(g_gxState.blendMode), static_cast<int>(g_gxState.blendFacSrc), static_cast<int>(g_gxState.blendFacDst),
+                 static_cast<int>(g_gxState.blendOp), static_cast<int>(ac.comp0), ac.ref0, static_cast<int>(ac.op), static_cast<int>(ac.comp1), ac.ref1,
+                 g_gxState.depthCompare ? 1 : 0, g_gxState.depthUpdate ? 1 : 0, static_cast<int>(g_gxState.depthFunc),
+                 g_gxState.colorUpdate ? 1 : 0, g_gxState.alphaUpdate ? 1 : 0, g_gxState.dstAlpha);
+    for (uint32_t st = 0; st < g_gxState.numTevStages && st < 16; ++st) {
+      const auto& s = g_gxState.tevStages[st];
+      std::fprintf(stderr,
+                   "[NSMBW_TEXGEN]   stage%u chan=%d color a=%d b=%d c=%d d=%d op=%d bias=%d scale=%d out=%d clamp=%d | alpha a=%d b=%d c=%d d=%d op=%d bias=%d scale=%d out=%d | kc=%d ka=%d swapRas=%d swapTex=%d\n",
+                   st, static_cast<int>(s.channelId), static_cast<int>(s.colorPass.a), static_cast<int>(s.colorPass.b),
+                   static_cast<int>(s.colorPass.c), static_cast<int>(s.colorPass.d), static_cast<int>(s.colorOp.op),
+                   static_cast<int>(s.colorOp.bias), static_cast<int>(s.colorOp.scale), static_cast<int>(s.colorOp.outReg), s.colorOp.clamp ? 1 : 0,
+                   static_cast<int>(s.alphaPass.a), static_cast<int>(s.alphaPass.b), static_cast<int>(s.alphaPass.c), static_cast<int>(s.alphaPass.d),
+                   static_cast<int>(s.alphaOp.op), static_cast<int>(s.alphaOp.bias), static_cast<int>(s.alphaOp.scale), static_cast<int>(s.alphaOp.outReg),
+                   static_cast<int>(s.kcSel), static_cast<int>(s.kaSel), static_cast<int>(s.tevSwapRas), static_cast<int>(s.tevSwapTex));
+    }
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   regs prev=(%.2f,%.2f,%.2f,%.2f) c0=(%.2f,%.2f,%.2f,%.2f) c1=(%.2f,%.2f,%.2f,%.2f) c2=(%.2f,%.2f,%.2f,%.2f) k0=(%.2f,%.2f,%.2f,%.2f)\n",
+                 g_gxState.colorRegs[0].x(), g_gxState.colorRegs[0].y(), g_gxState.colorRegs[0].z(), g_gxState.colorRegs[0].w(),
+                 g_gxState.colorRegs[1].x(), g_gxState.colorRegs[1].y(), g_gxState.colorRegs[1].z(), g_gxState.colorRegs[1].w(),
+                 g_gxState.colorRegs[2].x(), g_gxState.colorRegs[2].y(), g_gxState.colorRegs[2].z(), g_gxState.colorRegs[2].w(),
+                 g_gxState.colorRegs[3].x(), g_gxState.colorRegs[3].y(), g_gxState.colorRegs[3].z(), g_gxState.colorRegs[3].w(),
+                 g_gxState.kcolors[0].x(), g_gxState.kcolors[0].y(), g_gxState.kcolors[0].z(), g_gxState.kcolors[0].w());
+  }
+  {
+    const auto& p = g_gxState.proj;
+    const auto& vp = g_gxState.logicalViewport;
+    const auto& sc = g_gxState.logicalScissor;
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   projType=%d proj=[%.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f] vp=(%.0f,%.0f %.0fx%.0f) scissor=(%d,%d %dx%d)\n",
+                 static_cast<int>(g_gxState.projType), p.m0.x(), p.m0.y(), p.m0.z(), p.m0.w(), p.m1.x(), p.m1.y(), p.m1.z(), p.m1.w(),
+                 p.m2.x(), p.m2.y(), p.m2.z(), p.m2.w(), p.m3.x(), p.m3.y(), p.m3.z(), p.m3.w(),
+                 vp.left, vp.top, vp.width, vp.height, sc.x, sc.y, sc.width, sc.height);
+  }
+  std::fflush(stderr);
+}
+}
+}
+
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes) {
   ZoneScoped;
@@ -2346,6 +2449,7 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
     return false;
   }
 
+  nsmbw_log_draw_texgen(prim, fmt, vertices, vtxCount, vtxSize);
   // This entry point bypasses process(), so it owns the renderer lock itself.
   std::lock_guard gpuLock(aurora::renderer_gpu_mutex());
   const gfx::Range vertRange = gfx::push_verts(vertices, vertexBytes);
@@ -2640,6 +2744,7 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
       }
     }
   }
+  nsmbw_log_draw_texgen(prim, fmt, vertices, vtxCount, vtxSize);
   gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
   pos += totalVtxBytes;
 
