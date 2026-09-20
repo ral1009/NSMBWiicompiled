@@ -317,6 +317,18 @@ extern "C" uint32_t AIGetDMALength_80124084()
 }
 PPC_NATIVE_OVERRIDE(80124084, AIGetDMALength_80124084, uint32_t, (), ());
 
+// Register-level view of the DMA state for runtime/src/hle/dsp.cpp, which maps the AI DMA
+// registers in the DSP block (0xCC005030-0xCC00503A) onto this HLE. Needed because NSMBW's
+// translator inlines AIStartDMA / AIGetDMABytesLeft / AIGetDMAStartAddr / AIGetDMALength into
+// their single AX call sites, so the guest reaches those registers directly there and an
+// address-level override cannot intercept it (CLAUDE.md, "inlining defeats address-based
+// overrides").
+extern "C" uint32_t AI_HLE_DmaEnabled()
+{
+    std::lock_guard<std::mutex> lock(g_ai.mutex);
+    return g_ai.enabled ? 1u : 0u;
+}
+
 extern "C" uint32_t AIGetDSPSampleRate_8012409c()
 {
     std::lock_guard<std::mutex> lock(g_ai.mutex);

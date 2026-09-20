@@ -62,6 +62,20 @@ constexpr uint16_t kDspCpuMboxHStatus = 1u << 15; // DSP_CPUMBOX_H_STATUS, dsp_h
 constexpr uint32_t kDspCsrOffset = 0xAu;          // DSP_CSR
 constexpr uint16_t kDspCsrResetPulse = 1u << 0;   // undocumented reset-trigger bit, see file comment
 constexpr uint16_t kDspCsrHalt = 1u << 2;         // DSP_CSR_HALT, dsp_hardware.h
+// AI DMA registers (0xCC005030-0xCC00503A) are served by the AI HLE in audio.cpp rather than
+// by flat storage. NSMBW's translator inlines AIStartDMA / AIGetDMABytesLeft /
+// AIGetDMAStartAddr / AIGetDMALength into their single AX call sites (func_801A1F10,
+// func_801A1A80, ...), so those accesses never reach the address-level overrides in
+// projects/nsmbw/native/nsmbw_ai_overrides.cpp; handling them at the register is the level the
+// translator cannot inline away (same reasoning as the locked-cache DMA SPR writes in
+// ppc_helpers.cpp). Encodings follow the inlined bodies: START_H/L = addr>>16 | addr&0xFFE0,
+// CTRL_LEN = enable<<15 | length>>5, BYTES_LEFT = bytesLeft>>5. MKW binds all of these natively
+// and never touches the registers, so it is unaffected.
+constexpr uint32_t kDspAiDmaStartHOffset = 0x30u;
+constexpr uint32_t kDspAiDmaStartLOffset = 0x32u;
+constexpr uint32_t kDspAiDmaCtrlLenOffset = 0x36u;
+constexpr uint32_t kDspAiDmaBytesLeftOffset = 0x3Au;
+constexpr uint16_t kDspAiDmaEnable = 1u << 15;
 
 std::mutex g_dspMutex;
 std::array<uint16_t, kDspRegCount> g_dspRegs{};
@@ -106,9 +120,33 @@ void WriteOneRegLocked(uint32_t addr, uint16_t value) {
 }
 } // namespace
 
+extern "C" uint32_t AIGetDMABytesLeft_8012405c();
+extern "C" uint32_t AIGetDMAStartAddr_8012406c();
+extern "C" uint32_t AIGetDMALength_80124084();
+extern "C" uint32_t AI_HLE_DmaEnabled();
+extern "C" void AIStartDMA_80124048();
+
+namespace {
+// Returns true and fills *out when addr is one of the AI DMA registers.
+bool ReadAiDmaReg(uint32_t addr, uint16_t* out) {
+    switch (addr - kDspBase) {
+    case kDspAiDmaStartHOffset: *out = static_cast<uint16_t>((AIGetDMAStartAddr_8012406c() >> 16) & 0x1FFFu); return true;
+    case kDspAiDmaStartLOffset: *out = static_cast<uint16_t>(AIGetDMAStartAddr_8012406c() & 0xFFE0u); return true;
+    case kDspAiDmaCtrlLenOffset:
+        *out = static_cast<uint16_t>((AI_HLE_DmaEnabled() ? kDspAiDmaEnable : 0u) | ((AIGetDMALength_80124084() >> 5) & 0x7FFFu));
+        return true;
+    case kDspAiDmaBytesLeftOffset: *out = static_cast<uint16_t>((AIGetDMABytesLeft_8012405c() >> 5) & 0x7FFFu); return true;
+    default: return false;
+    }
+}
+} // namespace
+
 extern "C" bool DSP_HLE_TryRead16(uint32_t addr, uint16_t* outValue) {
     if (addr < kDspBase || addr >= kDspBase + kDspSize || (addr & 1u) != 0 || outValue == nullptr) {
         return false;
+    }
+    if (ReadAiDmaReg(addr, outValue)) {
+        return true;
     }
     std::lock_guard<std::mutex> lock(g_dspMutex);
     *outValue = ReadOneRegLocked(addr);
@@ -119,8 +157,15 @@ extern "C" bool DSP_HLE_TryWrite16(uint32_t addr, uint16_t value) {
     if (addr < kDspBase || addr >= kDspBase + kDspSize || (addr & 1u) != 0) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(g_dspMutex);
-    WriteOneRegLocked(addr, value);
+    {
+        std::lock_guard<std::mutex> lock(g_dspMutex);
+        WriteOneRegLocked(addr, value);
+    }
+    // AIStartDMA's inlined body is `CTRL_LEN |= 0x8000`. Invoked outside g_dspMutex because the
+    // AI HLE takes its own lock and may bring up the audio backend.
+    if (addr == kDspBase + kDspAiDmaCtrlLenOffset && (value & kDspAiDmaEnable) != 0 && AI_HLE_DmaEnabled() == 0) {
+        AIStartDMA_80124048();
+    }
     return true;
 }
 
@@ -128,9 +173,13 @@ extern "C" bool DSP_HLE_TryRead32(uint32_t addr, uint32_t* outValue) {
     if (addr < kDspBase || addr + 4u > kDspBase + kDspSize || (addr & 3u) != 0 || outValue == nullptr) {
         return false;
     }
+    // AI DMA halves are resolved before taking g_dspMutex (the AI HLE has its own lock).
+    uint16_t hi = 0, lo = 0;
+    const bool hiAi = ReadAiDmaReg(addr, &hi);
+    const bool loAi = ReadAiDmaReg(addr + 2u, &lo);
     std::lock_guard<std::mutex> lock(g_dspMutex);
-    const uint16_t hi = ReadOneRegLocked(addr);
-    const uint16_t lo = ReadOneRegLocked(addr + 2u);
+    if (!hiAi) hi = ReadOneRegLocked(addr);
+    if (!loAi) lo = ReadOneRegLocked(addr + 2u);
     *outValue = (static_cast<uint32_t>(hi) << 16) | lo;
     return true;
 }

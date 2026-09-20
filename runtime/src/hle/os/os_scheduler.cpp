@@ -1,5 +1,7 @@
 // SelectThread scheduler, OSWakeupThread and the OSMutex primitives.
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <iostream>
 
@@ -133,6 +135,8 @@ void Check(const char* tag)
 }
 } // namespace OsSwitchDiag
 
+extern "C" uint32_t g_nsmbwDiagThreadPtrs[16];
+extern "C" uint32_t g_nsmbwDiagThreadCount;
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx);
 
@@ -198,6 +202,31 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
             return;
         }
 
+    // TEMPORARY diagnostic (NSMBW_LOG_IDLE_THREADS): when a thread arrives here already WAITING
+    // (i.e. from OSSleepThread), print who put it to sleep, from the live guest stack.
+    {
+        static const bool dumpSleepers = std::getenv("NSMBW_LOG_IDLE_THREADS") != nullptr;
+        if (dumpSleepers && runningContext != 0 && ::Memory::Read16(runningContext + 0x2C8u) == 4u) {
+            static uint32_t sleepEvents = 0;
+            ++sleepEvents;
+            if (sleepEvents <= 12 || (sleepEvents % 300) == 0) {
+                char bt[220] = {};
+                try {
+                    uint32_t sp = cpu->gpr[1];
+                    size_t used = 0;
+                    for (int d = 0; d < 9 && sp >= 0x80000000u && used + 12 < sizeof(bt); ++d) {
+                        const uint32_t chain = ::Memory::Read32(sp);
+                        if (chain < 0x80000000u) break;
+                        used += static_cast<size_t>(std::snprintf(bt + used, sizeof(bt) - used, " %08X", ::Memory::Read32(chain + 4u)));
+                        sp = chain;
+                    }
+                } catch (...) {}
+                RT_LOGF(RT_TAG_OS, "[nsmbw][diag] sleep#%u thread 0x%08X queue=0x%08X lr=0x%08X bt:%s\n",
+                        sleepEvents, runningContext, ::Memory::Read32(runningContext + 0x2DCu),
+                        static_cast<uint32_t>(cpu->lr), bt);
+            }
+        }
+    }
     if (currentContext != runningContext) {
         // Not in the running thread's context, return 0
         cpu->gpr[3] = 0;
@@ -257,6 +286,44 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
         // specific idle period ever actually ends.
         RT_LOGF(RT_TAG_OS, "[nsmbw][diag] SelectThread: entering idle loop, runningContext=0x%08X\n",
                 runningContext);
+        // TEMPORARY diagnostic (NSMBW_LOG_IDLE_THREADS): state of every created thread at idle
+        // entry. OSThread layout: state u16 @0x2C8 (1 READY 2 RUNNING 4 WAITING 8 MORIBUND),
+        // suspend s32 @0x2CC, priority @0x2D0, sleep queue ptr @0x2DC, mutex @0x2F0;
+        // OSContext: lr @0x84, srr0 @0x198.
+        {
+            static const bool dumpThreads = std::getenv("NSMBW_LOG_IDLE_THREADS") != nullptr;
+            static uint32_t idleEntries = 0;
+            ++idleEntries;
+            if (dumpThreads && (idleEntries <= 3 || (idleEntries % 400) == 0)) {
+                for (uint32_t i = 0; i < g_nsmbwDiagThreadCount; ++i) {
+                    const uint32_t t = g_nsmbwDiagThreadPtrs[i];
+                    uint32_t lr = 0, srr0 = 0, q = 0, mtx = 0, prio = 0, susp = 0; uint16_t st = 0;
+                    try {
+                        st = ::Memory::Read16(t + 0x2C8u); susp = ::Memory::Read32(t + 0x2CCu);
+                        prio = ::Memory::Read32(t + 0x2D0u); q = ::Memory::Read32(t + 0x2DCu);
+                        mtx = ::Memory::Read32(t + 0x2F0u); lr = ::Memory::Read32(t + 0x84u);
+                        srr0 = ::Memory::Read32(t + 0x198u);
+                    } catch (...) {}
+                    RT_LOGF(RT_TAG_OS, "[nsmbw][diag] idle#%u thread 0x%08X state=%u suspend=%d prio=%u sleepQueue=0x%08X mutex=0x%08X lr=0x%08X srr0=0x%08X\n",
+                            idleEntries, t, st, static_cast<int>(susp), prio, q, mtx, lr, srr0);
+                    // Back-trace from the saved context: gpr[1] @+0x04 is the SP; each frame's
+                    // back chain is at [sp], its saved LR at [chain+4].
+                    char bt[200] = {};
+                    try {
+                        uint32_t sp = ::Memory::Read32(t + 0x4u);
+                        size_t used = 0;
+                        for (int d = 0; d < 8 && sp != 0 && used + 12 < sizeof(bt); ++d) {
+                            const uint32_t chain = ::Memory::Read32(sp);
+                            if (chain == 0 || chain < 0x80000000u) break;
+                            const uint32_t ret = ::Memory::Read32(chain + 4u);
+                            used += static_cast<size_t>(std::snprintf(bt + used, sizeof(bt) - used, " %08X", ret));
+                            sp = chain;
+                        }
+                    } catch (...) {}
+                    RT_LOGF(RT_TAG_OS, "[nsmbw][diag]   backtrace:%s\n", bt);
+                }
+            }
+        }
         OsSwitchDiag::Check("C:pre-idle-switchcb");
         TryInvokeSwitchCallback(runningContext, 0, cpu);
         OsSwitchDiag::Check("D:post-idle-switchcb");
@@ -282,9 +349,14 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
                 // completed 3 ms DMA blocks at VI retrace cadence.  A completed
                 // block wakes SoundThread and sets the scheduler pending mask.
                 Audio_HLE_Poll(cpu);
-                if (::Memory::Read32(kSchedulerPendingFlagAddr) != 0) {
-                    break;
-                }
+                // No early break here. When the guest runs slower than real time the audio
+                // pump has a completed block on every pass, so breaking as soon as it wakes
+                // SoundThread meant VI_HLE_PollRetrace below never ran: the main thread, asleep
+                // in EGG::AsyncDisplay::beginFrame on the display queue (0x807602F4) that only
+                // the VI retrace callback wakes, then stayed WAITING forever while SoundThread
+                // ran, slept, and was re-woken in a loop (NSMBW_LOG_IDLE_THREADS, 2026-09-20,
+                // first seen the moment the AI DMA callback was bound for NSMBW). Retrace,
+                // fiber timers and alarms all get their pass before the pending check.
                 VI_HLE_PollRetrace(cpu);
                 if (Fiber::GuestFiberManager::IsInitialized()) {
                     Fiber::GuestFiberManager::ProcessTimerEvents(cpu);

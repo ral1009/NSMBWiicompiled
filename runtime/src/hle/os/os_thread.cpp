@@ -251,6 +251,14 @@ void TerminateThreadCommon(CpuContext* cpu, uint32_t threadPtr, bool publishExit
 
 // OSCreateThread (0x801a9e84)
 // Creates a new guest thread and associates a host fiber with it.
+
+// TEMPORARY diagnostic (NSMBW_LOG_IDLE_THREADS): registry of created guest threads so the
+// scheduler can print every thread's state when it goes idle. Used to find why the main thread
+// stops being runnable once the AI DMA callback started waking nw4r's SoundThread.
+extern "C" uint32_t g_nsmbwDiagThreadPtrs[16];
+extern "C" uint32_t g_nsmbwDiagThreadCount;
+uint32_t g_nsmbwDiagThreadPtrs[16] = {};
+uint32_t g_nsmbwDiagThreadCount = 0;
 extern "C" void OSCreateThread_HLE_801b5270(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
@@ -275,6 +283,7 @@ extern "C" void OSCreateThread_HLE_801b5270(CpuContext* ctx)
                     diagCalls, threadPtr, entryFunc, priority);
         }
         ++diagCalls;
+        if (g_nsmbwDiagThreadCount < 16) g_nsmbwDiagThreadPtrs[g_nsmbwDiagThreadCount++] = threadPtr;
     }
 
     OsSwitchDiag::Arm(threadPtr);
