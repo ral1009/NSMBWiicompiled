@@ -13,7 +13,7 @@ memory:
 
 inputs:
   dol:
-    path: "../NSMBW-Decomp/original/wiimj2d.dol"
+    path: "NSMBW-Decomp/original/wiimj2d.dol"
 
 translation:
   allow_unsupported_instructions: false

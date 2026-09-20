@@ -45,11 +45,10 @@ Earlier milestones, in order: guest game thread running (2026-09-01) → GX rend
 | `projects/nsmbw/` | NSMBW's manifest (`nsmbw.yml`), per-REL manifests (`nsmbw-d_*.yml`, linked by `modules.txt`), `function_map.txt` (real NSMBW addresses; also seeds translation), native overrides (`native/*.cpp`, each commented with the evidence for its binding — files ending `_diag.cpp` are diagnostics, not fixes), and `tools/` (`run_nsmbw.ps1` timed run + screenshots, `shot.ps1`, `ppm2png.ps1`) |
 | `projects/mkwii/` | The original Mario Kart Wii project this was forked alongside, kept for reference |
 | `docs/MASTER_PLAN.md` | Project scope, phase breakdown, learning curriculum, and the dated progress log |
-| `Launcher/` | Build-automation scripts inherited from WiiCompiled (Windows/Linux); MKWii/Retro-Rewind-oriented, not adapted for a one-command NSMBW build |
 
 ## Building
 
-Prerequisites (from `translator/README.md`): .NET 8 SDK, CMake ≥ 3.16, Ninja, Clang/LLVM (LLVM-MinGW targeting `x86-64-v3` is the tested path; MSVC is not), and a checkout of NSMBW-Decomp next to this repo holding `original/wiimj2d.dol` and the four `original/*.rel` files from your own dump (the manifests point at `../NSMBW-Decomp/`).
+Prerequisites (from `translator/README.md`): .NET 8 SDK, CMake ≥ 3.16, Ninja, Clang/LLVM (LLVM-MinGW targeting `x86-64-v3` is the tested path; MSVC is not), and a checkout of NSMBW-Decomp *inside* this directory (`NSMBW-Decomp/`, gitignored) holding `original/wiimj2d.dol` and the four `original/*.rel` files from your own dump — the manifests read `NSMBW-Decomp/original/`.
 
 There's no packaged one-command build yet. From the repo root:
 
@@ -73,7 +72,7 @@ dotnet run --project translator/src/Translator.Cli -- emit-nsmbw-build-shards \
   --native-source-dir projects/nsmbw/native
 
 # 4. Configure once, then build.
-cmake -S . -B build_nsmbw -G Ninja -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_NSMBW=ON \
+cmake -S runtime -B build_nsmbw -G Ninja -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_NSMBW=ON \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++   # LLVM-MinGW on PATH
 cmake --build build_nsmbw --target NSMBWCompiled
 ```

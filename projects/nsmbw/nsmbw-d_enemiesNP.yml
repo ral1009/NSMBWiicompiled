@@ -13,9 +13,9 @@ memory:
 
 inputs:
   dol:
-    path: "../NSMBW-Decomp/original/wiimj2d.dol"
+    path: "NSMBW-Decomp/original/wiimj2d.dol"
   rel:
-    path: "../NSMBW-Decomp/original/d_enemiesNP.rel"
+    path: "NSMBW-Decomp/original/d_enemiesNP.rel"
     load_address: 0x809A2CA0
 
 translation:

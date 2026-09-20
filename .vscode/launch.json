@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug NSMBWCompiled (CodeLLDB)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build_nsmbw/NSMBWCompiled.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}/build_nsmbw",
+            "terminal": "integrated"
+        }
+    ]
+}

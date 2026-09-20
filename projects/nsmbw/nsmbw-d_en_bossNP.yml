@@ -13,9 +13,9 @@ memory:
 
 inputs:
   dol:
-    path: "../NSMBW-Decomp/original/wiimj2d.dol"
+    path: "NSMBW-Decomp/original/wiimj2d.dol"
   rel:
-    path: "../NSMBW-Decomp/original/d_en_bossNP.rel"
+    path: "NSMBW-Decomp/original/d_en_bossNP.rel"
     load_address: 0x80B1C920
 
 translation:

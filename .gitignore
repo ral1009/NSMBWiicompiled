@@ -74,3 +74,12 @@ project.lock.json
 *.log
 output.txt
 
+
+# Reference clones and own disc dump live inside the repo directory but are never committed
+# (see docs/MASTER_PLAN.md Phase 0). Manifests in projects/nsmbw/ point at NSMBW-Decomp/original/.
+/NSMBW-Decomp/
+/NSMBW-Maps/
+/NSMBW-Files/
+/.venv/
+/.claude/
+/MKWiicompiled/
