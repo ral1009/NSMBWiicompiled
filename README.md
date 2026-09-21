@@ -6,7 +6,7 @@ This is a student side project, built with AI assistance, and doubles as a from-
 
 **You need your own legally dumped PAL NSMBW disc.** Nothing here works without it, and no Nintendo assets, code or data are bundled — translation runs locally against your own disc image.
 
-## Status: Phase 6/7/8 — through the intro cutscene (2026-09-20)
+## Status: Phase 6/7/8 — playable into World 1-1 (2026-09-20)
 
 Verified with screenshots (the evidence for each row is in the progress log):
 
@@ -15,18 +15,26 @@ Verified with screenshots (the evidence for each row is in the progress log):
 | Boot, Wii Strap screen, "save data has been created" dialog | renders correctly |
 | Title screen (logo, hills, ground tiles, circle-wipe transition) | renders; sky colour not yet confirmed, Mario / "PRESS 2" not yet checked |
 | File Selection (cards, Erase/Copy, Free Mode / Coin Battle, background) | renders correctly |
-| Intro cutscene | plays fully textured for 60 s+ without crashing |
+| Intro cutscene | plays to the end, including the item-rain section, without crashing |
 | Input | keyboard as one sideways Wii Remote (channel 0): **Z** = 2 (jump), **X** = 1 (run), **Enter** = A, **arrow keys** = d-pad, with held / pressed / released state delivered through `KPADRead`. B, +, −, HOME and the pointer are not bound yet |
 | Audio | AX/DSP frames now run, so sound-driven game logic advances; audible output not yet verified |
-| World map, levels | not reached yet |
+| World map | renders and runs; enter a level with **2** (A opens the map's free-look mode) |
+| Levels (1-1) | sky, tiles, Mario, enemies and background all render; playable with keyboard input |
+| Save data | `wiimj2d.sav` is kept between runs and loaded at boot, so a started file resumes at the map without replaying the intro (`NSMBW_RESET_SAVE=1` wipes it) |
 
-What changed on 2026-09-20 (three root causes, all the same bug class — see below):
+What changed on 2026-09-20, evening (details and evidence in the progress log):
+
+1. **Invisible level geometry** (black sky, invisible ground/Mario/enemies while the HUD and far hills drew): every tile/model draw ran with a 0×0 viewport and an all-zero scissor. The native `GXSetViewport`/`GXSetScissor` never wrote the `__GXData` fields the game's translated `GXGetViewportv`/`GXGetScissor`/`__GXSetViewport` read back, so each save/restore around a render-to-texture pass restored zeros. Mirroring the SDK's six float stores and two BP words fixed the whole level.
+2. **Save never resumed**: the boot scene types the save file with `ISFS_ReadDir` and expects `EINVAL` ("this is a file"); the HLE answered `ENOENT` for any non-directory, so the game re-created the save on every launch.
+3. Also fixed: the world-map crashes (REL `.bss` was initialised from file bytes instead of zeros; 77 cross-module and 21 vtable call targets the recursive translator couldn't see) and the item-rain crash in the cutscene (a fixed 4 KB raw-FIFO staging buffer dropped the tail of large draws).
+
+What changed on 2026-09-20, earlier (three root causes, all the same bug class — see below):
 
 1. **Cutscene crash** (`[aurora] unmapped vtx attr 9`): `GXBeginDisplayList` / `GXEndDisplayList` were never bound for NSMBW, so the host executed display-list *recordings* as live draws and later replayed stale memory. Bound both; guest memory-error lines per run went 98 → 0.
 2. **Stuck after choosing the number of players**: the scene waits in `VoiceEndWait` for a voice clip to finish, and audio never ticked because only `AIInit` was bound. Bound the AI DMA family, translated the AX task callbacks the recursive translator couldn't see, and stopped the scheduler's idle loop from starving VI once audio was live.
 3. **Every 2D screen drawn as smeared gradients** (file select, strap, title elements): the native `GXLoadTexObj` didn't cache the texture size where the guest's `__GXSetSUTexRegs` reads it, so every layout draw sampled a one-texel sliver magnified across the pane. Two guest-memory stores fixed all of it.
 
-Earlier milestones, in order: guest game thread running (2026-09-01) → GX render-state + startup-overlay fixes (2026-09-04) → input (WPAD), scene creation, and the first 3D frame (2026-09-19) → cutscene, file select and the audio path (2026-09-20).
+Earlier milestones, in order: guest game thread running (2026-09-01) → GX render-state + startup-overlay fixes (2026-09-04) → input (WPAD), scene creation, and the first 3D frame (2026-09-19) → cutscene, file select and the audio path (2026-09-20) → world map and a playable 1-1 (2026-09-20, evening).
 
 **Not yet started:** audible audio output verification (Phase 8), a correctness-validation harness (Phase 9), and any compatibility pass across the 8 worlds (Phase 10).
 
@@ -85,7 +93,7 @@ Run it with the helper, which captures the stderr log and periodic window screen
 .\projects\nsmbw\tools\run_nsmbw.ps1 -Tag test -Seconds 120 -ShotEvery 10 -EnvVars @('NSMBW_AUTO_PRESS_SELFTEST=1')
 ```
 
-Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 5 title, 6/7 course-in, 8 cutscene, 10 file select). On launch the runtime resets its NAND save and window config so runs are repeatable; `NSMBW_KEEP_STATE=1` opts out.
+Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 3 world map, 5 title *and* levels, 6/7 course-in, 8 cutscene, 10 file select). The NAND save (`%LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav`) is kept between runs so a started file resumes at the world map; `NSMBW_RESET_SAVE=1` deletes it at launch, and the window config is still reset unless `NSMBW_KEEP_STATE=1`. With the self-test presses on, a resumed save gets from boot to 1-1 in about two minutes.
 
 ## Debugging notes worth knowing before touching this code
 
@@ -101,12 +109,13 @@ All diagnostics are off unless their environment variable is set:
 | --- | --- |
 | `NSMBW_LOG_STATE_CHANGES=1` | every scene state-machine transition by name (`dScGameSetup_c::StateID_...`) |
 | `NSMBW_LOG_IDLE_THREADS=1` | thread states when the scheduler idles, plus the sleeping thread's call chain |
-| `NSMBW_LOG_DRAW_TEXGEN=<profile>` | per draw: bound texture, texgen, TEV, blend, alpha test, projection, SU scale |
+| `NSMBW_LOG_DRAW_TEXGEN=<profile>` (+ `_TICK=<min VI tick>`, `_MINVP=<min viewport height>`, `_MAX=<draws>`) | per draw: VI tick, bound texture, texgen, TEV, blend, alpha test, fog, cull, projection, viewport/scissor, SU scale |
 | `NSMBW_LOG_TEXFMT=<profile>` | each `GXLoadTexObj` (format, size, filter) interleaved with raw draws |
 | `NSMBW_DUMP_TEXTURES=<dir>` (+ `NSMBW_DUMP_TEXTURES_SCENE=<profile>`) | decoded textures as PPM/PGM (`projects/nsmbw/tools/ppm2png.ps1` converts) |
 | `NSMBW_LOG_FIFO_DESYNC=1` | ring of recent raw-FIFO draws, dumped when the parser loses sync |
 | `NSMBW_LOG_DISPLAY_LIST=1` | each guest `GXBeginDisplayList` / `GXEndDisplayList` with byte counts |
-| `NSMBW_AUTO_PRESS_SELFTEST=1`, `NSMBW_AUTO_PRESS_TICKS=<n>` | synthesise an A press every 60 ticks (for the first `n` ticks) |
+| `NSMBW_AUTO_PRESS_SELFTEST=1`, `NSMBW_AUTO_PRESS_TICKS=<n>` | synthesise a press every 60 ticks (for the first `n` ticks): A everywhere except the world map, where it taps right once and then presses 2 |
+| `NSMBW_LOG_NAND=1` | every `IOS_Open/Read/Write/Seek/Close/Ioctl/Ioctlv` on the NAND with path, size and result |
 | `NSMBW_LOG_INPUT=1` | each change in the keyboard sample handed to `KPADRead` (WPAD hold/trig/release bits, raw PAD bits, SDL scancodes down) |
 | `NSMBW_GPU_PEEK*`, `NSMBW_TEST_TRIANGLE`, other `NSMBW_LOG_*` / `NSMBW_DUMP_*` | older GX bring-up probes; see the source for each |
 
