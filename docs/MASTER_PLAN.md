@@ -430,7 +430,10 @@ What I learned:
 - The SDK encodes "is this a file?" as an *error code* from `ISFS_ReadDir`. When emulating an API, the distinctions between failure codes are part of the contract, not detail.
 - One concept used above: `.bss` is the zero-initialised data section — it occupies no bytes in the file, so a loader must clear that memory itself; copying "the rest of the file" into it is wrong by construction.
 
+Regression found right after (same evening): wrong/black patches on the world map, title and levels. Cause: mirroring `GX_DIRTY_VIEWPORT` along with the viewport floats made the guest's `__GXSetViewport` re-emit the XF viewport on every flush with the SDK's +342 centre offset, while aurora encodes/decodes its own viewport with +340, so `NSMBW_LOG_VIEWPORT` showed `ox=660` and `ox=662` alternating frame to frame (a 2 px shift on and off). The HLE call had already applied the viewport, so the override now stores the floats (for `GXGetViewportv`) without the dirty bit; the alternation is gone and the developer confirmed the scenes look right again. Lesson: mirror the *stores* another guest reader needs, not the side effects the host already performed.
+
 What's next:
+- Decide whether aurora's viewport offset should become 342 to match hardware (it is self-consistent at 340 today, so only guest-written XF viewports - display lists, `GXSetViewportJitter` - are 2 px off).
 - Play further into 1-1 / other levels and log crashes; check pipes, power-ups, the goal pole and the level-clear save (`NSMBW_LOG_NAND`).
 - Clouds looked grey and hills washed out in the broken frame — re-check colours now that the viewport is right; fog is logged per draw if needed.
 - Commit hygiene: the NAND trace and the draw-log options stay env-gated; prune `*_diag.cpp` files whose purpose is finished.

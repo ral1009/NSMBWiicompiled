@@ -77,7 +77,6 @@ bool ShouldLog() {
 // __GXData lives at *(0x8042E468) (lwz rX,-0x4EF8(r2) with r2=0x80433360 - see gx_internal.h).
 constexpr uint32_t kGxDataPtrAddr = 0x8042E468u;
 constexpr uint32_t kGxVpOff = 0x544u;          // float vpLeft, vpTop, vpWd, vpHt, vpNearz, vpFarz
-constexpr uint32_t kGxDirtyStateOff = 0x5FCu;  // dirtyState; GX_DIRTY_VIEWPORT = 0x10000000
 constexpr uint32_t kGxSuScis0Off = 0x148u;     // BP 0x20 word: (y0+342)<<12 | (x0+342)
 constexpr uint32_t kGxSuScis1Off = 0x14Cu;     // BP 0x21 word: (y1+342)<<12 | (x1+342)
 constexpr uint32_t kGxBpSentOff = 0x2u;        // u16 bpSentNot, cleared after every BP write
@@ -89,14 +88,20 @@ uint32_t GxData() {
 
 extern "C" void GXSetViewport_Fixed_801C9D50(float l, float t, float w, float h, float nz, float fz) {
     if (const uint32_t gd = GxData()) {
-        // Exactly what the translated body at 0x801C9D50 does: six float stores + dirty bit.
+        // The six float stores from the translated body at 0x801C9D50 - but NOT its
+        // GX_DIRTY_VIEWPORT bit. Setting it made the guest's __GXSetViewport (0x801C9C80) re-emit
+        // XF 0x101A..0x101F on the next flush with the SDK's +342 centre offset, while aurora
+        // encodes and decodes its own viewport with +340 (GXTransform.cpp / apply_xf_viewport),
+        // so every frame alternated between left/top=0 and left/top=2 (NSMBW_LOG_VIEWPORT:
+        // ox=660 and ox=662 interleaved). Visible as wrong/black patches on the world map, title
+        // and levels (2026-09-20 evening regression). The HLE call below already applied the
+        // viewport, so the re-emit adds nothing; GXGetViewportv still sees the right floats.
         Memory::WriteFloat32(gd + kGxVpOff + 0u, l);
         Memory::WriteFloat32(gd + kGxVpOff + 4u, t);
         Memory::WriteFloat32(gd + kGxVpOff + 8u, w);
         Memory::WriteFloat32(gd + kGxVpOff + 12u, h);
         Memory::WriteFloat32(gd + kGxVpOff + 16u, nz);
         Memory::WriteFloat32(gd + kGxVpOff + 20u, fz);
-        Memory::Write32(gd + kGxDirtyStateOff, Memory::Read32(gd + kGxDirtyStateOff) | 0x10000000u);
     }
     g_viewportState[0] = l;
     g_viewportState[1] = t;
