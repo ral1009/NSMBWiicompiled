@@ -19,10 +19,6 @@
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
-#include "hle_stubs.h"
-#include "ppc_runtime.h"
-#include "abi_bridge.h"
-#include "memory.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -32,11 +28,40 @@
 // prints the boot-time fader diagnostics, and drives the opt-in self-test presses.
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 extern "C" uint32_t g_nsmbwSelfTestPressBits;
+// Published for aurora-side diagnostics (see aurora-main/lib/internal.hpp).
+extern "C" uint32_t g_nsmbwCurrentViTick;
+uint32_t g_nsmbwCurrentViTick = 0;
 
 namespace {
 constexpr uint32_t kWpadButtonA = 1u << 11;
+// Sideways-remote "screen right" is the remote's DOWN bit (see nsmbw_kpad_overrides.cpp).
+constexpr uint32_t kWpadScreenRight = 1u << 2;
+constexpr uint32_t kWpadButton2 = 1u << 8;
+
+// DIAGNOSTIC (temporary): NSMBW_WATCH_WMOBJ. The world map's teardown (func_808DC2D0, after the
+// wipe-out into a level) deletes the 56-byte object at *(0x8099FDFC) through its vtable and
+// crashes because the vtable word reads 0, although its constructor (0x80103BD0) wrote
+// 0x80321BD0 there. This samples that word once per VI tick and reports the tick where it
+// changes, plus the scene, to bracket what overwrote it.
+void NsmbwWatchWmObject() {
+    static const bool enabled = std::getenv("NSMBW_WATCH_WMOBJ") != nullptr;
+    if (!enabled) return;
+    static uint32_t lastObj = 0, lastVtable = 0xFFFFFFFFu;
+    uint32_t obj = 0, vtable = 0xFFFFFFFFu;
+    Memory::TryRead32(0x8099FDFCu, obj);
+    if (obj != 0) Memory::TryRead32(obj, vtable);
+    if (obj != lastObj || vtable != lastVtable) {
+        uint32_t tick = 0;
+        Memory::TryRead32(0x8042AB4Cu, tick);
+        std::fprintf(stderr, "[nsmbw][wmobj] tick=%u scene=%u obj=0x%08X vtable=0x%08X (was obj=0x%08X vtable=0x%08X)\n",
+                     tick, g_nsmbwCurrentSceneProfile, obj, vtable, lastObj, lastVtable);
+        std::fflush(stderr);
+        lastObj = obj; lastVtable = vtable;
+    }
+}
 
 void NsmbwDiagWatch() {
+    NsmbwWatchWmObject();
 
     static int heartbeatCount = 0;
     if ((++heartbeatCount % 30) == 0) {
@@ -104,11 +129,32 @@ void NsmbwDiagWatch() {
         static int diagAutoPressTick = 0;
         ++diagAutoPressTick;
         const bool parked = stopScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(stopScene);
-        if (parked) {
-            g_nsmbwSelfTestPressBits &= ~kWpadButtonA;
+        // On the world map a resumed save starts Mario on the start node, one step left of 1-1,
+        // so tap screen-right early in each map visit and hold the periodic A presses off for the
+        // first NSMBW_AUTO_PRESS_MAP_RIGHT_TICKS (default 90) ticks; A alone never leaves the node.
+        static const int mapRightTicks = [] {
+            const char* v = std::getenv("NSMBW_AUTO_PRESS_MAP_RIGHT_TICKS");
+            return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 90;
+        }();
+        static int mapTicks = 0;
+        const bool onMap = g_nsmbwCurrentSceneProfile == 3u;
+        mapTicks = onMap ? mapTicks + 1 : 0;
+        // A short tap (ticks 30..33 of the map visit): holding the direction for longer put the
+        // map into its free-look mode ("Back to Mario" overlay, lvl8_t150.png) instead of moving.
+        const bool tapRight = onMap && mapTicks >= 30 && mapTicks < 34;
+        const bool walkingRight = onMap && mapTicks <= mapRightTicks;
+        if (tapRight) {
+            g_nsmbwSelfTestPressBits |= kWpadScreenRight;
+        } else {
+            g_nsmbwSelfTestPressBits &= ~kWpadScreenRight;
+        }
+        // On the map A opens free-look ("Back to Mario" overlay); 2 is what enters a level.
+        const uint32_t pressBit = onMap ? kWpadButton2 : kWpadButtonA;
+        if (parked || walkingRight) {
+            g_nsmbwSelfTestPressBits &= ~(kWpadButtonA | kWpadButton2);
         } else if (diagAutoPressTick <= pressWindowTicks && (diagAutoPressTick % 60) == 0) {
-            g_nsmbwSelfTestPressBits |= kWpadButtonA;
-            std::fprintf(stderr, "[nsmbw][diag] self-test: synthesized A press (tick=%d)\n", diagAutoPressTick);
+            g_nsmbwSelfTestPressBits |= pressBit;
+            std::fprintf(stderr, "[nsmbw][diag] self-test: synthesized %s press (tick=%d)\n", onMap ? "2" : "A", diagAutoPressTick);
             std::fflush(stderr);
         }
     }
@@ -123,6 +169,7 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
     NsmbwDiagWatch();
     NsmbwDumpScnObjs();
     ctx->gpr[3] = ::Memory::Read32(0x8042AB4Cu);
+    g_nsmbwCurrentViTick = ctx->gpr[3];
 }
 
 PPC_NATIVE_OVERRIDE_VOID(801BE010, nsmbw_tick_read_pump_801be010, (CpuContext* ctx), (ctx));

@@ -40,6 +40,7 @@
 // extern "C", so gx_fifo.cpp's own redeclaration matches that instead).
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
+#include "memory.h"
 #include <dolphin/gx/GXTransform.h>
 #include <dolphin/gx/GXCull.h>
 #include <dolphin/gx/GXTev.h>
@@ -60,9 +61,43 @@ namespace {
 bool ShouldLog() {
     return std::getenv("NSMBW_LOG_VIEWPORT_SCISSOR") != nullptr && g_nsmbwCurrentSceneProfile == 5u;
 }
+
+// Guest-side bookkeeping the SDK bodies leave in __GXData (bug class 3 in CLAUDE.md: an override
+// that replaces an SDK function also replaces its stores to guest globals, and other still-
+// translated SDK code reads them). Found 2026-09-20 from the level scene: NSMBW_LOG_DRAW_TEXGEN
+// showed every tile/model draw running with vp=(0,0 0x0) scissor=(-342,-342 1x1), i.e. raw-zero
+// XF viewport and BP scissor registers, while HUD draws that set their viewport directly were
+// fine. The zeros come from two translated consumers of fields these overrides never wrote:
+//   - GXGetViewportv (0x801C9D80) reads __gx+0x544..0x558 (vp l,t,w,h,near,far), and
+//     __GXSetViewport (0x801C9C80, run from __GXSetDirtyState 0x801C5430 whenever dirty bit
+//     0x10000000 is set) re-emits XF 0x101A..0x101F from the same floats;
+//   - GXGetScissor (0x801C9E10, inlined into d2d::Multi_c::draw 0x80007010,
+//     LytBase_c::SetScissorMask 0x800C9770 and the save/restore helper 0x8008A230) decodes
+//     __gx+0x148/0x14C (suScis0/1, BP 0x20/0x21).
+// __GXData lives at *(0x8042E468) (lwz rX,-0x4EF8(r2) with r2=0x80433360 - see gx_internal.h).
+constexpr uint32_t kGxDataPtrAddr = 0x8042E468u;
+constexpr uint32_t kGxVpOff = 0x544u;          // float vpLeft, vpTop, vpWd, vpHt, vpNearz, vpFarz
+constexpr uint32_t kGxDirtyStateOff = 0x5FCu;  // dirtyState; GX_DIRTY_VIEWPORT = 0x10000000
+constexpr uint32_t kGxSuScis0Off = 0x148u;     // BP 0x20 word: (y0+342)<<12 | (x0+342)
+constexpr uint32_t kGxSuScis1Off = 0x14Cu;     // BP 0x21 word: (y1+342)<<12 | (x1+342)
+constexpr uint32_t kGxBpSentOff = 0x2u;        // u16 bpSentNot, cleared after every BP write
+
+uint32_t GxData() {
+    return Memory::Read32(kGxDataPtrAddr);
+}
 }
 
 extern "C" void GXSetViewport_Fixed_801C9D50(float l, float t, float w, float h, float nz, float fz) {
+    if (const uint32_t gd = GxData()) {
+        // Exactly what the translated body at 0x801C9D50 does: six float stores + dirty bit.
+        Memory::WriteFloat32(gd + kGxVpOff + 0u, l);
+        Memory::WriteFloat32(gd + kGxVpOff + 4u, t);
+        Memory::WriteFloat32(gd + kGxVpOff + 8u, w);
+        Memory::WriteFloat32(gd + kGxVpOff + 12u, h);
+        Memory::WriteFloat32(gd + kGxVpOff + 16u, nz);
+        Memory::WriteFloat32(gd + kGxVpOff + 20u, fz);
+        Memory::Write32(gd + kGxDirtyStateOff, Memory::Read32(gd + kGxDirtyStateOff) | 0x10000000u);
+    }
     g_viewportState[0] = l;
     g_viewportState[1] = t;
     g_viewportState[2] = w;
@@ -84,6 +119,20 @@ PPC_NATIVE_OVERRIDE_VOID(801C9D50, GXSetViewport_Fixed_801C9D50,
                          (float l, float t, float w, float h, float nz, float fz), (l, t, w, h, nz, fz));
 
 extern "C" void GXSetScissor_Fixed_801C9DA0(uint32_t l, uint32_t t, uint32_t w, uint32_t h) {
+    if (const uint32_t gd = GxData()) {
+        // Same encoding as the translated body at 0x801C9DA0 (and GXGetScissor's decode).
+        const uint32_t x0 = l + 342u, y0 = t + 342u;
+        const uint32_t x1 = x0 + w - 1u, y1 = y0 + h - 1u;
+        uint32_t s0 = Memory::Read32(gd + kGxSuScis0Off);
+        s0 = (s0 & ~0x7FFu) | (y0 & 0x7FFu);
+        s0 = (s0 & ~0x7FF000u) | ((x0 << 12) & 0x7FF000u);
+        uint32_t s1 = Memory::Read32(gd + kGxSuScis1Off);
+        s1 = (s1 & ~0x7FFu) | (y1 & 0x7FFu);
+        s1 = (s1 & ~0x7FF000u) | ((x1 << 12) & 0x7FF000u);
+        Memory::Write32(gd + kGxSuScis0Off, s0);
+        Memory::Write32(gd + kGxSuScis1Off, s1);
+        Memory::Write16(gd + kGxBpSentOff, 0);
+    }
     if (ShouldLog()) {
         static int logged = 0;
         if (logged < 40) {

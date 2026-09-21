@@ -2327,9 +2327,25 @@ static const long tgScene = [] {
   const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN");
   return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
 }();
+static const uint32_t tgMinTick = [] {
+  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN_TICK");
+  return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
+}();
+// NSMBW_LOG_DRAW_TEXGEN_MINVP=<px>: only log draws whose viewport is at least this tall.
+// The level scene front-loads hundreds of render-to-texture draws (640x72 strips, 32x32 tile
+// viewports) that exhaust the 160-draw budget before any full-screen draw is seen.
+static const float tgMinVpHeight = [] {
+  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN_MINVP");
+  return v ? static_cast<float>(std::strtoul(v, nullptr, 10)) : 0.f;
+}();
+static const int tgMax = [] {
+  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN_MAX");
+  return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 160;
+}();
 static int tgLogged = 0;
 if (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene) &&
-    g_gxState.numTevStages > 0 && tgLogged < 160) {
+    g_nsmbwCurrentViTick >= tgMinTick && g_gxState.numTevStages > 0 && tgLogged < tgMax &&
+    g_gxState.logicalViewport.height >= tgMinVpHeight) {
   ++tgLogged;
   const auto& texFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_TEX0];
   const auto& posFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_POS];
@@ -2341,8 +2357,8 @@ if (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene)
     std::memcpy(&x, &w[0], 4); std::memcpy(&y, &w[1], 4);
     if (vtxSize >= 20 && texFmt.type == GX_F32) { std::memcpy(&u, &w[3], 4); std::memcpy(&v, &w[4], 4); }
   }
-  std::fprintf(stderr, "[NSMBW_TEXGEN] draw#%d prim=%u n=%u vtxSize=%u numTexGens=%u numTev=%u v0=(%.1f,%.1f uv %.3f,%.3f)\n",
-               tgLogged, (unsigned)prim, vtxCount, vtxSize, g_gxState.numTexGens, g_gxState.numTevStages, x, y, u, v);
+  std::fprintf(stderr, "[NSMBW_TEXGEN] draw#%d tick=%u prim=%u n=%u vtxSize=%u numTexGens=%u numTev=%u v0=(%.1f,%.1f uv %.3f,%.3f)\n",
+               tgLogged, g_nsmbwCurrentViTick, (unsigned)prim, vtxCount, vtxSize, g_gxState.numTexGens, g_gxState.numTevStages, x, y, u, v);
   for (uint32_t st = 0; st < g_gxState.numTevStages && st < 16; ++st) {
     const auto& s = g_gxState.tevStages[st];
     const int tc = static_cast<int>(s.texCoordId);
@@ -2402,6 +2418,12 @@ if (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene)
                  g_gxState.colorRegs[2].x(), g_gxState.colorRegs[2].y(), g_gxState.colorRegs[2].z(), g_gxState.colorRegs[2].w(),
                  g_gxState.colorRegs[3].x(), g_gxState.colorRegs[3].y(), g_gxState.colorRegs[3].z(), g_gxState.colorRegs[3].w(),
                  g_gxState.kcolors[0].x(), g_gxState.kcolors[0].y(), g_gxState.kcolors[0].z(), g_gxState.kcolors[0].w());
+  }
+  {
+    const auto& fg = g_gxState.fog;
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   fog type=%d a=%.4f b=%.4f c=%.4f color=(%.2f,%.2f,%.2f,%.2f) cull=%d\n",
+                 static_cast<int>(fg.type), fg.a, fg.b, fg.c, fg.color.x(), fg.color.y(), fg.color.z(), fg.color.w(),
+                 static_cast<int>(g_gxState.cullMode));
   }
   {
     const auto& p = g_gxState.proj;

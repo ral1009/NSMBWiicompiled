@@ -52,6 +52,10 @@ inline uint64_t nsmbw_gpu_peek_seq_threshold() noexcept {
 // sequence-threshold behavior so this stays backward compatible. Remove alongside the rest of this
 // diagnostic.
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+// VI retrace tick, published by projects/nsmbw/native/nsmbw_tick_read_pump.cpp each frame, so
+// scene-gated diagnostics can also skip the first N frames of a scene profile that is reused
+// (STAGE = title screen and every level).
+extern "C" uint32_t g_nsmbwCurrentViTick;
 // NSMBW_GPU_PEEK_SCENE_FRAME (temporary): the very first frame after a scene transition is too
 // early - confirmed directly (NSMBW_GPU_PEEK_SCENE=0 alone caught a perfectly uniform clear-color
 // frame, every pixel exactly 64,64,64): the new scene's own child process is often still mid-
