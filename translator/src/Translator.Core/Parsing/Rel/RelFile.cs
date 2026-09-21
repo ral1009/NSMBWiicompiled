@@ -29,17 +29,21 @@ public sealed class RelFile
         uint moduleId,
         IReadOnlyList<RelSection> sections,
         IReadOnlyList<RelImportEntry> imports,
-        uint totalSize)
+        uint totalSize,
+        uint bssOffset)
     {
         _raw = raw;
         ModuleId = moduleId;
         Sections = sections;
         _imports = imports;
         _totalSize = totalSize;
+        _bssOffset = bssOffset;
     }
 
     private readonly IReadOnlyList<RelImportEntry> _imports;
     private readonly uint _totalSize;
+    // Where BSS starts in the resident image (the aligned end of the real section data).
+    private readonly uint _bssOffset;
 
     /// <summary>This REL's own module id (header offset 0x00) - what other RELs' import tables use to refer to it.</summary>
     public uint ModuleId { get; }
@@ -117,7 +121,8 @@ public sealed class RelFile
             moduleId,
             new ReadOnlyCollection<RelSection>(adjustedSections),
             new ReadOnlyCollection<RelImportEntry>(imports),
-            totalSize);
+            totalSize,
+            bssOffset);
     }
 
     private static List<RelSection> ParseSections(byte[] raw, uint offset, uint count)
@@ -224,9 +229,14 @@ public sealed class RelFile
         IReadOnlyDictionary<uint, RelModuleInfo>? moduleRegistry = null)
     {
         var buffer = new byte[checked((int)_totalSize)];
-        // _totalSize now excludes the on-disc relocation/import table tail (see ComputeMaxSectionExtent),
-        // so it can be smaller than _raw.Length - copy only what fits, i.e. the real section data.
-        var copyLength = Math.Min(_raw.Length, buffer.Length);
+        // Copy only the real section data, i.e. up to where BSS starts. The on-disc file continues
+        // past that point with the relocation/import tables, and copying "whatever fits" used to
+        // lay those bytes over the BSS region of the image. OSLink zeroes BSS on hardware (SDK
+        // Link(): memset(bss, 0, bssSize)), so a guest global that lives in BSS and is only ever
+        // tested for "still zero" saw a stale table word instead: NSMBW's world map found
+        // *(0x8099FDFC) == 0x000254E8 at boot, skipped creating that object, and deleted the
+        // garbage on the way into 1-1 (null vtable call from 0x808DC34C).
+        var copyLength = Math.Min(_raw.Length, Math.Min(buffer.Length, (int)_bssOffset));
         Buffer.BlockCopy(_raw, 0, buffer, 0, copyLength);
 
         if (applyRelocations)

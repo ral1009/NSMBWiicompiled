@@ -477,6 +477,17 @@ int RunExtractDataFunctionPointers(string[] argsTail)
             }
         }
 
+        // The project's REL data sections too (vtables of REL classes whose slots point at DOL or
+        // REL code): CollectDataSectionFunctionPointerTargets scans them off the relocated image,
+        // which is what the multi-module runtime executes against. Run once per REL project.
+        foreach (var value in CollectDataSectionFunctionPointerTargets())
+        {
+            if (!known.Contains(value))
+            {
+                found.Add(value);
+            }
+        }
+
         var outDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
         if (!string.IsNullOrEmpty(outDir))
         {
