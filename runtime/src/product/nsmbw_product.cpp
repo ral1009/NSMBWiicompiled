@@ -481,8 +481,10 @@ namespace {
 // Fresh-state policy for every NSMBW launch (requested 2026-09-19, after a crashed run left the
 // app in a state where it would not start again):
 //
-//  * The game's NAND save (title 00010004/534d4e50 = SMNP, the PAL disc) is deleted, so each run
-//    boots through the "save data created" dialog into the same clean state.
+//  * The game's NAND save (title 00010004/534d4e50 = SMNP, the PAL disc) is KEPT by default since
+//    2026-09-20: with the intro cutscene and the world map working, a persisted save lets a run
+//    pick its file and go straight to the map instead of re-watching the cutscene every launch.
+//    NSMBW_RESET_SAVE=1 deletes it for a run that needs the "save data created" first-boot path.
 //  * Config.toml's video/window keys are put back to windowed 640x480 at 1x. The crashed run had
 //    ended maximized/borderless at an 8x render scale, and those values are applied at startup.
 //  * The shader/pipeline caches (nsmbw_data/Cache/*.db, SQLite with write-ahead logs) are wiped
@@ -505,7 +507,7 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
     std::error_code ec;
 
     const auto saveDir = RuntimeConfigFile::ApplicationDataDirectory() / "NAND" / "title" / "00010004" / "534d4e50";
-    if (std::filesystem::exists(saveDir, ec)) {
+    if (std::getenv("NSMBW_RESET_SAVE") != nullptr && std::filesystem::exists(saveDir, ec)) {
         const auto removed = std::filesystem::remove_all(saveDir, ec);
         std::printf("[nsmbw] Reset: removed NSMBW NAND save (%llu entries) at %s\n",
                     static_cast<unsigned long long>(removed), saveDir.string().c_str());

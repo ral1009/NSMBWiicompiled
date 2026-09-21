@@ -6,6 +6,8 @@
 
 #include "runtime_log.h"
 
+#include <cstdlib>
+
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx);
 
 // ============================================================================
@@ -310,10 +312,26 @@ static int32_t HandleShaIoctlv(int32_t fd, uint32_t cmd, uint32_t numIn, uint32_
     return ISFS_OK;
 }
 
+// DIAGNOSTIC (temporary): NSMBW_LOG_NAND traces every IOS file call on the NAND path so the
+// game's save-file behaviour (when it writes wiimj2d.sav, how much, at what offset) can be
+// checked against what lands on disk. Off unless the variable is set.
+static bool NandTraceEnabled() {
+    static const bool enabled = std::getenv("NSMBW_LOG_NAND") != nullptr;
+    return enabled;
+}
+static int32_t NAND_IOS_Open_Impl(uint32_t pathPtr, uint32_t mode);
 extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
+    const int32_t fd = NAND_IOS_Open_Impl(pathPtr, mode);
+    if (NandTraceEnabled()) {
+        const std::string p = ReadGuestCString(pathPtr);
+        RT_LOGF(RT_TAG_NAND, "trace IOS_Open('%s', mode=%u) -> fd=%d\n", p.c_str(), mode, fd);
+    }
+    return fd;
+}
+static int32_t NAND_IOS_Open_Impl(uint32_t pathPtr, uint32_t mode) {
     const std::string pathStorage = ReadGuestCString(pathPtr);
     const char* path = pathPtr == 0 ? nullptr : pathStorage.c_str();
-    
+
     if (!path) {
         LogNandError("IOS_Open", "null path");
         return ISFS_EINVAL;
@@ -393,6 +411,7 @@ extern "C" void NAND_IOS_OpenBody_HLE_801938FC(CpuContext* ctx) {
 REGISTER_NATIVE_FUNCTION_AS(0x801938FC, NAND_IOS_OpenBody_HLE_801938FC, "NAND_IOS_OpenBody_HLE_801938FC");
 
 extern "C" int32_t NAND_IOS_Close_HLE(uint32_t fd) {
+    if (NandTraceEnabled()) RT_LOGF(RT_TAG_NAND, "trace IOS_Close(fd=%d)\n", fd);
     if (fd == ISFS_DEV_FD) {
         return ISFS_OK;
     }
@@ -423,6 +442,7 @@ PPC_NATIVE_OVERRIDE(80193AD8, NAND_IOS_Close_HLE, int32_t, (uint32_t fd), (fd));
 
 extern "C" int32_t NAND_IOS_Read_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t length) {
     auto* handle = GetHandle(fd);
+    if (NandTraceEnabled()) RT_LOGF(RT_TAG_NAND, "trace IOS_Read(fd=%d, len=%u) at pos=%u\n", fd, length, handle ? handle->position : 0u);
     if (!handle || !handle->file) {
         LogNandError("IOS_Read", "invalid fd=%d", fd);
         return ISFS_EINVAL;
@@ -462,6 +482,7 @@ extern "C" int32_t NAND_IOS_Write_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t 
         return ISFS_EINVAL;
     }
     
+    if (NandTraceEnabled()) RT_LOGF(RT_TAG_NAND, "trace IOS_Write(fd=%d, len=%u) at pos=%u\n", fd, length, handle->position);
     size_t bytesWritten = std::fwrite(buffer, 1, length, handle->file);
     std::fflush(handle->file);
     handle->position += static_cast<uint32_t>(bytesWritten);
@@ -471,6 +492,7 @@ extern "C" int32_t NAND_IOS_Write_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t 
 PPC_NATIVE_OVERRIDE(80193E88, NAND_IOS_Write_HLE, int32_t, (uint32_t fd, uint32_t bufferPtr, uint32_t length), (fd, bufferPtr, length));
 
 extern "C" int32_t NAND_IOS_Seek_HLE(uint32_t fd, int32_t offset, int32_t whence) {
+    if (NandTraceEnabled()) RT_LOGF(RT_TAG_NAND, "trace IOS_Seek(fd=%d, off=%d, whence=%d)\n", fd, offset, whence);
     auto* handle = GetHandle(fd);
     if (!handle || !handle->file) {
         LogNandError("IOS_Seek", "invalid fd=%d", fd);
@@ -773,6 +795,14 @@ extern "C" void NAND_IOS_Ioctl_Entry_HLE(CpuContext* ctx) {
 
     ctx->gpr[3] = static_cast<uint32_t>(
         NAND_IOS_Ioctl_HLE(fd, cmd, inBufPtr, inLen, outBufPtr, outLen));
+    if (NandTraceEnabled()) {
+        // GETATTR/DELETE take a bare path at +0; CREATEFILE/SETATTR take an ISFS params block (path at +6).
+        std::string p;
+        if (fd == ISFS_DEV_FD && inBufPtr) {
+            p = ReadGuestCString((cmd == ISFS_IOCTL_CREATEFILE || cmd == ISFS_IOCTL_SETATTR) ? inBufPtr + 6 : inBufPtr, 64);
+        }
+        RT_LOGF(RT_TAG_NAND, "trace IOS_Ioctl(fd=%d, cmd=%u, in=%u out=%u path='%s') -> %d\n", fd, cmd, inLen, outLen, p.c_str(), static_cast<int32_t>(ctx->gpr[3]));
+    }
 }
 PPC_NATIVE_OVERRIDE_VOID(80194290, NAND_IOS_Ioctl_Entry_HLE, (CpuContext* ctx), (ctx));
 
@@ -925,7 +955,12 @@ static int32_t HandleIsfsReadDir(uint32_t numIn, uint32_t numOut, uint32_t vecto
     }
     const std::filesystem::path hostPath = TranslateNandPath(wiiPath.c_str());
     if (!IsDirectory(hostPath)) {
-        return ISFS_ENOENT;
+        // The SDK's NANDGetType probes a path with ISFS_ReadDir and classifies the result:
+        // OK -> directory, EINVAL -> a file, ENOENT -> nothing there. NSMBW's boot scene
+        // (dScBoot_c::ExistFileCheck) types 'wiimj2d.sav' this way; answering ENOENT for
+        // an existing file made it re-create the save on every launch (NSMBW_LOG_NAND
+        // trace: "IOS_Ioctlv(fd=1, cmd=4, ... path='/title/00010004/534d4e50/wiimj2d.sav') -> -106").
+        return PathExists(hostPath) ? ISFS_EINVAL : ISFS_ENOENT;
     }
 
     // NAND names are at most 12 characters; longer host names cannot exist on
@@ -1159,6 +1194,13 @@ extern "C" void NAND_IOS_Ioctlv_Entry_HLE(CpuContext* ctx) {
 
     ctx->gpr[3] = static_cast<uint32_t>(
         NAND_IOS_Ioctlv_HLE(fd, cmd, numIn, numOut, vectorPtr));
+    if (NandTraceEnabled()) {
+        std::string p;
+        if (fd == ISFS_DEV_FD && cmd == ISFS_IOCTL_READDIR && vectorPtr) {
+            p = ReadGuestCString(ReadIosVector(vectorPtr, 0).address, 64);
+        }
+        RT_LOGF(RT_TAG_NAND, "trace IOS_Ioctlv(fd=%d, cmd=%u, nIn=%u nOut=%u path='%s') -> %d\n", fd, cmd, numIn, numOut, p.c_str(), static_cast<int32_t>(ctx->gpr[3]));
+    }
 }
 // 0x801945E0 is MKW's NAND IOCTLV entry address only. NSMBW's own compiled binary places an
 // unrelated function there (confirmed by reading its real translated body: loop-driven array
