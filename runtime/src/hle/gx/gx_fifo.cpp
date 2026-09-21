@@ -955,8 +955,22 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
         if (count > 4) count = 4;
         if (g_hleGxState.fifoReadOffset + g_hleGxState.fifoByteCount + count > g_hleGxState.fifoBytes.size()) {
             compactFifoBuffer();
-            if (g_hleGxState.fifoReadOffset + g_hleGxState.fifoByteCount + count > g_hleGxState.fifoBytes.size()) {
-                resetFifoBuffer();
+            if (g_hleGxState.fifoByteCount + count > g_hleGxState.fifoBytes.size()) {
+                // Grow rather than drop. This used to resetFifoBuffer(), which discarded a
+                // partially received draw packet whenever one exceeded the buffer; the rest of
+                // that draw's vertex floats then arrived into an empty queue and were decoded as
+                // opcodes (NSMBW intro cutscene, item rain: "GX guest pointer: memory error at
+                // 0x58000004", "XF: PosMtx sub-copy unsupported: offs=0, len=1", then a crash).
+                const size_t needed = g_hleGxState.fifoByteCount + count;
+                size_t newSize = g_hleGxState.fifoBytes.size() * 2u;
+                while (newSize < needed) newSize *= 2u;
+                g_hleGxState.fifoBytes.resize(newSize);
+                static int grownLogs = 0;
+                if (grownLogs < 8) {
+                    ++grownLogs;
+                    RT_LOGF(RT_TAG_GX, "HleFifoWrite: staging buffer grown to %zu bytes (%zu buffered)\n",
+                            newSize, g_hleGxState.fifoByteCount);
+                }
             }
         }
         const size_t writeOffset = g_hleGxState.fifoReadOffset + g_hleGxState.fifoByteCount;

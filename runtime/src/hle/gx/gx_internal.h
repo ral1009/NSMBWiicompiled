@@ -292,8 +292,11 @@ struct HleGxState {
     int currentComp = 0;
     float compBuffer[9]{}; 
     u32 rawCompBuffer[9]{};
-    // Shared byte queue for MMIO FIFO command packets and in-begin vertex payload.
-    std::array<uint8_t, 4096> fifoBytes{};
+    // Shared byte queue for MMIO FIFO command packets and in-begin vertex payload. Grows on
+    // demand (HleFifoWrite's pushBytes): the raw direct-draw path holds a whole draw packet
+    // (3 + vtxCount * vertexSize bytes) here until it is complete, and NSMBW's intro-cutscene
+    // item rain issues single draws well over the old fixed 4 KB, which were silently dropped.
+    std::vector<uint8_t> fifoBytes = std::vector<uint8_t>(4096);
     size_t fifoReadOffset = 0;
     size_t fifoByteCount = 0;
 
