@@ -200,6 +200,8 @@ Order matters:
 
 Keep entries here as work happens. Since 2026-09-19 these are written by Claude at the end of each working session (see CLAUDE.md's documentation policy); entries before that date were written by the developer. Either way the standard is the same: what was observed, what was ruled out and how, what the cause was, what was verified.
 
+Each individual bug fixed also gets a short Symptom / Root cause / Fix / Scope entry in `docs/issues.md` (started 2026-09-21, backfilled from every session to date). That file is the index; this log is the narrative.
+
 ### Template for each entry
 ```
 ## [Date] — Phase X
@@ -438,3 +440,4 @@ What's next:
 - Clouds looked grey and hills washed out in the broken frame — re-check colours now that the viewport is right; fog is logged per draw if needed.
 - Commit hygiene: the NAND trace and the draw-log options stay env-gated; prune `*_diag.cpp` files whose purpose is finished.
 - Audio output, B/+/−/HOME bindings, strap auto-advance.
+

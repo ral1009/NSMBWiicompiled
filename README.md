@@ -53,6 +53,7 @@ Earlier milestones, in order: guest game thread running (2026-09-01) → GX rend
 | `projects/nsmbw/` | NSMBW's manifest (`nsmbw.yml`), per-REL manifests (`nsmbw-d_*.yml`, linked by `modules.txt`), `function_map.txt` (real NSMBW addresses; also seeds translation), native overrides (`native/*.cpp`, each commented with the evidence for its binding — files ending `_diag.cpp` are diagnostics, not fixes), and `tools/` (`run_nsmbw.ps1` timed run + screenshots, `shot.ps1`, `ppm2png.ps1`) |
 | `projects/mkwii/` | The original Mario Kart Wii project this was forked alongside, kept for reference |
 | `docs/MASTER_PLAN.md` | Project scope, phase breakdown, learning curriculum, and the dated progress log |
+| `docs/issues.md` | Every bug fixed so far: Symptom / Root cause / Fix / Scope (general runtime bug vs NSMBW-specific vs unconfirmed) |
 
 ## Building
 
