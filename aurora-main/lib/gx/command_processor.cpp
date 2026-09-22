@@ -797,6 +797,17 @@ static void handle_bp(u32 value, bool bigEndian) {
   // Mask off the register ID from the value for field extraction
   // (the regId is stored in bits 24-31, data is in bits 0-23)
 
+  if (regId == 0x66) {
+    // BP 0x66 is the hardware texture-cache invalidate. The SDK's GXInvalidateTexAll writes 0x66001000 then
+    // 0x66001100 (one per cache half) and GXInvalidateTexRegion writes region-specific values. Aurora's own
+    // GXInvalidateTexAll uses a private sub-command instead, so a title whose SDK GXInvalidateTexAll runs as
+    // translated guest code only ever reaches this register write. Without this the static texture cache
+    // revision never bumps and a buffer refilled with a same-shaped texture (NSMBW reloads each level's
+    // tileset into the same heap address) keeps serving the previous upload. Checked before the value
+    // dedup below: the write is a command, not state, so repeating it must repeat the effect.
+    invalidate_static_texture_cache();
+    return;
+  }
   if (regId == 0xFE) {
     g_gxState.bpRegCache[regId] = value & 0x00FFFFFF;
     return;

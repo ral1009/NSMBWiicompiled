@@ -6,7 +6,7 @@ This is a student side project, built with AI assistance, and doubles as a from-
 
 **You need your own legally dumped PAL NSMBW disc.** Nothing here works without it, and no Nintendo assets, code or data are bundled — translation runs locally against your own disc image.
 
-## Status: Phase 6/7/8 — playable into World 1-1 (2026-09-20)
+## Status: Phase 6/7/8 — playable into World 1 (2026-09-21)
 
 Verified with screenshots (the evidence for each row is in the progress log):
 
@@ -19,7 +19,7 @@ Verified with screenshots (the evidence for each row is in the progress log):
 | Input | keyboard as one sideways Wii Remote (channel 0): **Z** = 2 (jump), **X** = 1 (run), **Enter** = A, **arrow keys** = d-pad, with held / pressed / released state delivered through `KPADRead`. B, +, −, HOME and the pointer are not bound yet |
 | Audio | AX/DSP frames now run, so sound-driven game logic advances; audible output not yet verified |
 | World map | renders and runs; enter a level with **2** (A opens the map's free-look mode) |
-| Levels (1-1) | sky, tiles, Mario, enemies and background all render; playable with keyboard input |
+| Levels (1-1, 1-2) | sky, tiles, Mario, enemies and background all render; playable with keyboard input; tilesets swap correctly between levels (2026-09-21) |
 | Save data | `wiimj2d.sav` is kept between runs and loaded at boot, so a started file resumes at the map without replaying the intro (`NSMBW_RESET_SAVE=1` wipes it) |
 
 What changed on 2026-09-20, evening (details and evidence in the progress log):
