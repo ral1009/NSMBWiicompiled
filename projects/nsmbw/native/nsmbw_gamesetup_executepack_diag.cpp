@@ -22,6 +22,7 @@
 // confirmed by re-disassembling executePack() itself): preExecute triple @0x803296E0, execute
 // triple @0x803296EC, postExecute triple @0x803296F8.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -74,7 +75,7 @@ extern "C" uint32_t GameSetupExecutePack_Diag_80162260(uint32_t thisPtr)
     // crashing on an MMIO boundary - a real, hard failure, not a diagnostic artifact. Profiles
     // before GAME_SETUP already progress fine on their own; only GAME_SETUP-and-later are actually
     // stuck and need this.
-    if (std::getenv("NSMBW_CHAIN_ADVANCE") != nullptr && thisPtr == g_nsmbwCurrentScenePtr &&
+    if (AURORA_ENV("NSMBW_CHAIN_ADVANCE") != nullptr && thisPtr == g_nsmbwCurrentScenePtr &&
         g_nsmbwCurrentScenePtr != 0 && g_nsmbwCurrentSceneProfile >= 0xAu) {
         static uint32_t lastProfile = 0xFFFFFFFFu;
         static uint32_t consecutiveSuccess = 0;
@@ -269,7 +270,7 @@ extern "C" uint32_t GameSetupExecutePack_Diag_80162260(uint32_t thisPtr)
         // immediately after GAME_SETUP in the enum. This is a guess to be confirmed empirically by
         // what actually renders, not a known-correct value - no decompiled source calls
         // setNextScene(GAME_SETUP's successor, ...), since whatever does that isn't decompiled.
-        if (const char* advanceEnv = std::getenv("NSMBW_FORCE_GAMESETUP_ADVANCE")) {
+        if (const char* advanceEnv = AURORA_ENV("NSMBW_FORCE_GAMESETUP_ADVANCE")) {
             static uint32_t consecutiveSuccess = 0;
             static bool forced = false;
             if (result == 1) {

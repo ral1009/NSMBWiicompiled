@@ -1,8 +1,11 @@
 ﻿// gx_texture.cpp - Texture Object and TLUT Functions
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 #include "runtime_log.h"
 
 #include <algorithm>
+#include <map>
+#include <unordered_set>
 #include <cstdlib>
 
 // DIAGNOSTIC (temporary): live TEV alpha-combiner state mirrored by aurora-main's
@@ -285,7 +288,7 @@ extern "C" void GX__InitTexObj_801707f8(uint32_t oa, uint32_t da, uint32_t w, ui
     // whether that value survives correctly, or whether wrap ends up wrong (e.g. GX_REPEAT),
     // which - since P_back_00 stretches a small text texture across a much larger 850x456 quad -
     // would tile/repeat it into exactly the banded pattern seen on screen. Remove once resolved.
-    if (std::getenv("NSMBW_LOG_WRAP_MODE") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_WRAP_MODE") != nullptr) {
         static int logged = 0;
         if (logged < 40) {
             ++logged;
@@ -564,7 +567,7 @@ static void NsmbwScanForPaneName(const char* logPrefix, int callIndex, uint32_t 
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 static void NsmbwLogPaneIdentityForTexLoad(uint32_t oa, uint32_t tid) {
-    static const bool s_enabled = std::getenv("NSMBW_LOG_PANE_IDENTITY") != nullptr;
+    static const bool s_enabled = AURORA_ENV("NSMBW_LOG_PANE_IDENTITY") != nullptr;
     if (!s_enabled) return;
     static uint32_t s_totalCalls = 0;
     const uint32_t callIndex = s_totalCalls++;
@@ -577,7 +580,7 @@ static void NsmbwLogPaneIdentityForTexLoad(uint32_t oa, uint32_t tid) {
     // whichever scene is currently active, using g_nsmbwCurrentSceneProfile instead of a
     // guessed call-count offset. Remove once resolved.
     static const long s_sceneFilter = [] {
-        const char* v = std::getenv("NSMBW_LOG_PANE_IDENTITY_SCENE");
+        const char* v = AURORA_ENV("NSMBW_LOG_PANE_IDENTITY_SCENE");
         return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
     }();
     if (s_sceneFilter >= 0 && g_nsmbwCurrentSceneProfile != static_cast<uint32_t>(s_sceneFilter)) return;
@@ -594,7 +597,7 @@ static void NsmbwLogPaneIdentityForTexLoad(uint32_t oa, uint32_t tid) {
     // dumps every active stage whose texMap matches this GXLoadTexObj call's tid, right after the
     // pane-name scan above so each line can be matched to a specific pane by call index. Shares
     // that scan's budget/scene-gating so both surveys point at the same window of the run.
-    if (std::getenv("NSMBW_LOG_COLOR_TEV") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_COLOR_TEV") != nullptr) {
         bool any = false;
         for (uint32_t st = 0; st < g_nsmbwLiveNumTevStages && st < 16; ++st) {
             if (g_nsmbwLiveTevTexMap[st] != tid) continue;
@@ -645,6 +648,24 @@ static void NsmbwLogPaneIdentityForTexLoad(uint32_t oa, uint32_t tid) {
 
 extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     NsmbwLogPaneIdentityForTexLoad(oa, tid);
+    // DIAGNOSTIC (NSMBW_LOG_LIQUID): water/lava/poison surfaces are drawn by raw GX code in main.dol
+    // (AC_BG_WATER's m3d::proc_c draw slots -> 0x8000D000 / 0x8000AFA0, helpers up to 0x8000D170; 0x8000A3D0 just below is the tile animator).
+    // When that code binds a texture, log it and put a marker into the GX stream; aurora's command
+    // processor arms its per-draw state log (NSMBW_TEXGEN lines) for the next draws when it reaches
+    // the marker, so exactly the liquid's draws are dumped, in stream order.
+    {
+        static const bool logLiquid = AURORA_ENV("NSMBW_LOG_LIQUID") != nullptr;
+        static std::map<uint32_t, int> armedPerSite; // 6 per call site, so every routine is captured
+        if (logLiquid) {
+            const CpuContext* c = TryGetCpuContext();
+            const uint32_t lr = c ? static_cast<uint32_t>(c->lr) : 0u;
+            if (lr >= 0x8000AFA0u && lr < 0x8000D170u && armedPerSite[lr] < 6) {
+                ++armedPerSite[lr];
+                RT_LOGF(RT_TAG_GX, "NSMBW_LIQUID GXLoadTexObj from LR=0x%08X oa=0x%08X tid=%u\n", lr, oa, tid);
+                GXInsertDebugMarker("nsmbw-arm-drawlog");
+            }
+        }
+    }
     static uint32_t s_invalidMetaLogCount = 0;
     static uint32_t s_invalidTidLogCount = 0;
     static uint32_t s_invalidDimLogCount = 0;
@@ -677,12 +698,13 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     // format / size / tlut / data address per GXLoadTexObj - to check whether the broken 2D
     // layout screens use palette formats (CI4/CI8 = 8/9) or something else. Remove once resolved.
     {
-        static const char* s_texFmtEnv = std::getenv("NSMBW_LOG_TEXFMT");
+        static const char* s_texFmtEnv = AURORA_ENV("NSMBW_LOG_TEXFMT");
         static const long s_texFmtScene = s_texFmtEnv && *s_texFmtEnv ? std::strtol(s_texFmtEnv, nullptr, 10) : -1L;
-        static int s_texFmtLogged = 0;
+        // Each distinct data address once (a level front-loads hundreds of loads of the same few
+        // textures, so a plain count cap never reached the tilesets).
+        static std::unordered_set<uint32_t> s_texFmtSeen;
         if (s_texFmtEnv && (s_texFmtScene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_texFmtScene)) &&
-            s_texFmtLogged < 400) {
-            ++s_texFmtLogged;
+            s_texFmtSeen.insert(meta.dataAddr).second) {
             RT_LOGF(RT_TAG_GX, "NSMBW_TEXFMT scene=%u oa=0x%08X tid=%u fmt=%u %ux%u tlut=%u data=0x%08X mip=%d wrap=%u/%u minF=%u magF=%u lod=%.2f..%.2f bias=%.2f\n",
                     g_nsmbwCurrentSceneProfile, oa, tid, meta.format, meta.width, meta.height, meta.tlut,
                     meta.dataAddr, meta.mipmap ? 1 : 0, meta.wrapS, meta.wrapT, meta.minFilter, meta.magFilter, meta.minLod, meta.maxLod, meta.lodBias);
@@ -755,7 +777,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     // entirely: min==max==0 across the full buffer means "genuinely all zero, no gradient exists
     // anywhere in this data," while any spread proves real gradient data is present (wherever it
     // physically sits in the tiling). Remove once resolved.
-    if (oa == 0x8043FB38u && std::getenv("NSMBW_LOG_WIPECIRCLE_TEXDATA") != nullptr) {
+    if (oa == 0x8043FB38u && AURORA_ENV("NSMBW_LOG_WIPECIRCLE_TEXDATA") != nullptr) {
         static int wipeTexLogged = 0;
         if (wipeTexLogged < 8) {
             ++wipeTexLogged;
@@ -786,7 +808,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     // arriving through GX__InitTexObj_801707f8 at all - it must be getting its meta from
     // TryGetOrExtractTexObjMeta's guest-memory fallback instead. This prints what THAT path
     // actually read for wrapS/wrapT, right before GXLoadTexObj applies it. Remove once resolved.
-    if (oa == 0x8043FC48u && std::getenv("NSMBW_LOG_WRAP_MODE") != nullptr) {
+    if (oa == 0x8043FC48u && AURORA_ENV("NSMBW_LOG_WRAP_MODE") != nullptr) {
         RT_LOGF(RT_TAG_GX, "NSMBW_TARGET_WRAP oa=0x%08X raw wrapS=%u wrapT=%u fmt=%u %ux%u\n",
                 oa, meta.wrapS, meta.wrapT, meta.format, meta.width, meta.height);
         // DIAGNOSTIC (temporary): P_back_00's own source bytes - user-reported symptom is the
@@ -798,7 +820,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         // texel, no block tiling like I4 (see GXGetTexBufferSize) - print the first 8 texels
         // (16 bytes) as raw shorts, same GuestToHostPtr access pattern the I4 dump above uses.
         // Remove once resolved.
-        if (std::getenv("NSMBW_LOG_PBACK_RAWBYTES") != nullptr) {
+        if (AURORA_ENV("NSMBW_LOG_PBACK_RAWBYTES") != nullptr) {
             static int pbackRawLogged = 0;
             if (pbackRawLogged < 5) {
                 ++pbackRawLogged;
@@ -845,7 +867,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         // NSMBW_LOG_PANE_IDENTITY's 60-call general survey, so it still fires even after that
         // survey's budget is long spent by the time this screen shows up. Remove once resolved.
         if (meta.wrapS == GX_REPEAT || meta.wrapT == GX_REPEAT) {
-            if (std::getenv("NSMBW_LOG_PANE_IDENTITY") != nullptr) {
+            if (AURORA_ENV("NSMBW_LOG_PANE_IDENTITY") != nullptr) {
                 static int targetRepeatLogged = 0;
                 if (targetRepeatLogged < 5) {
                     ++targetRepeatLogged;

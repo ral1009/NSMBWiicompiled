@@ -1,5 +1,6 @@
 // gx_vertex.cpp - Vertex Descriptor and Attribute Functions
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 #include "gx_stream_common.h"
 #include "fiber_manager.h"
 #include "guest_interrupt_context.h"
@@ -183,7 +184,7 @@ extern "C" void GX__SetArray_8016e32c(uint32_t a, uint32_t ba, uint32_t str) {
     const uint32_t attr = CanonicalVtxAttr(a);
     // DIAGNOSTIC (temporary): NSMBW_LOG_MTX_LOADS - see gx_transform.cpp. Reports whether the
     // guest ever registers the matrix arrays (attr >= GX_POS_MTX_ARRAY) during the 3D scene.
-    if (attr >= GX_POS_MTX_ARRAY && std::getenv("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+    if (attr >= GX_POS_MTX_ARRAY && AURORA_ENV("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
         static int logged = 0;
         if (logged < 12) {
             ++logged;

@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include <aurora/env.hpp>
 #include "../gx/shader_info.hpp"
 
 #include "clear.hpp"
@@ -519,8 +520,8 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
   auto& prevPass = g_renderPasses[g_currentRenderPass];
   // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation. Remove before merging.
   {
-    static const bool logResolve = std::getenv("NSMBW_LOG_RESOLVE") != nullptr;
-    static const bool forceBright = std::getenv("NSMBW_FORCE_BRIGHT_RESOLVE") != nullptr;
+    static const bool logResolve = AURORA_ENV("NSMBW_LOG_RESOLVE") != nullptr;
+    static const bool forceBright = AURORA_ENV("NSMBW_FORCE_BRIGHT_RESOLVE") != nullptr;
     if (logResolve) {
       Log.warn("[NSMBW_DIAG] resolve_pass pass={} destTex={} target={}x{} rect={},{} {}x{} "
                "clearColor={} clearColorValue={},{},{},{} resolveFormat={}",
@@ -1067,7 +1068,7 @@ static bool begin_frame_impl(bool clearEfb) {
   // dScRestartCrsin_c::startTitle loads fProf::STAGE with mLevel1=STAGE_TITLE, not a separate menu
   // scene) - checking whether any 3D geometry is even being submitted before assuming a
   // viewport/copy-rect sizing bug is the whole story. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_DRAWCALLS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+  if (AURORA_ENV("NSMBW_LOG_DRAWCALLS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
     static int logged = 0;
     if (logged < 200) {
       ++logged;
@@ -1095,7 +1096,7 @@ static bool begin_frame_impl(bool clearEfb) {
   // contain any green pixels, yet a green rectangle is visible on screen - checking whether the
   // guest's own GXSetCopyClear color is unexpectedly green and bleeding through (e.g. via a
   // blend/composite gap) rather than any texture. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_CLEAR_COLOR") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_CLEAR_COLOR") != nullptr) {
     static int logged = 0;
     if (logged < 20) {
       ++logged;
@@ -1334,7 +1335,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
       // NSMBW_GPU_PEEK_ALL_PASSES dumps every eligible pass this frame instead, tagged by index
       // and command count, so the real (large, many-draws) pass can be told apart from a small
       // decorative one. Remove once resolved.
-      if (std::getenv("NSMBW_GPU_PEEK_ALL_PASSES") != nullptr &&
+      if (AURORA_ENV("NSMBW_GPU_PEEK_ALL_PASSES") != nullptr &&
           aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
         static int allPassesLogged = 0;
         if (allPassesLogged < 30) {
@@ -1347,7 +1348,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         }
       }
       static bool firedA = false;
-      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedA && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
+      if (AURORA_ENV("NSMBW_GPU_PEEK") != nullptr && !firedA && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
         firedA = true;
         webgpu::nsmbw_diag_peek_texture(cmd, webgpu::g_frameBuffer.texture, passInfo.targetSize.width,
                                         passInfo.targetSize.height, "A_colorView_after_pass_end");
@@ -1423,7 +1424,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         cmd.CopyTextureToTexture(&src, &dst, &size);
       }
       static bool firedB = false;
-      if (std::getenv("NSMBW_GPU_PEEK") != nullptr && !firedB && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
+      if (AURORA_ENV("NSMBW_GPU_PEEK") != nullptr && !firedB && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
         firedB = true;
         webgpu::nsmbw_diag_peek_texture(cmd, passInfo.resolveTarget->texture, passInfo.resolveTarget->size.width,
                                         passInfo.resolveTarget->size.height, "B_displayCopyTexture_after_resolve");
@@ -1521,7 +1522,7 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
       const auto& size = renderPasses[idx].targetSize;
       // DIAGNOSTIC: NSMBW_LOG_VIEWPORT logs the effective viewport actually sent to the WebGPU
       // render pass for the first few occurrences per run.
-      if (std::getenv("NSMBW_LOG_VIEWPORT") != nullptr) {
+      if (AURORA_ENV("NSMBW_LOG_VIEWPORT") != nullptr) {
         static int vpLogged = 0;
         if (vpLogged < 20) {
           ++vpLogged;
@@ -1549,7 +1550,7 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
           std::clamp(sc.y + sc.height, top, static_cast<int32_t>(size.height));
       // DIAGNOSTIC: see NSMBW_LOG_VIEWPORT above - same env var also covers the scissor rect
       // actually applied to the pass.
-      if (std::getenv("NSMBW_LOG_VIEWPORT") != nullptr) {
+      if (AURORA_ENV("NSMBW_LOG_VIEWPORT") != nullptr) {
         static int scLogged = 0;
         if (scLogged < 20) {
           ++scLogged;

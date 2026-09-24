@@ -1,5 +1,6 @@
 // gx_copy.cpp - Framebuffer Copy Operations
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 
 #include "settings_overlay.h"
 
@@ -136,7 +137,7 @@ extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 namespace {
 void NsmbwDrawTestTriangle() {
-    static const bool s_enabled = std::getenv("NSMBW_TEST_TRIANGLE") != nullptr;
+    static const bool s_enabled = AURORA_ENV("NSMBW_TEST_TRIANGLE") != nullptr;
     if (!s_enabled) {
         return;
     }
@@ -147,7 +148,7 @@ void NsmbwDrawTestTriangle() {
     // does - isolates whether the depth buffer's contents (its clear value) are what's rejecting
     // every z-tested draw. The triangle is placed at mid-depth so it must pass against a buffer
     // cleared to "far" and must fail against one cleared to "near".
-    static const bool s_zTest = std::getenv("NSMBW_TEST_TRIANGLE_Z") != nullptr;
+    static const bool s_zTest = AURORA_ENV("NSMBW_TEST_TRIANGLE_Z") != nullptr;
     const float triZ = s_zTest ? -0.5f : 0.0f;
 
     // Raster state: nothing may discard this triangle.
@@ -249,7 +250,7 @@ extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     // Paired with the triangle log above: if the triangle keeps submitting but stops appearing,
     // the next suspect is this resolve - a changed destination address (a different XFB than the
     // one VI actually scans out) would drop an otherwise-correctly-rendered frame on the floor.
-    if (std::getenv("NSMBW_TEST_TRIANGLE") != nullptr) {
+    if (AURORA_ENV("NSMBW_TEST_TRIANGLE") != nullptr) {
         static uint64_t copyCount = 0;
         ++copyCount;
         if (copyCount <= 3 || (copyCount % 60) == 0) {
@@ -266,7 +267,7 @@ extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     // copy or its timing rather than anything after it. Dumps a small sample from the middle of
     // the XFB (not corner 0,0, which a border/background element could legitimately leave at a
     // uniform color even in a working frame). Remove once resolved.
-    if (std::getenv("NSMBW_LOG_XFB_SAMPLE") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_XFB_SAMPLE") != nullptr) {
         static int xfbSampleLogged = 0;
         if (xfbSampleLogged < 10) {
             ++xfbSampleLogged;
@@ -330,6 +331,18 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     // auto-downloaded, so guest reads see stale RAM; call aurora_flush_efb_copies_to_ram if a
     // copy needs reading back.
     GXCopyTex(GuestToHostPtr(da), (GXBool)c);
+    {
+        // NSMBW_LOG_TEXFMT also lists each distinct texture-copy destination once, so a copy that
+        // lands inside a bound texture (tile animation into a tileset atlas) can be spotted
+        // against the NSMBW_TEXFMT data= lines.
+        static const char* s_texFmtEnv = AURORA_ENV("NSMBW_LOG_TEXFMT");
+        static std::map<uint32_t, bool> s_copySeen;
+        if (s_texFmtEnv && s_copySeen.emplace(da, true).second) {
+            std::fprintf(stderr, "[gx] NSMBW_TEXCOPY scene=%u dest=0x%08X %ux%u fmt=%u src=(%u,%u %ux%u)\n",
+                         g_nsmbwCurrentSceneProfile, da, g_texCopyState.dstWidth, g_texCopyState.dstHeight,
+                         g_texCopyState.dstFormat, rawSrcLeft, rawSrcTop, rawSrcWidth, rawSrcHeight);
+        }
+    }
     RememberEfbCopyDestination(
         da, GXGetTexBufferSize(g_texCopyState.dstWidth, g_texCopyState.dstHeight,
                                g_texCopyState.dstFormat, GX_FALSE, 0));

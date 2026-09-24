@@ -12,6 +12,7 @@
 //   if (!keepEnabledAfter) setOption(this, 2, 1)
 // New address -> shard manifest regen required.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -34,7 +35,7 @@ void SetOption(uint32_t thisPtr, uint32_t option, uint32_t value) {
 } // namespace
 
 extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnabledAfter) {
-    static const bool logEnabled = std::getenv("NSMBW_LOG_SCNOBJ") != nullptr;
+    static const bool logEnabled = AURORA_ENV("NSMBW_LOG_SCNOBJ") != nullptr;
     static int logged = 0;
     // Log a burst of early calls, then one in every 300 (about every 100 frames for a 3-model
     // scene) so the steady state after the first few frames is visible too.
@@ -186,7 +187,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
         // callback) temporarily nulled, so the handler takes its no-callback branch. If the node
         // array then fills in, the callback's blend math is what zeroes it; if still zero, the core
         // pass is. Restored right after the call.
-        static const bool expNoCallback = std::getenv("NSMBW_EXP_NO_CWCB") != nullptr;
+        static const bool expNoCallback = AURORA_ENV("NSMBW_EXP_NO_CWCB") != nullptr;
         uint32_t savedCb = 0;
         if (expNoCallback) {
             Memory::TryRead32(scn + 0x11Cu, savedCb);

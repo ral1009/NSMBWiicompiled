@@ -1,5 +1,6 @@
 // gx_pixel.cpp - Pixel Processing, Blending, and Fog
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 #include "runtime_log.h"
 
 // ============================================================================
@@ -10,7 +11,7 @@ NsmbwLastBlendDiag g_nsmbwLastBlendDiag{};
 
 extern "C" void GX__SetBlendMode_8017277c(uint32_t t, uint32_t s, uint32_t d, uint32_t op) {
     g_nsmbwLastBlendDiag = {t, s, d, op, g_nsmbwLastBlendDiag.setCount + 1};
-    if (std::getenv("NSMBW_TEX_PEEK") != nullptr) {
+    if (AURORA_ENV("NSMBW_TEX_PEEK") != nullptr) {
         static int logged = 0;
         if (logged < 20) {
             ++logged;
@@ -29,7 +30,7 @@ extern "C" void GX__SetColorUpdate_801727cc(uint32_t en) {
     // viewport correctness. This logs every guest call into this HLE entry point (address, value,
     // call count) to determine whether the game ever calls GXSetColorUpdate(TRUE) at all, or calls
     // it and something else resets it back to FALSE afterward. Remove once resolved.
-    if (std::getenv("NSMBW_LOG_COLOR_UPDATE") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_COLOR_UPDATE") != nullptr) {
         static int calls = 0;
         ++calls;
         if (calls <= 50) {
@@ -41,7 +42,7 @@ extern "C" void GX__SetColorUpdate_801727cc(uint32_t en) {
 PPC_NATIVE_OVERRIDE_VOID(801727cc, GX__SetColorUpdate_801727cc, (uint32_t en), (en));
 
 extern "C" void GX__SetAlphaUpdate_801727f8(uint32_t en) {
-    if (std::getenv("NSMBW_LOG_COLOR_UPDATE") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_COLOR_UPDATE") != nullptr) {
         static int calls = 0;
         ++calls;
         if (calls <= 50) {

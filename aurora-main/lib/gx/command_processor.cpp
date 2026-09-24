@@ -1,4 +1,5 @@
 #include "command_processor.hpp"
+#include <aurora/env.hpp>
 
 #include "../gfx/common.hpp"
 #include "../dolphin/gx/__gx.h"
@@ -398,7 +399,7 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
     // the view matrix the level draws use, and with what" is visible. Remove once resolved.
     {
       static const long pnScene = [] {
-        const char* v = std::getenv("NSMBW_LOG_PNMTX0");
+        const char* v = AURORA_ENV("NSMBW_LOG_PNMTX0");
         return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
       }();
       if (mtxIdx == 0 && pnScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(pnScene)) {
@@ -557,7 +558,7 @@ static void apply_xf_viewport() {
   // set via GXSetViewport) that maps a draw's local vertex coordinates onto the screen is sane for
   // NSMBW's actual values, or whether it puts everything off-screen/degenerate despite the source
   // geometry being correct. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_VIEWPORT") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_VIEWPORT") != nullptr) {
     static int vpLogged = 0;
     if (vpLogged < 20) {
       ++vpLogged;
@@ -595,7 +596,7 @@ static void apply_xf_projection() {
   // re-points it at the first 40 loads seen while a given scene profile is active (decimal
   // fProf value, e.g. "5" for STAGE) so the 3D scene's own projections are visible.
   static const long projScene = [] {
-    const char* v = std::getenv("NSMBW_LOG_PROJ_SCENE");
+    const char* v = AURORA_ENV("NSMBW_LOG_PROJ_SCENE");
     return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
   }();
   const bool sceneMatch = projScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(projScene);
@@ -1106,7 +1107,7 @@ static void handle_bp(u32 value, bool bigEndian) {
     // logs en=1, yet every draw's pipeline config reads colorUpdate=0 - this traces every BP 0x41
     // apply (raw 24-bit value + decoded bits) to find what writes it back to 0 in between. Remove
     // once resolved.
-    if (std::getenv("NSMBW_LOG_BP41") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_BP41") != nullptr) {
       static int bp41Calls = 0;
       ++bp41Calls;
       if (bp41Calls <= 200) {
@@ -2327,6 +2328,11 @@ static const CachedPipelineState& resolve_pipeline_state(GXPrimitive prim, GXVtx
 
 // DIAGNOSTIC (temporary): NSMBW_LOG_DRAW_TEXGEN=<scene profile> - see body. Called from both the
 // process() draw path and submit_raw_draw (the HLE's raw 2D path, which the layout screens use).
+// Draws still to log because a "nsmbw-arm-drawlog" marker was processed (NSMBW_LOG_LIQUID, set from
+// the runtime's GXLoadTexObj binding). Stream-ordered, unlike arming from the HLE call itself.
+static int s_nsmbwArmedDraws = 0;
+static int s_nsmbwArmedTotal = 0;
+
 static void nsmbw_log_draw_texgen(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, u16 vtxCount, u32 vtxSize) {
 // draw their I8 gradient strips stretched across whole panes even though NSMBW_DUMP_TEXTURES
 // shows the textures decode correctly, so this prints, per draw in that scene, the texgen
@@ -2335,28 +2341,51 @@ static void nsmbw_log_draw_texgen(GXPrimitive prim, GXVtxFmt fmt, const uint8_t*
 // resolved.
 {
 static const long tgScene = [] {
-  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN");
+  const char* v = AURORA_ENV("NSMBW_LOG_DRAW_TEXGEN");
   return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
 }();
 static const uint32_t tgMinTick = [] {
-  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN_TICK");
+  const char* v = AURORA_ENV("NSMBW_LOG_DRAW_TEXGEN_TICK");
   return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
 }();
 // NSMBW_LOG_DRAW_TEXGEN_MINVP=<px>: only log draws whose viewport is at least this tall.
 // The level scene front-loads hundreds of render-to-texture draws (640x72 strips, 32x32 tile
 // viewports) that exhaust the 160-draw budget before any full-screen draw is seen.
 static const float tgMinVpHeight = [] {
-  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN_MINVP");
+  const char* v = AURORA_ENV("NSMBW_LOG_DRAW_TEXGEN_MINVP");
   return v ? static_cast<float>(std::strtoul(v, nullptr, 10)) : 0.f;
 }();
 static const int tgMax = [] {
-  const char* v = std::getenv("NSMBW_LOG_DRAW_TEXGEN_MAX");
+  const char* v = AURORA_ENV("NSMBW_LOG_DRAW_TEXGEN_MAX");
   return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 160;
 }();
 static int tgLogged = 0;
-if (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene) &&
+const bool armedDraw = s_nsmbwArmedDraws > 0 && s_nsmbwArmedTotal < 400;
+if (armedDraw) {
+  --s_nsmbwArmedDraws;
+  ++s_nsmbwArmedTotal;
+  std::fprintf(stderr, "[NSMBW_TEXGEN] (armed by liquid renderer) blend type=%u src=%u dst=%u colorUpdate=%d alphaUpdate=%d "
+                       "depth test=%d write=%d func=%u cull=%u\n",
+               (unsigned)g_gxState.blendMode, (unsigned)g_gxState.blendFacSrc, (unsigned)g_gxState.blendFacDst,
+               g_gxState.colorUpdate ? 1 : 0, g_gxState.alphaUpdate ? 1 : 0, g_gxState.depthCompare ? 1 : 0,
+               g_gxState.depthUpdate ? 1 : 0, (unsigned)g_gxState.depthFunc, (unsigned)g_gxState.cullMode);
+  // Geometry: position format, the current position matrix, and the raw vertices (big-endian).
+  const auto& pf = g_gxState.vtxFmts[fmt].attrs[GX_VA_POS];
+  const u32 mi = g_gxState.currentPnMtx / 3;
+  float pm[12] = {};
+  if (mi < g_gxState.pnMtx.size()) std::memcpy(pm, &g_gxState.pnMtx[mi].pos, sizeof(pm));
+  std::fprintf(stderr, "[NSMBW_TEXGEN]   posFmt cnt=%u type=%u frac=%u pnMtx[%u]=[%.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f]\n",
+               (unsigned)pf.cnt, (unsigned)pf.type, (unsigned)pf.frac, mi, pm[0], pm[1], pm[2], pm[3], pm[4], pm[5], pm[6],
+               pm[7], pm[8], pm[9], pm[10], pm[11]);
+  for (u32 vi = 0; vi < vtxCount && vi < 4 && vtxSize <= 64; ++vi) {
+    char hex[140] = {};
+    for (u32 b = 0; b < vtxSize && b < 64; ++b) std::snprintf(hex + b * 2, 3, "%02X", vertices[vi * vtxSize + b]);
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   vtx%u %s\n", vi, hex);
+  }
+}
+if (armedDraw || (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene) &&
     g_nsmbwCurrentViTick >= tgMinTick && g_gxState.numTevStages > 0 && tgLogged < tgMax &&
-    g_gxState.logicalViewport.height >= tgMinVpHeight) {
+    g_gxState.logicalViewport.height >= tgMinVpHeight)) {
   ++tgLogged;
   const auto& texFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_TEX0];
   const auto& posFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_POS];
@@ -2530,7 +2559,7 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   // once resolved.
   {
     static const long runsScene = [] {
-      const char* v = std::getenv("NSMBW_LOG_STATE_RUNS");
+      const char* v = AURORA_ENV("NSMBW_LOG_STATE_RUNS");
       return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
     }();
     if (runsScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(runsScene)) {
@@ -2568,16 +2597,16 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   // first <n> draws seen in the scene (past the fade-in), then dumps 80. Remove once resolved.
   {
     static const long dumpScene = [] {
-      const char* v = std::getenv("NSMBW_DUMP_DRAWS_SCENE");
+      const char* v = AURORA_ENV("NSMBW_DUMP_DRAWS_SCENE");
       return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
     }();
     if (dumpScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(dumpScene)) {
       static const uint64_t skipDraws = [] {
-        const char* v = std::getenv("NSMBW_DUMP_DRAWS_SKIP");
+        const char* v = AURORA_ENV("NSMBW_DUMP_DRAWS_SKIP");
         return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : 0ull;
       }();
       static const uint64_t strideDraws = [] {
-        const char* v = std::getenv("NSMBW_DUMP_DRAWS_STRIDE");
+        const char* v = AURORA_ENV("NSMBW_DUMP_DRAWS_STRIDE");
         return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : 1ull;
       }();
       static uint64_t seen = 0;
@@ -2664,9 +2693,9 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   // first several draws of this shape - used to check whether garbled/stretched on-screen content
   // (textures individually confirmed correct via NSMBW_DUMP_TEXTURES) traces to wrong vertex
   // screen coordinates rather than texture decode. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_DRAW_POS") != nullptr &&
-      (std::getenv("NSMBW_LOG_DRAW_POS_SCENE") == nullptr ||
-       g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(std::atoi(std::getenv("NSMBW_LOG_DRAW_POS_SCENE"))))) {
+  if (AURORA_ENV("NSMBW_LOG_DRAW_POS") != nullptr &&
+      (AURORA_ENV("NSMBW_LOG_DRAW_POS_SCENE") == nullptr ||
+       g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(std::atoi(AURORA_ENV("NSMBW_LOG_DRAW_POS_SCENE"))))) {
     static int posLogged = 0;
     // Reset the budget on every scene change so an unrelated earlier scene (e.g. boot's own UI)
     // can't consume it before the scene actually being investigated gets a turn.
@@ -2681,7 +2710,7 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
     // confirmed by NSMBW_LOG_DRAW_TEV finding zero active TEV stages on any of those 15 draws.
     // This skips draws with no configured TEV stage so the budget is spent on actual textured
     // game content instead. Remove once resolved.
-    const bool skipNoTev = std::getenv("NSMBW_LOG_DRAW_POS_SKIP_NO_TEV") != nullptr &&
+    const bool skipNoTev = AURORA_ENV("NSMBW_LOG_DRAW_POS_SKIP_NO_TEV") != nullptr &&
                            g_gxState.numTevStages == 0;
     if (!skipNoTev && posLogged < 40 && vtxCount > 0 && vtxCount <= 8) {
       ++posLogged;
@@ -2757,7 +2786,7 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
       // not what THIS draw actually uses. This checks it right here, at the real draw command,
       // for whichever stage(s) are actually active right now - the only place that's guaranteed
       // to reflect the state this specific draw will use.
-      if (std::getenv("NSMBW_LOG_DRAW_TEV") != nullptr) {
+      if (AURORA_ENV("NSMBW_LOG_DRAW_TEV") != nullptr) {
         static int tevAtDrawLogged = 0;
         if (tevAtDrawLogged < 40) {
           ++tevAtDrawLogged;
@@ -2829,7 +2858,7 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
   // DIAGNOSTIC: NSMBW_LOG_DRAW_FLOW - counts every call into handle_draw_unmerged, and separately
   // every one that gets dropped here by GX_CULL_ALL before it ever reaches
   // push_render_pass/push_draw_command.
-  if (std::getenv("NSMBW_LOG_DRAW_FLOW") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_DRAW_FLOW") != nullptr) {
     static uint64_t totalCalls = 0;
     static uint64_t cullAllDrops = 0;
     ++totalCalls;
@@ -2881,9 +2910,9 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
 
   // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation - real bound texture content. Remove
   // before merging.
-  if (aurora::nsmbw_diag_enabled() && std::getenv("NSMBW_TEX_PEEK") != nullptr &&
-      (std::getenv("NSMBW_TEX_PEEK_SCENE") == nullptr ||
-       g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(std::atoi(std::getenv("NSMBW_TEX_PEEK_SCENE"))))) {
+  if (aurora::nsmbw_diag_enabled() && AURORA_ENV("NSMBW_TEX_PEEK") != nullptr &&
+      (AURORA_ENV("NSMBW_TEX_PEEK_SCENE") == nullptr ||
+       g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(std::atoi(AURORA_ENV("NSMBW_TEX_PEEK_SCENE"))))) {
     static int drawsLogged = 0;
     // Correlate with the vertex-decode finding: prim=GX_QUADS(0x80), fmt=0, vtxCount=4 was the
     // real full-screen background quad (X spans 0..640, decoded last pass). Log every textured
@@ -3118,6 +3147,9 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     aurora_pop_debug_group();
   } else if (subCmd == GX_LOAD_AURORA_DEBUG_MARKER_INSERT) {
     auto label = read_string(data, pos, size, bigEndian);
+    if (label == "nsmbw-arm-drawlog") {
+      s_nsmbwArmedDraws = 8;
+    }
     gfx::insert_debug_marker(std::move(label));
   }
 

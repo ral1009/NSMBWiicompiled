@@ -1,4 +1,5 @@
 #include "gx.hpp"
+#include <aurora/env.hpp>
 
 #include "pipeline.hpp"
 #include "texture_bind_group_cache_key.hpp"
@@ -1852,7 +1853,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   // (GX_SRC_VTX) vs a register (GX_SRC_REG, which would ignore the per-vertex color entirely).
   // Used after ruling out viewport/scissor and depth as the reason forced-opaque-white vertex
   // colors still produced 0 non-black pixels. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_TEV_RAS") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_TEV_RAS") != nullptr) {
     static int tevLogged = 0;
     if (tevLogged < 20) {
       ++tevLogged;
@@ -1906,7 +1907,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
 
   // DIAGNOSTIC: NSMBW_LOG_DEPTH logs the effective depth-test state that goes into each distinct
   // pipeline config.
-  if (std::getenv("NSMBW_LOG_DEPTH") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_DEPTH") != nullptr) {
     static int depthLogged = 0;
     if (depthLogged < 20) {
       ++depthLogged;
@@ -2197,7 +2198,7 @@ wgpu::SamplerDescriptor aurora::gfx::TextureBind::get_descriptor() const noexcep
   // DIAGNOSTIC (temporary): NSMBW_LOG_WRAP_MODE - see gx_texture.cpp's GXInitTexObj log. This is
   // the final wrap mode actually reaching the WebGPU sampler for each bound texture, to check
   // whether it still matches what the guest specified at init time.
-  if (std::getenv("NSMBW_LOG_WRAP_MODE") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_WRAP_MODE") != nullptr) {
     static int logged = 0;
     if (logged < 60) {
       ++logged;

@@ -32,6 +32,7 @@
 // not a behavior change - it calls the real createLayout() and sets the real fields exactly as
 // the original does. Only the logging is new.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -75,7 +76,7 @@ extern "C" uint32_t WiiStrapCreate_Diag_8010F170(uint32_t thisPtr)
         // Checked immediately after createLayout() returns, before any draw call has run -
         // if the watch address is already wrong here, the corruption happens during layout
         // parsing, not in the later per-frame draw/animation loop already traced.
-        if (const char* watchEnv = std::getenv("NSMBW_WATCH_ADDR")) {
+        if (const char* watchEnv = AURORA_ENV("NSMBW_WATCH_ADDR")) {
             g_watchAddr = static_cast<uint32_t>(std::strtoul(watchEnv, nullptr, 16));
         }
         if (g_watchAddr != 0) {

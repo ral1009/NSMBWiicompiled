@@ -1,5 +1,6 @@
 // gx_transform.cpp - Viewport, Projection, and Matrix Functions
 #include "isa/big_endian.h"
+#include <aurora/env.hpp>
 #include "gx_internal.h"
 
 namespace {
@@ -157,7 +158,7 @@ PPC_NATIVE_OVERRIDE_VOID(8017310c, GX__LoadPosMtxImm_8017310c, (uint32_t ma, uin
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 extern "C" uint32_t g_nsmbwXfLoadSource;
 static bool NsmbwMtxLogEnabled() {
-    static const bool enabled = std::getenv("NSMBW_LOG_MTX_LOADS") != nullptr;
+    static const bool enabled = AURORA_ENV("NSMBW_LOG_MTX_LOADS") != nullptr;
     return enabled && g_nsmbwCurrentSceneProfile == 5u;
 }
 
@@ -177,7 +178,7 @@ extern "C" void GX__LoadPosMtxIndx_8017315c(uint32_t mi, uint32_t id) {
         float m[12]; SwapBeF32ArrayToHost(raw,m,12);
         // DIAGNOSTIC (temporary): NSMBW_LOG_ZERO_MTX - indexed loads that fetch an all-zero palette
         // entry in steady-state STAGE, with the palette base/index and guest return address.
-        if (std::getenv("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+        if (AURORA_ENV("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
             static uint64_t seen = 0;
             ++seen;
             if (seen > 5000 && m[0] == 0.f && m[5] == 0.f && m[10] == 0.f && m[3] == 0.f) {

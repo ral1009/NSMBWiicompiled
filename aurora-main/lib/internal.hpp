@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logging.hpp" // IWYU pragma: keep
+#include <aurora/env.hpp>
 
 #include <aurora/aurora.h>
 
@@ -23,7 +24,7 @@ namespace aurora {
 // TEMPORARY DIAGNOSTIC: NSMBW present-source-override call-order isolation. Remove before merging.
 inline std::atomic<uint64_t> g_nsmbwDiagSeq{0};
 inline bool nsmbw_diag_enabled() noexcept {
-  static const bool enabled = std::getenv("NSMBW_LOG_PRESENT_SEQ") != nullptr;
+  static const bool enabled = AURORA_ENV("NSMBW_LOG_PRESENT_SEQ") != nullptr;
   return enabled;
 }
 // NSMBW_GPU_PEEK_SEQ (temporary): the 3 nsmbw_diag_peek_texture call sites all gated on a
@@ -33,7 +34,7 @@ inline bool nsmbw_diag_enabled() noexcept {
 // investigation. Remove alongside the rest of this diagnostic.
 inline uint64_t nsmbw_gpu_peek_seq_threshold() noexcept {
   static const uint64_t threshold = [] {
-    const char* v = std::getenv("NSMBW_GPU_PEEK_SEQ");
+    const char* v = AURORA_ENV("NSMBW_GPU_PEEK_SEQ");
     return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : 650u;
   }();
   return threshold;
@@ -64,11 +65,11 @@ extern "C" uint32_t g_nsmbwCurrentViTick;
 // times the target scene has been seen ready and only reports ready once that count is reached,
 // so the peek lands a few frames into the scene instead of on its very first, empty one.
 inline bool nsmbw_gpu_peek_ready(uint64_t seq) noexcept {
-  static const char* const sceneEnv = std::getenv("NSMBW_GPU_PEEK_SCENE");
+  static const char* const sceneEnv = AURORA_ENV("NSMBW_GPU_PEEK_SCENE");
   if (sceneEnv != nullptr) {
     static const uint32_t wantScene = static_cast<uint32_t>(std::strtoul(sceneEnv, nullptr, 10));
     static const uint32_t wantFrameOffset = [] {
-      const char* v = std::getenv("NSMBW_GPU_PEEK_SCENE_FRAME");
+      const char* v = AURORA_ENV("NSMBW_GPU_PEEK_SCENE_FRAME");
       return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
     }();
     static uint32_t lastSeenScene = 0xFFFFFFFFu;

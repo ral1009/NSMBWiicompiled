@@ -3,6 +3,7 @@
 // Shared state and helpers live in nand_internal.h.
 
 #include "nand_internal.h"
+#include <aurora/env.hpp>
 
 #include "runtime_log.h"
 
@@ -316,7 +317,7 @@ static int32_t HandleShaIoctlv(int32_t fd, uint32_t cmd, uint32_t numIn, uint32_
 // game's save-file behaviour (when it writes wiimj2d.sav, how much, at what offset) can be
 // checked against what lands on disk. Off unless the variable is set.
 static bool NandTraceEnabled() {
-    static const bool enabled = std::getenv("NSMBW_LOG_NAND") != nullptr;
+    static const bool enabled = AURORA_ENV("NSMBW_LOG_NAND") != nullptr;
     return enabled;
 }
 static int32_t NAND_IOS_Open_Impl(uint32_t pathPtr, uint32_t mode);

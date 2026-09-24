@@ -15,6 +15,7 @@
 // projMtx @0x30, flags @0x70, cameraPos @0x74, cameraTarget @0x8C, projType @0xA8.
 // New address -> shard manifest regen required.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -49,7 +50,7 @@ extern "C" void G3dCamera_GetCameraMtx_Diag_802541F0(uint32_t thisPtr, uint32_t 
         Memory::WriteFloat32(pMtx + static_cast<uint32_t>(i * 4), m[i]);
     }
 
-    if (std::getenv("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+    if (AURORA_ENV("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
         static int logged = 0;
         if (logged < 10) {
             ++logged;

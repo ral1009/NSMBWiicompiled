@@ -1,4 +1,5 @@
 #include "gx.hpp"
+#include <aurora/env.hpp>
 #include "__gx.h"
 
 #include "../../gfx/tex_copy_conv.hpp"
@@ -433,7 +434,7 @@ void GXCopyDisp(void* dest, GXBool clear) {
   // wide, centred as a narrow strip in the final image. This prints the actual inputs to that
   // sizing decision so the wrong one is identified directly instead of inferred from the output
   // width. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_COPYDISP_GEOM") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_COPYDISP_GEOM") != nullptr) {
     static uint64_t n = 0;
     ++n;
     if (n <= 3 || (n % 60) == 0) {
@@ -477,9 +478,18 @@ void GXCopyTex(void* dest, GXBool clear) {
   }
   const auto sourceRect = map_texture_copy_source(g_gxState.texCopySrc, g_gxState.texCopySrcRenderSpace);
   const auto rect = sourceRect.clearRect;
+  // GXSetTexCopyDst's width is the destination image's row pitch, not the copy size: hardware copies
+  // exactly the source rectangle (halved with half-scale). A pitch wider than the rectangle means the
+  // copy writes part of a larger image - NSMBW renders each animated tile (coins, lava, ...) into a
+  // 32x32 area and copies it into its slot of the 1024-wide tileset atlas with dst = 1024x1024. Size
+  // the GPU copy to the rectangle (it was 1024x1024 times the internal scale per tile per frame) and
+  // write it back to guest RAM, where the atlas texture is uploaded from.
+  const u32 copyRectWidth = std::max<u32>(static_cast<u32>(g_gxState.texCopySrc.width) >> (g_gxState.texCopyHalfScale ? 1 : 0), 1);
+  const u32 copyRectHeight = std::max<u32>(static_cast<u32>(g_gxState.texCopySrc.height) >> (g_gxState.texCopyHalfScale ? 1 : 0), 1);
+  const bool stridedSubRect = g_gxState.texCopyDstWidth > copyRectWidth;
   // Keep guest dimensions for cache identity while preserving scaled GPU detail.
-  const auto logicalDstWidth = std::max<u32>(g_gxState.texCopyDstWidth, 1);
-  const auto logicalDstHeight = std::max<u32>(g_gxState.texCopyDstHeight, 1);
+  const auto logicalDstWidth = stridedSubRect ? copyRectWidth : std::max<u32>(g_gxState.texCopyDstWidth, 1);
+  const auto logicalDstHeight = stridedSubRect ? copyRectHeight : std::max<u32>(g_gxState.texCopyDstHeight, 1);
   const auto [scaledDstWidth, scaledDstHeight] = scale_copy_dst(logicalDstWidth, logicalDstHeight);
   const auto texCopyFmt = g_gxState.texCopyFmt;
   const bool sourceHasAlpha = aurora::gx::render_target_has_alpha(g_gxState.pixelFmt);
@@ -558,8 +568,13 @@ void GXCopyTex(void* dest, GXBool clear) {
   handle.dataSize = GXGetTexBufferSize(static_cast<u16>(logicalDstWidth), static_cast<u16>(logicalDstHeight), texCopyFmt, GX_FALSE, 0);
   aurora::gx::notify_copy_texture_created();
   g_gxState.copyTextures[dest] = handle;
-  // Keep the GPU copy and download it only if guest code reads the destination.
-  aurora::gfx::efb_ram::schedule(dest, logicalDstWidth, logicalDstHeight, texCopyFmt, handle.handle);
+  if (stridedSubRect) {
+    aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
+                                           texCopyFmt, handle.handle);
+  } else {
+    // Keep the GPU copy and download it only if guest code reads the destination.
+    aurora::gfx::efb_ram::schedule(dest, logicalDstWidth, logicalDstHeight, texCopyFmt, handle.handle);
+  }
 }
 
 void GXClearBoundingBox() {

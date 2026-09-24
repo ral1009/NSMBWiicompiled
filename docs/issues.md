@@ -399,12 +399,50 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** `handle_bp` treats any BP 0x66 write as `invalidate_static_texture_cache()` (checked before the register value dedup, since the write is a command, not state). Guest write-tracking hooks are installed, so the bump costs a generation compare per texture, not a re-hash. Developer confirmed 1-2 renders with the right tileset; 1-1 self-test run unchanged.
 - **Scope:** General (aurora) — any title whose SDK `GXInvalidateTexAll`/`GXInvalidateTexRegion` runs as guest code hits this; MKW only avoided it through its native binding. Class 1 (override at MKW's address is dead for NSMBW), fixed at the register level so it doesn't depend on a per-title binding.
 
+## 2026-09-23 — performance, tile animations, controller
+
+### Frame time dominated by uncached `getenv` on the GX path
+- **Symptom:** ~25-40 fps with drops to 10 at 1x; world map at 24.7 fps (overlay, `prof1_t200.png`).
+- **Root cause:** 113 `std::getenv("NSMBW_LOG_*")` checks, 81 of them evaluated on every call - per FIFO command, per draw, per uniform build (`command_processor.cpp`, `gx_fifo.cpp`, `gfx/common.cpp`, ...). UCRT `getenv` locks and scans the whole environment case-insensitively each time. `NSMBW_PROFILE_SAMPLER` on the map: the getenv internals were 53.6 % of the main thread's busy samples, called from `aurora::gx::fifo::process`, `HleFifoWrite`, `build_uniform`, `handle_bp`.
+- **Fix:** `aurora-main/include/aurora/env.hpp` `AURORA_ENV("NAME")` - one cached lookup per call site (valid because nothing in the process writes its environment after startup). All 113 sites converted mechanically.
+- **Scope:** General (every diagnostic switch in the shared runtime/aurora was on the hot path; any title pays it).
+
+### Per-frame diagnostic logging on the steady-state path
+- **Symptom:** same run; transitions also lagged.
+- **Root cause:** unbuffered stderr/stdout lines every frame from settled investigations: `SelectThread: entering idle loop` (several per frame, ~15 % of main-thread time), the tick-pump heartbeat (three `printf`s every 30 ticks), and the wipe-circle dump (six lines per frame of every wipe). Each line is a synchronous `WriteFile`.
+- **Fix:** gated behind `NSMBW_LOG_IDLE_THREADS`, `NSMBW_LOG_HEARTBEAT`, `NSMBW_LOG_WIPE` (`os_scheduler.cpp`, `nsmbw_tick_read_pump.cpp`, `nsmbw_wipecircle_calc_diag.cpp`).
+- **Scope:** NSMBW-specific diagnostics; the class (unconditional logging on a per-frame path) is general.
+- Result of both, measured by the overlay only so far: 60.0 fps on the world map and in 1-1 at 1x (`coin1_t160/170.png`, was 24.7 on the map). A post-fix profiler run has not been done yet.
+
+### Placed coins (and other animated tiles) frozen
+- **Symptom:** coins placed in levels never spin; star coins and coins from blocks (3D actors) do.
+- **Root cause:** NSMBW animates tiles by rendering each frame (e.g. the spinning 3D coin, `0x8008A780`: `YrotM(dCoin_c::m_shapeAngle)` -> CALC_WORLD/VIEW/MAT -> DRAW_OPA) into a 32x32 EFB area and `GXCopyTex`-ing it into the tile's slot *inside* the tileset atlas: `GXSetTexCopyDst(1024, 1024, RGB5A3)` = the atlas pitch, destination = atlas base + slot offset (1-1: six copies into the 1024x1024 texture at 0x10332960, offsets 0x1E00, 0x1F00, 0x10F00, 0x11000, 0x11100, 0x11E00; `NSMBW_LOG_TEXFMT` now also prints `NSMBW_TEXCOPY` lines). aurora kept copies GPU-only, matched them to textures by exact start address only (`find_copy_texture_for_texobj`), and treated the destination width/height as the copy's output size. The atlas is uploaded from guest RAM, which never received the frames.
+- **Fix:** `GXCopyTex` (`aurora-main/lib/dolphin/gx/GXFrameBuffer.cpp`): a destination pitch wider than the copied rectangle marks a sub-rectangle copy; the GPU copy is sized to the rectangle (it was 1024x1024 x internal scale per tile per frame) and `efb_ram::schedule_strided` (`efb_ram_copy.cpp`) reads it back frame-latently and scatters each block row at the destination pitch, then `notify_guest_write`s the span so the atlas re-uploads. Developer confirmed placed coins spin.
+- **Scope:** General (aurora) - SDK semantics of `GXSetTexCopyDst` width as pitch; any title that updates part of a texture with an EFB copy hits it.
+- Ruled out on the way: `dCoin_c::execute` runs every frame (angle advances, `NSMBW_LOG_COIN`); the drawing thread's GQRs are the standard 0x00040004/0x00050005/0x00060006/0x00070007 and `YrotM` gives the correct matrix with them. An early test that returned identity had run on another guest thread's registers (GQR = 0, normal for a thread that never called `G3dInit`).
+
+### Gamepad left stick did nothing
+- **Symptom:** Switch Pro Controller: buttons and d-pad work, stick does not.
+- **Root cause:** `TranslatePadToWpad` only read `PADStatus.button`; the stick lives in `stickX/stickY`.
+- **Fix:** stick past 50/127 on an axis sets that d-pad direction (`nsmbw_kpad_overrides.cpp`). Remap menu (`settings_overlay.cpp`) labels the PAD slots with their Wii meaning for NSMBW (1, 2, +, -, Shake...); config keys unchanged.
+- **Scope:** NSMBW-specific.
+
+### Water, lava and poison never visible
+- **Symptom:** liquid levels play (swimming, lava kills) but no water surface, tint or lava is drawn.
+- **Root cause:** bug class 1 + 3 together. All liquids are drawn by raw GX code in main.dol (`0x8000AFA0` and the helpers `0x8000B530..0x8000CA50`, reached from AC_BG_WATER/LAVA/POISON's `m3d::proc_c` draw slots via `m3d::proc_c_drawProc` 0x801650E0). BP 0x41 (cmode0) holds blend mode *and* colour/alpha update. NSMBW binds `GXSetBlendMode`/`GXSetColorUpdate`/`GXSetAlphaUpdate` natively (aurora's `__gx->cmode0` copy), but `GXSetDither` (0x801C90D0) was only bound at MKW's address, so it ran as guest code and re-sent the *guest's* cmode0 copy (`__GXData+0x220`), which no native setter updates: blend none, colour and alpha update off. Every liquid routine calls it after setting blend/colour update. `NSMBW_LOG_LIQUID` (stream-ordered: a GX debug marker from the `GXLoadTexObj` binding arms aurora's per-draw log) showed the liquid draws with `colorUpdate=0 alphaUpdate=0 blend=0`.
+- **Fix:** bind 0x801C90D0 to the existing `GX__SetDither_80172930` (`nsmbw_gx_overrides.cpp`, shard manifest regenerated). After: all 240 captured liquid draws `blend=1 src=SRCALPHA dst=INVSRCALPHA colorUpdate=1`; developer confirmed water appears (1-4, 4-x); lava not yet re-checked by eye.
+- **Scope:** NSMBW-specific binding; the class (a register shared between bound and unbound SDK setters) is general - any shared-register setter left unbound re-sends a stale guest copy.
+- **Open:** afterwards the sky above the waterline looks darker than on hardware (developer screenshot vs a 1-4 reference video). Not the liquid geometry (the captured surface draws are 8-unit columns from the crest to y=-8) and not dMaskMng's darkness overlay (it never set a TEV colour in the demo runs). Suspect another `GXSetDither` caller whose draws changed with the binding (tile animator 0x8000A3D0, BG/tile code 0x8008A9C0-0x8008BA00, EGG::StateGX 0x802D32D0, ...). `NSMBW_DITHER_LEGACY=1` restores the old behaviour for every caller outside the liquid renderer for an A/B check (`projects/nsmbw/tools/capture_on_log.ps1`); not run yet.
+
 ---
 
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
 
+- Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
+- New inputs (stick, `=`/`-`, `C`/ZL/ZR shake, Wii labels in the remap menu) built but not yet confirmed in play.
+- Level-load stall reported once with water; may have been two instances running at once or first-time pipeline builds - re-check.
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.
 - `func_801AF900` no-op (colour/curve table), `func_801AC980` / `func_801AD620` / `func_801AD9E0` abort stubs; second cause for their non-translation undiagnosed.
 - `func_801A9CE0` decode bug worked around by override; not fixed in the translator.

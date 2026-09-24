@@ -28,10 +28,12 @@
 // Delegates to aurora's own GXSetTevColor (already verified correct by reading its source)
 // rather than hand-rolling the BP-register bit packing again here.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
 #include <dolphin/gx/GXTev.h>
+#include <dolphin/gx/GXAurora.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -73,7 +75,7 @@ extern "C" void GXSetTevColor_Diag_801C8570(uint32_t id, uint32_t colorPtr) {
     const uint8_t b = static_cast<uint8_t>(colorWord >> 8);
     const uint8_t a = static_cast<uint8_t>(colorWord);
 
-    if (readOk && std::getenv("NSMBW_LOG_TEVCOLOR_CHANGES") != nullptr) {
+    if (readOk && AURORA_ENV("NSMBW_LOG_TEVCOLOR_CHANGES") != nullptr) {
         static int totalChangeLogs = 0;
         int slot = -1;
         for (int i = 0; i < g_trackedCount; ++i) {
@@ -109,7 +111,7 @@ extern "C" void GXSetTevColor_Diag_801C8570(uint32_t id, uint32_t colorPtr) {
         }
     }
 
-    if (std::getenv("NSMBW_LOG_TEVCOLOR_RAW") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_TEVCOLOR_RAW") != nullptr) {
         static int logged = 0;
         if (logged < 50) {
             ++logged;
@@ -139,6 +141,22 @@ extern "C" void GXSetTevColor_Diag_801C8570(uint32_t id, uint32_t colorPtr) {
         return;
     }
 
+    // NSMBW_LOG_LIQUID also covers the screen-mask routines (0x800CB990-0x800CC700, just before
+    // dMaskMng::isCaveMask): they draw full-screen with blend ZERO / INVSRCALPHA, darkness taken from
+    // this TEV colour. Log the colour and arm aurora's per-draw log (stream-ordered marker).
+    {
+        static const bool logLiquid = AURORA_ENV("NSMBW_LOG_LIQUID") != nullptr;
+        static int maskLogged = 0;
+        if (logLiquid && maskLogged < 40) {
+            const CpuContext* c = TryGetCpuContext();
+            const uint32_t lr = c ? static_cast<uint32_t>(c->lr) : 0u;
+            if (lr >= 0x800CB990u && lr < 0x800CC700u) {
+                ++maskLogged;
+                std::fprintf(stderr, "[nsmbw][mask] GXSetTevColor id=%u rgba=(%u,%u,%u,%u) from LR=0x%08X\n", id, r, g, b, a, lr);
+                GXInsertDebugMarker("nsmbw-arm-drawlog");
+            }
+        }
+    }
     GXSetTevColor(static_cast<GXTevRegID>(id), GXColor{r, g, b, a});
 }
 

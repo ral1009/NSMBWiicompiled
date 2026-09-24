@@ -1,6 +1,7 @@
 // Data/instruction/locked cache maintenance HLE.
 
 #include <cstdint>
+#include <aurora/env.hpp>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -176,7 +177,7 @@ extern "C" void LCLoadBlocks_HLE_801a1894(CpuContext* ctx)
     const uint32_t srcAddr = static_cast<uint32_t>(ctx->gpr[4]);
     const uint32_t blocks = DecodeLcBlockCount(static_cast<uint32_t>(ctx->gpr[5]));
     const uint32_t len = blocks * kCacheOpLineSize;
-    if (std::getenv("NSMBW_LOG_LC") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_LC") != nullptr) {
         static int logged = 0;
         if (logged < 10) {
             ++logged;
@@ -211,7 +212,7 @@ extern "C" uint32_t LCStoreData_HLE_801a18dc(CpuContext* ctx)
     const uint32_t len = static_cast<uint32_t>(ctx->gpr[5]);
     // DIAGNOSTIC (temporary): NSMBW_LOG_LC - confirms the g3d CALC_WORLD store-back from the
     // locked cache actually reaches this HLE (NSMBW binds it via nsmbw_os_lockedcache_overrides).
-    if (std::getenv("NSMBW_LOG_LC") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_LC") != nullptr) {
         static int logged = 0;
         if (logged < 10) {
             ++logged;

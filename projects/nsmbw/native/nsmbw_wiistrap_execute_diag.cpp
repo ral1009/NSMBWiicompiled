@@ -31,6 +31,7 @@
 // calling only the two real, distinct, non-self addresses, following the same rule already
 // established in nsmbw_wipecircle_calc_diag.cpp for why this doesn't self-recurse.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -90,7 +91,7 @@ void LogAnimGroups(const char* when, uint32_t mLytBase) {
 
 uint32_t WatchAddr() {
     static const uint32_t addr = [] {
-        const char* env = std::getenv("NSMBW_WATCH_ADDR");
+        const char* env = AURORA_ENV("NSMBW_WATCH_ADDR");
         return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 16)) : 0u;
     }();
     return addr;

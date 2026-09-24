@@ -18,6 +18,7 @@
 // ScnObj layout per NSMBW-Decomp include/lib/nw4r/g3d/g3d_scnobj.h: mMtxArray @0xC (LOCAL 0xC,
 // WORLD 0x3C, VIEW 0x6C, 0x30 bytes each), mScnObjFlags @0xCC. New address -> shard regen.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -48,7 +49,7 @@ extern "C" void M3dPushBack_Diag_80164F90(uint32_t obj) {
     if (vtbl != 0) Memory::TryRead32(vtbl + 0x34u, fn);
     if (fn == 0) return;
 
-    if (std::getenv("NSMBW_LOG_SCNOBJ") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_SCNOBJ") != nullptr) {
         bool known = false;
         for (int i = 0; i < g_trackedCount; ++i) if (g_tracked[i] == obj) { known = true; break; }
         if (!known && g_trackedCount < kMaxTracked) g_tracked[g_trackedCount++] = obj;
@@ -61,6 +62,20 @@ extern "C" void M3dPushBack_Diag_80164F90(uint32_t obj) {
         }
     }
 
+    // NSMBW_LOG_LIQUID: note when AC_BG_WATER's class code (d_basesNP 0x807B3000-0x807B8000, its
+    // ctor is 0x807B40A0) registers a scene object, i.e. the liquid's m3d::proc_c::entry() runs.
+    {
+        static const bool logLiquid = AURORA_ENV("NSMBW_LOG_LIQUID") != nullptr;
+        static int logged = 0;
+        if (logLiquid && logged < 40) {
+            const CpuContext* c = TryGetCpuContext();
+            const uint32_t lr = c ? static_cast<uint32_t>(c->lr) : 0u;
+            if (lr >= 0x807B3000u && lr < 0x807B8000u) {
+                ++logged;
+                std::fprintf(stderr, "[nsmbw][liquid] pushBack obj=0x%08X from LR=0x%08X (scene list size %u)\n", obj, lr, idx);
+            }
+        }
+    }
     auto& cpu = GetPersistentCpuContext();
     cpu.gpr[3] = scnRoot;
     cpu.gpr[4] = idx;
@@ -71,7 +86,7 @@ PPC_NATIVE_OVERRIDE_VOID(80164F90, M3dPushBack_Diag_80164F90, (uint32_t obj), (o
 
 // Called once per tick from nsmbw_tick_read_pump.cpp; dumps a few frames' worth during STAGE.
 extern "C" void NsmbwDumpScnObjs() {
-    if (std::getenv("NSMBW_LOG_SCNOBJ") == nullptr || g_nsmbwCurrentSceneProfile != 5u) return;
+    if (AURORA_ENV("NSMBW_LOG_SCNOBJ") == nullptr || g_nsmbwCurrentSceneProfile != 5u) return;
     static int tick = 0;
     static int dumps = 0;
     ++tick;

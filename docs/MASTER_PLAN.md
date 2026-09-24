@@ -454,3 +454,32 @@ What I learned:
 What's next:
 - Play on through World 1 (1-3, tower, castle) and log what breaks; the tower/castle boss fights exercise the d_en_bossNP REL.
 - The `NSMBW_LOG_TEXFMT` diagnostic and the write-generation hooks would show whether other cache tiers (TLUT, copy textures) have the same gap — check the first time a palette texture looks stale.
+
+## 2026-09-23 — Phase 7/8 (input additions, profiler, performance, tile animations)
+What I did:
+1. **Input.** `=` -> +, `-` -> -, `C` -> shake (also ZL/ZR on a pad), left stick -> d-pad, B -> WPAD B. Shake is not a button in NSMBW: `dGameKeyCore_c`'s helper 0x800B62A0 sets `mIsShaking` when |acc.y - previous| >= 0.28 (SDA2 float 0x8042C8A4) for 4 frames in a row, then the player adds its own cooldowns. A C press therefore feeds an 8-tick synthetic acc.y burst (1.0, 0.5, 0.0, -0.5, repeating - any two samples up to 3 ticks apart differ by >= 0.5, so it still fires if the game only reads every 2nd or 3rd frame) through `KPADStatus.acc`, and the game's own detector does the rest. The remap menu names the PAD slots after their Wii meaning for NSMBW. Developer reports the Switch Pro Controller works; +/-/C/stick not yet confirmed.
+2. **Sampling profiler** (`NSMBW_PROFILE_SAMPLER=1`, `runtime/src/product/nsmbw_product.cpp`): a host thread suspends every thread ~500 times a second, unwinds its stack with the x64 unwind tables (`RtlLookupFunctionEntry`/`RtlVirtualUnwind` - the same data C++ exceptions use) and appends a 10 s histogram of whole call stacks to `build_nsmbw/nsmbw_profile.txt`, with presented frames/s and scene per window. `projects/nsmbw/tools/resolve_profile.py` names frames (llvm-nm for the exe, where translated code is `func_<guest addr>`; export tables for Windows DLLs) and prints per-thread busy/wait, self, inclusive and "who called into this DLL".
+3. **What it found on the world map (first benchmark only; every item is scene-independent):** main thread 96 % busy (22910 of 23785 samples); 53.6 % inclusive inside the CRT's `getenv` (per-command diagnostic switches), 23.7 % in `WriteFile` (per-frame log lines). See `docs/issues.md` 2026-09-23 for both fixes. Overlay afterwards: 60.0 fps on the map and in 1-1 at 1x (was 24.7 on the map).
+4. **Frozen tile animations (placed coins).** See the issues entry: sub-rectangle EFB copies into the tileset atlas never reached guest RAM. Fixed in aurora's `GXCopyTex` + a strided readback in `efb_ram_copy.cpp`. Developer confirmed coins spin.
+
+What broke / what I didn't expect:
+- Twice, text written through the shell's heredoc had `\n` turned into a real newline inside C++ string literals; patch scripts now go through files.
+- A GQR theory cost time: my first `YrotM` test returned identity, but it had run on another guest thread's registers. The fiber scheduler swaps each thread's full `CpuContext`; the main thread's GQRs were fine throughout. Measure on the thread that does the work.
+- The self-test's single right-tap on the map was sometimes swallowed and the run parked on the start node; it now re-taps every 2 s, and after the map holds right + pulses 2 in the level (Mario still dies to the first Goomba - good enough to reach 1-1, not to reach coins).
+
+What I learned:
+- An env-var check is not free: on Windows `getenv` is a locked linear scan. A diagnostic "off" switch on a per-draw path has to be cached.
+- `GXSetTexCopyDst`'s width is a row pitch. Copies can write *into* an existing texture; a renderer that keys EFB copies by destination address alone will never see them.
+- One concept used above: a *stack unwind* reconstructs the chain of callers from a paused thread's registers and stack, using per-function tables the compiler emits; it is what turns "the CPU is in strchr" into "fifo::process called getenv".
+
+5. **Liquids (water / lava / poison) invisible.** Not the tile-animation path after all: liquids are drawn by raw GX code in main.dol, reached from the liquid actors' `m3d::proc_c` draw slots. Static tracing (actor profile 596 -> class-init 0x807B40A0 -> vtable 0x80950B48 in the relocated `d_basesNP` image -> `draw()` 0x807B52F0 -> 0x800EAC30 -> proc entry -> `proc_c_drawProc` -> 0x8000AFA0) found every link intact, so a runtime capture settled it: `NSMBW_LOG_LIQUID` arms aurora's per-draw log from inside the renderer via a GX debug marker (stream-ordered, because aurora processes the FIFO later than the HLE call). The liquid draws had colour writes off - `GXSetDither` was unbound and re-sent the guest's stale copy of BP 0x41. Bound it; water now draws. See `docs/issues.md`.
+   The first liquid capture looked like "renderer never called" because the texture-bind trigger's 60-entry cap was used up by the tile animator (0x8000A3D0, just below the renderer) - the range and cap were wrong, not the game. Per-call-site caps since.
+
+What broke / what I didn't expect (liquids):
+- Two wrong leads before the capture: a `m3d::pushBack` override (matches the original instruction for instruction) and a "draw gate" on `dScStage_c` bytes 0x120C-0x120E (compares against 7/23/3 - a one-level special case, read at first as `!= 0`). Reading the compare operands, not just the branch shape, would have saved a round.
+- The fix exposed a new difference: the sky over water is darker than hardware. Open item; A/B switch ready.
+
+What's next:
+- A/B the dark sky with `NSMBW_DITHER_LEGACY=1` (capture_on_log.ps1 on the title demo), then bind/emulate whichever caller differs.
+- Confirm 8-Castle lava by eye and the new inputs.
+- Post-fix profiler runs across map / 1-1 / 1-2 / tower / transitions to find the next shared bottleneck; check 2x-4x now that tile copies are no longer 1024x1024 x scale each.

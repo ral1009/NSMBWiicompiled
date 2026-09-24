@@ -1,6 +1,7 @@
 // SelectThread scheduler, OSWakeupThread and the OSMutex primitives.
 
 #include <cstdio>
+#include <aurora/env.hpp>
 #include <cstdlib>
 #include <cstdint>
 #include <iostream>
@@ -205,7 +206,7 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
     // TEMPORARY diagnostic (NSMBW_LOG_IDLE_THREADS): when a thread arrives here already WAITING
     // (i.e. from OSSleepThread), print who put it to sleep, from the live guest stack.
     {
-        static const bool dumpSleepers = std::getenv("NSMBW_LOG_IDLE_THREADS") != nullptr;
+        static const bool dumpSleepers = AURORA_ENV("NSMBW_LOG_IDLE_THREADS") != nullptr;
         if (dumpSleepers && runningContext != 0 && ::Memory::Read16(runningContext + 0x2C8u) == 4u) {
             static uint32_t sleepEvents = 0;
             ++sleepEvents;
@@ -284,14 +285,18 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
         // every time the scheduler goes idle (rare enough not to spam) so we can see what
         // was running right before it, and then confirm via the counter below whether this
         // specific idle period ever actually ends.
-        RT_LOGF(RT_TAG_OS, "[nsmbw][diag] SelectThread: entering idle loop, runningContext=0x%08X\n",
+        // Gated with the thread dump below (NSMBW_LOG_IDLE_THREADS): the scheduler idles several
+        // times per frame, and this one unbuffered stderr line per idle was ~15 % of the main
+        // thread's time on the world map (NSMBW_PROFILE_SAMPLER, 2026-09-23).
+        static const bool logIdleEntry = AURORA_ENV("NSMBW_LOG_IDLE_THREADS") != nullptr;
+        if (logIdleEntry) RT_LOGF(RT_TAG_OS, "[nsmbw][diag] SelectThread: entering idle loop, runningContext=0x%08X\n",
                 runningContext);
         // TEMPORARY diagnostic (NSMBW_LOG_IDLE_THREADS): state of every created thread at idle
         // entry. OSThread layout: state u16 @0x2C8 (1 READY 2 RUNNING 4 WAITING 8 MORIBUND),
         // suspend s32 @0x2CC, priority @0x2D0, sleep queue ptr @0x2DC, mutex @0x2F0;
         // OSContext: lr @0x84, srr0 @0x198.
         {
-            static const bool dumpThreads = std::getenv("NSMBW_LOG_IDLE_THREADS") != nullptr;
+            static const bool dumpThreads = AURORA_ENV("NSMBW_LOG_IDLE_THREADS") != nullptr;
             static uint32_t idleEntries = 0;
             ++idleEntries;
             if (dumpThreads && (idleEntries <= 3 || (idleEntries % 400) == 0)) {

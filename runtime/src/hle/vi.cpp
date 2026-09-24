@@ -596,10 +596,15 @@ void PaceToRetraceBoundary(Clock::time_point deadline) {
 // Single owner of the Aurora frame presentation sequence: seals the active frame, optionally paces the
 // producer to the VI retrace boundary, and pre-warms the next frame. Paced from GXCopyDisp; unpaced for
 // the retrace-context black/boot present path in AdvanceRetrace.
+// Game frames presented (XFB presents only, not black/boot presents). Read by the NSMBW profile
+// sampler to report frames/s per window; a relaxed counter is enough for a rate.
+std::atomic<uint64_t> g_viPresentedXfbFrames{0};
+
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+    if (presentedXfb) g_viPresentedXfbFrames.fetch_add(1, std::memory_order_relaxed);
     struct SequenceGuard {
         ~SequenceGuard() { s_presentSequenceActive.store(false, std::memory_order_release); }
     } sequenceGuard;

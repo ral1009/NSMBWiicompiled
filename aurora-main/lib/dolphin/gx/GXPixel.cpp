@@ -1,4 +1,5 @@
 #include "gx.hpp"
+#include <aurora/env.hpp>
 #include "__gx.h"
 
 #include <cmath>
@@ -148,7 +149,7 @@ void GXSetColorUpdate(GXBool enabled) {
   // write to BP register 0x00 (genMode) instead of 0x41 (cmode0), which would explain both the
   // colorUpdate-never-sticks bug and the corrupted/random cullMode values observed elsewhere.
   // Remove once resolved.
-  if (std::getenv("NSMBW_LOG_CMODE0_ID") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_CMODE0_ID") != nullptr) {
     static int logged = 0;
     if (logged < 10) {
       ++logged;

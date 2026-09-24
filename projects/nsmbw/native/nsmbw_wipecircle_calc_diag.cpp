@@ -77,6 +77,7 @@
 // while mAction != IDLE directly answers "is the wipe animation started, and is its frame
 // counter advancing." Remove once resolved.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -196,7 +197,10 @@ extern "C" int32_t WipeCircleCalc_Diag_8001B580(uint32_t self) {
     }
     // Log every call while a transition is actually in progress (bounded if things work; if
     // they don't, still throttle after a while to avoid runaway output from a stuck transition).
-    const bool shouldLog = active && (activeStreak <= 200 || (activeStreak % 60) == 0);
+    // Opt-in (NSMBW_LOG_WIPE): six unbuffered stderr lines per frame of every wipe made scene
+    // transitions visibly slower once the wipe itself worked (2026-09-23).
+    static const bool logWipe = AURORA_ENV("NSMBW_LOG_WIPE") != nullptr;
+    const bool shouldLog = logWipe && active && (activeStreak <= 200 || (activeStreak % 60) == 0);
 
     if (!active) {
         return 1;

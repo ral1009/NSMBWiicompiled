@@ -18,6 +18,7 @@
 // reimplements draw() exactly, bracketing the one real sub-call with a watch-address read
 // before and after, to see whether entry() is what fills in RGB while leaving alpha at 0.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -33,7 +34,7 @@ constexpr uint32_t kEntryAddr = 0x80006EA0u;
 
 uint32_t WatchAddr() {
     static const uint32_t addr = [] {
-        const char* env = std::getenv("NSMBW_WATCH_ADDR");
+        const char* env = AURORA_ENV("NSMBW_WATCH_ADDR");
         return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 16)) : 0u;
     }();
     return addr;

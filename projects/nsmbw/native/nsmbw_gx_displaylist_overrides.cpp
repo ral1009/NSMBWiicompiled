@@ -33,6 +33,7 @@
 //
 // __gx is *(r2 - 0x4EF8) = *(0x8042E468), as in nsmbw_gx_overrides.cpp.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -60,7 +61,7 @@ constexpr uint32_t kGxDlSaveContextOff = 0x5F9u;
 constexpr uint32_t kGxDirtyStateOff = 0x5FCu;
 
 bool LogEnabled() {
-    static const bool enabled = std::getenv("NSMBW_LOG_DISPLAY_LIST") != nullptr;
+    static const bool enabled = AURORA_ENV("NSMBW_LOG_DISPLAY_LIST") != nullptr;
     return enabled;
 }
 

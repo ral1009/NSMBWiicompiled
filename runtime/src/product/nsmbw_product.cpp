@@ -10,6 +10,7 @@
 // through RuntimeCrash::FatalMissingGuestTarget (unimplemented HLE calls) rather than silently -
 // that failure, once we see it, is Phase 6's actual starting point.
 #include "abi_bridge.h"
+#include <aurora/env.hpp>
 #include "runtime_config.h"
 #include "settings_overlay.h"
 #include <cstring>
@@ -28,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cerrno>
 #include <exception>
 #include <filesystem>
 #include <iomanip>
@@ -37,7 +39,16 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <tlhelp32.h>
+#include <timeapi.h>
+#include <unordered_map>
+#include <string>
 #endif
+
+// Read by StartProfileSampler.
+extern std::atomic<uint64_t> g_viPresentedXfbFrames; // runtime/src/hle/vi.cpp
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+
 
 extern "C" void InitializeDataSections();
 extern "C" uint32_t g_dvdFstReservedBase;
@@ -414,6 +425,163 @@ void DiagSampleMainThreadNativePc(HANDLE mainThread, int afterSeconds) {
 }
 #endif
 
+#if defined(_WIN32)
+// Sampling profiler (NSMBW_PROFILE_SAMPLER=1, optional NSMBW_PROFILE_SAMPLER_OUT=<path>, default
+// nsmbw_profile.txt in the working directory). A host thread suspends every other thread in the
+// process about 1000 times a second, reads its RIP and resumes it, then buckets the sample by
+// (thread, module, RVA). Every 10 s the window's histogram is appended to the file, newest window
+// last, so a run that is killed from outside still leaves data, and a window can be picked that
+// lies entirely inside a level. Translated guest functions are exported as func_<guest addr>, so
+// `llvm-nm --defined-only NSMBWCompiled.exe` resolves an RVA (link VA - 0x140000000) to the guest
+// function it came from without debug info. Samples inside ntdll/kernelbase wait calls are that
+// thread's idle time. Costs nothing when the variable is unset.
+void StartProfileSampler() {
+    static const char* enabled = AURORA_ENV("NSMBW_PROFILE_SAMPLER");
+    if (enabled == nullptr || *enabled == '\0' || *enabled == '0') return;
+    const char* outEnv = AURORA_ENV("NSMBW_PROFILE_SAMPLER_OUT");
+    const std::string outPath = (outEnv && *outEnv) ? outEnv : "nsmbw_profile.txt";
+    std::thread([outPath] {
+        ::SetThreadDescription(::GetCurrentThread(), L"nsmbw profile sampler");
+        // Taken here, on the sampler thread: suspending oneself never returns.
+        const DWORD selfTid = ::GetCurrentThreadId();
+        std::fprintf(stderr, "[nsmbw] profile sampler: 1 kHz thread sampling, appending 10 s windows to %s\n", outPath.c_str());
+        std::fflush(stderr);
+        struct Sampled { DWORD tid; HANDLE handle; };
+        std::vector<Sampled> threads;
+        // One sample = a thread plus its call stack, leaf first (absolute addresses; converted to
+        // module+RVA only when a window is written).
+        constexpr int kMaxFrames = 16;
+        struct Key {
+            DWORD tid; uint8_t depth; uint64_t frames[kMaxFrames];
+            bool operator==(const Key& o) const {
+                return tid == o.tid && depth == o.depth && std::memcmp(frames, o.frames, depth * sizeof(uint64_t)) == 0;
+            }
+        };
+        struct KeyHash {
+            size_t operator()(const Key& k) const {
+                uint64_t h = k.tid * 0x9E3779B97F4A7C15ull;
+                for (int i = 0; i < k.depth; ++i) h = (h ^ k.frames[i]) * 0x100000001B3ull;
+                return static_cast<size_t>(h);
+            }
+        };
+        std::unordered_map<Key, uint32_t, KeyHash> counts;
+        std::unordered_map<uint64_t, std::string> moduleNames;
+        std::unordered_map<DWORD, std::string> threadNames;
+        auto nameModule = [&](uint64_t base) -> const std::string& {
+            auto it = moduleNames.find(base);
+            if (it != moduleNames.end()) return it->second;
+            char buf[MAX_PATH] = {};
+            if (base != 0) ::GetModuleFileNameA(reinterpret_cast<HMODULE>(base), buf, sizeof(buf));
+            const char* slash = std::strrchr(buf, '\\');
+            return moduleNames.emplace(base, std::string(slash ? slash + 1 : (buf[0] ? buf : "?"))).first->second;
+        };
+        auto enumerateThreads = [&] {
+            for (auto& t : threads) ::CloseHandle(t.handle);
+            threads.clear();
+            const DWORD pid = ::GetCurrentProcessId();
+            HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if (snap == INVALID_HANDLE_VALUE) return;
+            THREADENTRY32 te{}; te.dwSize = sizeof(te);
+            for (BOOL ok = ::Thread32First(snap, &te); ok; ok = ::Thread32Next(snap, &te)) {
+                if (te.th32OwnerProcessID != pid || te.th32ThreadID == selfTid) continue;
+                HANDLE h = ::OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+                if (!h) continue;
+                threads.push_back({te.th32ThreadID, h});
+                if (!threadNames.count(te.th32ThreadID)) {
+                    PWSTR desc = nullptr; std::string name;
+                    if (SUCCEEDED(::GetThreadDescription(h, &desc)) && desc) {
+                        for (PWSTR c = desc; *c; ++c) name.push_back(*c < 128 ? static_cast<char>(*c) : '?');
+                        ::LocalFree(desc);
+                    }
+                    threadNames.emplace(te.th32ThreadID, name);
+                }
+            }
+            ::CloseHandle(snap);
+        };
+        ::timeBeginPeriod(1);
+        auto windowStart = std::chrono::steady_clock::now();
+        auto lastEnumerate = windowStart - std::chrono::seconds(10);
+        uint64_t windowSamples = 0; int windowIndex = 0;
+        uint64_t windowStartFrames = g_viPresentedXfbFrames.load(std::memory_order_relaxed);
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastEnumerate >= std::chrono::seconds(2)) { enumerateThreads(); lastEnumerate = now; }
+            for (auto& t : threads) {
+                CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_FULL;
+                if (::SuspendThread(t.handle) == static_cast<DWORD>(-1)) continue;
+                Key key{}; key.tid = t.tid;
+                if (::GetThreadContext(t.handle, &ctx)) {
+                    // Walk the stack with the x64 unwind tables (.pdata) - the same data exception
+                    // dispatch uses - while the thread is still suspended. Nothing here allocates:
+                    // the suspended thread may be holding the heap lock.
+                    key.frames[key.depth++] = ctx.Rip;
+                    while (key.depth < kMaxFrames) {
+                        DWORD64 imageBase = 0;
+                        PRUNTIME_FUNCTION fn = ::RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+                        if (fn == nullptr) {
+                            // Leaf function without unwind info: the return address is at [rsp].
+                            if (ctx.Rsp == 0 || (ctx.Rsp & 7) != 0) break;
+                            ctx.Rip = *reinterpret_cast<const DWORD64*>(ctx.Rsp);
+                            ctx.Rsp += 8;
+                        } else {
+                            PVOID handlerData = nullptr; DWORD64 establisher = 0;
+                            ::RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, fn, &ctx, &handlerData, &establisher, nullptr);
+                        }
+                        if (ctx.Rip == 0) break;
+                        key.frames[key.depth++] = ctx.Rip;
+                    }
+                }
+                ::ResumeThread(t.handle);
+                if (key.depth != 0) ++counts[key];
+            }
+            ++windowSamples;
+            if (now - windowStart >= std::chrono::seconds(10)) {
+                std::vector<std::pair<Key, uint32_t>> rows(counts.begin(), counts.end());
+                std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                std::unordered_map<DWORD, uint32_t> perThread;
+                for (const auto& r : rows) perThread[r.first.tid] += r.second;
+                auto moduleOf = [](uint64_t addr) {
+                    HMODULE hm = nullptr;
+                    ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                         reinterpret_cast<LPCWSTR>(addr), &hm);
+                    return reinterpret_cast<uint64_t>(hm);
+                };
+                if (FILE* f = std::fopen(outPath.c_str(), "a")) {
+                    const double seconds = std::chrono::duration<double>(now - windowStart).count();
+                    const uint64_t frames = g_viPresentedXfbFrames.load(std::memory_order_relaxed) - windowStartFrames;
+                    std::fprintf(f, "== window %d: %llu sampling passes over %.1f s, %.1f presented frames/s, scene profile %u\n",
+                                 windowIndex, static_cast<unsigned long long>(windowSamples), seconds,
+                                 static_cast<double>(frames) / seconds, g_nsmbwCurrentSceneProfile);
+                    for (const auto& [tid, n] : perThread)
+                        std::fprintf(f, "thread %lu \"%s\" samples=%u\n", static_cast<unsigned long>(tid), threadNames[tid].c_str(), n);
+                    size_t emitted = 0;
+                    // "<count> tid=<tid> mod+0xrva<mod+0xrva<..." leaf first.
+                    for (const auto& r : rows) {
+                        if (emitted++ >= 20000) break;
+                        std::fprintf(f, "%u tid=%lu ", r.second, static_cast<unsigned long>(r.first.tid));
+                        for (int i = 0; i < r.first.depth; ++i) {
+                            const uint64_t addr = r.first.frames[i];
+                            const uint64_t base = moduleOf(addr);
+                            std::fprintf(f, "%s%s+0x%llx", i ? "<" : "", nameModule(base).c_str(),
+                                         static_cast<unsigned long long>(base ? addr - base : addr));
+                        }
+                        std::fputc('\n', f);
+                    }
+                    std::fclose(f);
+                } else {
+                    std::fprintf(stderr, "[nsmbw] profile sampler: cannot open %s (errno %d)\n", outPath.c_str(), errno);
+                }
+                std::fprintf(stderr, "[nsmbw] profile sampler: window %d written (%llu passes)\n", windowIndex, static_cast<unsigned long long>(windowSamples));
+                std::fflush(stderr);
+                counts.clear(); windowSamples = 0; ++windowIndex; windowStart = now;
+                windowStartFrames = g_viPresentedXfbFrames.load(std::memory_order_relaxed);
+            }
+            ::Sleep(1);
+        }
+    }).detach();
+}
+#endif
+
 void StartDiagWatchdog(std::atomic<bool>& finished) {
 #if defined(_WIN32)
     HANDLE mainThreadHandle = nullptr;
@@ -500,14 +668,14 @@ namespace {
 constexpr const char* kCrashMarkerName = ".last_run_unclean";
 
 void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
-    if (std::getenv("NSMBW_KEEP_STATE") != nullptr) {
+    if (AURORA_ENV("NSMBW_KEEP_STATE") != nullptr) {
         std::printf("[nsmbw] NSMBW_KEEP_STATE set: keeping save, config and pipeline cache from the previous run.\n");
         return;
     }
     std::error_code ec;
 
     const auto saveDir = RuntimeConfigFile::ApplicationDataDirectory() / "NAND" / "title" / "00010004" / "534d4e50";
-    if (std::getenv("NSMBW_RESET_SAVE") != nullptr && std::filesystem::exists(saveDir, ec)) {
+    if (AURORA_ENV("NSMBW_RESET_SAVE") != nullptr && std::filesystem::exists(saveDir, ec)) {
         const auto removed = std::filesystem::remove_all(saveDir, ec);
         std::printf("[nsmbw] Reset: removed NSMBW NAND save (%llu entries) at %s\n",
                     static_cast<unsigned long long>(removed), saveDir.string().c_str());
@@ -618,7 +786,7 @@ int main() {
     // boot progresses past WiiStrap/ControllerInformation at all, to determine what's actually
     // reachable, independent of (and without yet explaining) why the auto-advance timer itself
     // isn't firing. Not a permanent fix. Remove once the real timer/state-machine issue is found.
-    if (std::getenv("NSMBW_AUTO_SKIP_STRAP") != nullptr) {
+    if (AURORA_ENV("NSMBW_AUTO_SKIP_STRAP") != nullptr) {
         constexpr uint32_t kGameFlagAddr = 0x8042A260u;
         constexpr uint32_t kGameFlagAutoSkip = 1u << 19;
         try {
@@ -664,6 +832,9 @@ int main() {
     // "terminating due to uncaught exception" abort).
     std::atomic<bool> diagFinished{false};
     StartDiagWatchdog(diagFinished);
+#if defined(_WIN32)
+    StartProfileSampler();
+#endif
     try {
         InvokeIndirectCpu(kNsmbwEntryAddress, &cpu);
         diagFinished.store(true, std::memory_order_relaxed);

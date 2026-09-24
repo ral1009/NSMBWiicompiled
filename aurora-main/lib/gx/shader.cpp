@@ -1,4 +1,5 @@
 #include "../gfx/common.hpp"
+#include <aurora/env.hpp>
 
 #include "../internal.hpp"
 #include "../webgpu/gpu.hpp"
@@ -2053,10 +2054,10 @@ fn fs_main(in: VertexOutput) -> {9} {{{6}{5}
                                         fragmentFnPre, vtxXfrAttrsPre, uniformPre, fragmentReturnType,
                                         fragmentReturn);
   // TEMPORARY DIAGNOSTIC: NSMBW flat-screen isolation. Remove before merging.
-  if (std::getenv("NSMBW_DUMP_SHADERS") != nullptr) {
+  if (AURORA_ENV("NSMBW_DUMP_SHADERS") != nullptr) {
     static std::atomic<int> dumped{0};
     if (dumped.fetch_add(1, std::memory_order_relaxed) < 12) {
-      const auto path = fmt::format("{}/nsmbw_shader_{:x}.wgsl", std::getenv("NSMBW_DUMP_SHADERS"), hash);
+      const auto path = fmt::format("{}/nsmbw_shader_{:x}.wgsl", AURORA_ENV("NSMBW_DUMP_SHADERS"), hash);
       if (FILE* f = std::fopen(path.c_str(), "wb")) {
         std::fwrite(shaderSource.data(), 1, shaderSource.size(), f);
         std::fclose(f);

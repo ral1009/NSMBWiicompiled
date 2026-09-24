@@ -36,6 +36,8 @@
 // Lives here, not in the shared runtime tree, because the translator's override-skip detection
 // only scans this project's native_registration_root (projects/nsmbw/native).
 #include "hle_stubs.h"
+#include "memory_access.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -92,6 +94,7 @@ extern "C" void GX__SetBlendMode_8017277c(uint32_t t, uint32_t s, uint32_t d, ui
 extern "C" void GX__SetColorUpdate_801727cc(uint32_t en);
 extern "C" void GX__SetAlphaUpdate_801727f8(uint32_t en);
 extern "C" void GX__SetZMode_80172824(uint32_t ce, uint32_t f, uint32_t ue);
+extern "C" void GX__SetDither_80172930(uint32_t d);
 // GXSetDispCopySrc/Dst: on real hardware these only cache a BP command word into a guest dirty-
 // state struct ([SDA2-0x4ef8] -> +0x230/+0x234), flushed to the FIFO later by __GXSetDirtyState.
 // Confirmed live: NSMBW's GXSetDispCopySrc (0x801C5A60) runs exactly once with correct args
@@ -148,6 +151,38 @@ PPC_NATIVE_OVERRIDE_VOID(801C8F00, GX__SetBlendMode_8017277c, (uint32_t t, uint3
 PPC_NATIVE_OVERRIDE_VOID(801C8F50, GX__SetColorUpdate_801727cc, (uint32_t en), (en));
 PPC_NATIVE_OVERRIDE_VOID(801C8F80, GX__SetAlphaUpdate_801727f8, (uint32_t en), (en));
 PPC_NATIVE_OVERRIDE_VOID(801C8FB0, GX__SetZMode_80172824, (uint32_t ce, uint32_t f, uint32_t ue), (ce, f, ue));
+// GXSetDither shares BP 0x41 (cmode0) with GXSetBlendMode / GXSetColorUpdate / GXSetAlphaUpdate, all
+// three bound natively above, so aurora's __gx->cmode0 is the copy those keep current. Left unbound,
+// the guest body (cmode0 = (__GXData+0x220 & ~4) | dither << 2, then a raw BP write) re-sent the
+// *guest's* copy of the whole register - which no native setter ever updates, so blend none and
+// colour/alpha update off. Every liquid renderer routine (0x8000AFA0, 0x8000B530..0x8000CA50, reached
+// from AC_BG_WATER/LAVA/POISON's m3d::proc_c draw slots) calls it after setting blend and colour
+// update: NSMBW_LOG_LIQUID showed their draws with colorUpdate=0 alphaUpdate=0 blend=0, so water,
+// lava and poison drew nothing. Same register-sharing trap as the viewport/scissor bookkeeping.
+// DIAGNOSTIC A/B (NSMBW_DITHER_LEGACY=1): for callers outside the liquid renderer, reproduce the old
+// behaviour - the guest body re-sending the guest's own cmode0 copy (__GXData+0x220) - to find which
+// non-liquid GXSetDither caller changed appearance with this binding.
+extern "C" void NsmbwSetDither_801C90D0(uint32_t d) {
+    static const bool legacy = AURORA_ENV("NSMBW_DITHER_LEGACY") != nullptr;
+    if (legacy) {
+        const CpuContext* c = TryGetCpuContext();
+        const uint32_t lr = c ? static_cast<uint32_t>(c->lr) : 0u;
+        if (!(lr >= 0x8000AFA0u && lr < 0x8000D170u)) {
+            uint32_t gd = 0;
+            if (Memory::TryRead32(0x8042E468u, gd) && gd != 0) {
+                uint32_t cmode0 = Memory::Read32(gd + 0x220u);
+                cmode0 = (cmode0 & ~4u) | ((d & 1u) << 2);
+                GX_HLE_FIFO_Write8(0x61);
+                GX_HLE_FIFO_Write32(cmode0);
+                Memory::Write32(gd + 0x220u, cmode0);
+                Memory::Write16(gd + 2u, 0);
+                return;
+            }
+        }
+    }
+    GX__SetDither_80172930(d);
+}
+PPC_NATIVE_OVERRIDE_VOID(801C90D0, NsmbwSetDither_801C90D0, (uint32_t d), (d));
 PPC_NATIVE_OVERRIDE_VOID(801C5A60, GX__SetDispCopySrc_8016f438, (uint32_t l, uint32_t t, uint32_t w, uint32_t h), (l, t, w, h));
 // GXSetDispCopyDst's NSMBW address is NOT bound here: the nearby candidate (0x801C5AE0) takes
 // only one register argument (r3) in its translated disassembly, not the two GXSetDispCopyDst

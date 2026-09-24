@@ -8,6 +8,12 @@
 namespace aurora::gfx::efb_ram {
 
 void schedule(void* dest, uint32_t width, uint32_t height, GXTexFmt format, TextureHandle texture) noexcept;
+// A copy of a width x height rectangle into a wider image (GXSetTexCopyDst width = strideWidth, the
+// SDK way to write into part of an existing texture, e.g. a tile-animation frame into a tileset
+// atlas). The texture that samples it is uploaded from guest RAM, so the result must land there:
+// always read back frame-latently, block rows scattered at the destination image's stride.
+void schedule_strided(void* dest, uint32_t width, uint32_t height, uint32_t strideWidth, GXTexFmt format,
+                      TextureHandle texture) noexcept;
 bool has_pending(void* dest = nullptr) noexcept;
 bool prepare_downloads(void* dest = nullptr) noexcept;
 void encode_downloads(const wgpu::CommandEncoder& encoder, void* dest = nullptr) noexcept;

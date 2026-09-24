@@ -1,4 +1,5 @@
 #include "shader_info.hpp"
+#include <aurora/env.hpp>
 
 #include <algorithm>
 #include <array>
@@ -621,7 +622,7 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
   // draw, it would inject unexpected color independent of the bound texture. This dumps every
   // textured draw's TEV stage 0 colorPass/alphaPass and the current colorRegs[0..3] values, for
   // correlation against NSMBW_LOG_PANE_IDENTITY's pane names. Remove once resolved.
-  if (std::getenv("NSMBW_LOG_TEV_REGS") != nullptr && info.sampledTextures.any()) {
+  if (AURORA_ENV("NSMBW_LOG_TEV_REGS") != nullptr && info.sampledTextures.any()) {
     static int tevRegsLogged = 0;
     if (tevRegsLogged < 60) {
       ++tevRegsLogged;
@@ -651,7 +652,7 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
     // both confirmed correct, and vertex source data looks plausible for a centered NW4R layout
     // space, so this checks whether the modelview/projection transform is what's misplacing
     // otherwise-correct content on screen. Remove once resolved.
-    if (std::getenv("NSMBW_LOG_MVP") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_MVP") != nullptr) {
       static int mvpLogged = 0;
       if (mvpLogged < 10) {
         ++mvpLogged;

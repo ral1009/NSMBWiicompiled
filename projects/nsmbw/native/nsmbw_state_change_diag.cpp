@@ -23,6 +23,7 @@
 // sStateID_c (include/game/sLib/s_StateID.hpp): vtable +0, mpName +4; sFStateID_c<T> derives
 // from it with the same layout, and every STATE_DEFINE name is "<class>::StateID_<name>".
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -44,7 +45,7 @@ constexpr uint32_t kStateIdNameOff = 0x4u;
 
 int LogMode() { // 0 = off, 1 = scenes only, 2 = everything
     static const int mode = [] {
-        const char* v = std::getenv("NSMBW_LOG_STATE_CHANGES");
+        const char* v = AURORA_ENV("NSMBW_LOG_STATE_CHANGES");
         if (!v) return 0;
         return std::strcmp(v, "all") == 0 ? 2 : 1;
     }();

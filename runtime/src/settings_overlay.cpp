@@ -114,6 +114,26 @@ struct ControllerButtonItem {
     PADButton padButton;
 };
 
+#if defined(MKW_RUNTIME_PRODUCT_NSMBW)
+// NSMBW reads a sideways Wii Remote, not a GameCube pad. The PAD slots below are only an
+// intermediate: projects/nsmbw/native/nsmbw_kpad_overrides.cpp (TranslatePadToWpad) turns each one
+// into a Wii Remote input, so the menu names the slot after that input. Config keys are unchanged,
+// so existing bindings keep their meaning.
+constexpr std::array<ControllerButtonItem, PAD_BUTTON_COUNT> kControllerButtons = {{
+    {"a", "A (menus)", PAD_BUTTON_A},
+    {"b", "B", PAD_BUTTON_B},
+    {"x", "1 (run / carry / back)", PAD_BUTTON_X},
+    {"y", "2 (jump / confirm)", PAD_BUTTON_Y},
+    {"start", "+ (pause)", PAD_BUTTON_START},
+    {"z", "- (-)", PAD_TRIGGER_Z},
+    {"l", "Shake (spin jump)", PAD_TRIGGER_L},
+    {"r", "Shake (spin jump), alt", PAD_TRIGGER_R},
+    {"up", "Up", PAD_BUTTON_UP},
+    {"down", "Down", PAD_BUTTON_DOWN},
+    {"left", "Left", PAD_BUTTON_LEFT},
+    {"right", "Right", PAD_BUTTON_RIGHT},
+}};
+#else
 constexpr std::array<ControllerButtonItem, PAD_BUTTON_COUNT> kControllerButtons = {{
     {"a", "A", PAD_BUTTON_A},
     {"b", "B", PAD_BUTTON_B},
@@ -128,6 +148,7 @@ constexpr std::array<ControllerButtonItem, PAD_BUTTON_COUNT> kControllerButtons 
     {"left", "D-pad Left", PAD_BUTTON_LEFT},
     {"right", "D-pad Right", PAD_BUTTON_RIGHT},
 }};
+#endif
 
 struct NativeButtonItem {
     const char* configName;

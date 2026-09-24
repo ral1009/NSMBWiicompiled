@@ -1,4 +1,5 @@
 #include "gpu.hpp"
+#include <aurora/env.hpp>
 
 #include <array>
 #include <algorithm>
@@ -232,7 +233,7 @@ const TextureWithSampler& present_source() noexcept {
 
 PresentSource current_present_source() noexcept {
   // TEMPORARY DIAGNOSTIC: NSMBW black-screen isolation. Remove before merging.
-  if (std::getenv("NSMBW_LOG_PRESENT_SRC") != nullptr) {
+  if (AURORA_ENV("NSMBW_LOG_PRESENT_SRC") != nullptr) {
     Log.warn("[NSMBW_DIAG] current_present_source active={} bindGroup={} overrideTex={}",
              g_presentSourceOverrideActive, static_cast<const void*>(g_presentSourceOverrideBindGroup.Get()),
              static_cast<const void*>(g_presentSourceOverrideTexture.Get()));
@@ -400,7 +401,7 @@ void nsmbw_diag_peek_texture(const wgpu::CommandEncoder& encoder, const wgpu::Te
           // equally consistent with "correct busy screen" and "blank white background plus a
           // little incidental content" - only actually seeing it settles which). Remove once
           // resolved.
-          if (std::getenv("NSMBW_GPU_PEEK_DUMP") != nullptr) {
+          if (AURORA_ENV("NSMBW_GPU_PEEK_DUMP") != nullptr) {
             char path[256];
             std::snprintf(path, sizeof(path),
                           "C:/Users/ryanl/AppData/Local/Temp/claude/C--Users-ryanl-Wiicompiled/"

@@ -1,4 +1,5 @@
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 #include "runtime_log.h"
 
 #include <cstddef>
@@ -147,7 +148,7 @@ TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr) {
             resolvedFormat = word5;
         }
         meta.format = resolvedFormat;
-        if (std::getenv("NSMBW_TEX_PEEK") != nullptr) {
+        if (AURORA_ENV("NSMBW_TEX_PEEK") != nullptr) {
             static int dumped = 0;
             if (dumped < 20) {
                 ++dumped;

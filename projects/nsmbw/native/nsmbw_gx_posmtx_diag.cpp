@@ -26,6 +26,7 @@
 // New address -> requires a shard-manifest regen (Translator.Cli emit-nsmbw-build-shards) same as
 // every other new override this session.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -48,7 +49,7 @@ extern "C" void GXLoadPosMtxImm_Fixed_801C9A80(uint32_t ma, uint32_t id) {
     // NSMBW_LOG_ZERO_MTX: in steady-state STAGE most PNMTX0 loads carry an all-zero matrix
     // (aurora-side NSMBW_LOG_PNMTX0). Report the guest return address of such loads so the code
     // computing them can be identified; distinct callers only.
-    if (std::getenv("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u && id == 0u) {
+    if (AURORA_ENV("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u && id == 0u) {
         static uint64_t seen = 0;
         ++seen;
         const bool allZero = m[0][0] == 0.f && m[1][1] == 0.f && m[2][2] == 0.f && m[0][3] == 0.f && m[1][3] == 0.f;
@@ -65,7 +66,7 @@ extern "C" void GXLoadPosMtxImm_Fixed_801C9A80(uint32_t ma, uint32_t id) {
             }
         }
     }
-    if (std::getenv("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
+    if (AURORA_ENV("NSMBW_LOG_MTX_LOADS") != nullptr && g_nsmbwCurrentSceneProfile == 5u) {
         static int logged = 0;
         if (logged < 12) {
             ++logged;

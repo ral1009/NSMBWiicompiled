@@ -33,6 +33,7 @@
 // nsmbw_check_child_create_diag.cpp's tree walk), which is how this identifies "this specific
 // LASTACTOR belongs to GAME_SETUP" without needing fBase_c/fManager_c's full field layout.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -127,6 +128,12 @@ extern "C" uint32_t FBaseMake_Diag_80162BB0(uint32_t profName, uint32_t connectP
     if (res != 0) {
         cpu.gpr[3] = res;
         InvokeIndirectCpu(kRunCreateAddr, &cpu);
+    }
+
+    // NSMBW_LOG_LIQUID: AC_BG_WATER/LAVA/POISON/SAND/CLOUD are profiles 596-600.
+    static const bool logLiquid = AURORA_ENV("NSMBW_LOG_LIQUID") != nullptr;
+    if (logLiquid && profName >= 596u && profName <= 600u) {
+        std::fprintf(stderr, "[nsmbw][liquid] created profile %u -> actor 0x%08X (param=0x%08X)\n", profName, res, param);
     }
 
     if (profName == kLastActorProfile) {

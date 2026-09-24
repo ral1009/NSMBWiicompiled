@@ -25,14 +25,17 @@ using webgpu::g_instance;
 // A CPU-consumed EFB copy this small is the lens-flare occlusion probe (4x4 Z24X8, 64 bytes).
 // Resolving it synchronously stalls the producer and kills interpolation, so read it back async.
 constexpr size_t kAsyncReadbackMaxBytes = 256;
-// Each destination keeps its readback buffer forever. Only a handful are expected, and the cap
-// stops an unexpected pattern of one-shot destinations from leaking GPU buffers.
-constexpr size_t kMaxAsyncSlots = 32;
+// Each destination keeps its readback buffer forever. The cap stops an unexpected pattern of one-shot
+// destinations from leaking GPU buffers. Strided tile-animation copies use one slot per animated
+// tile per tileset (NSMBW 1-1: six), and slots are small (a 32x32 frame is an 8 KiB buffer).
+constexpr size_t kMaxAsyncSlots = 256;
 
 struct PendingCopy {
   void* dest = nullptr;
   uint32_t width = 0;
   uint32_t height = 0;
+  // Destination image width when the copy writes a sub-rectangle of a wider image; 0 = contiguous.
+  uint32_t strideWidth = 0;
   GXTexFmt format = GX_TF_RGBA8;
   TextureHandle texture;
   TextureHandle nativeTexture;
@@ -64,6 +67,7 @@ struct AsyncSlot {
   GXTexFmt format = GX_TF_RGBA8;
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t strideWidth = 0;
   uint32_t hostWidth = 0;
   uint32_t hostHeight = 0;
   HostPixelOrder order = HostPixelOrder::RGBA;
@@ -137,7 +141,28 @@ void complete_async_slot(void* dest, wgpu::MapAsyncStatus status, wgpu::StringVi
   auto& slot = it->second;
   if (status == wgpu::MapAsyncStatus::Success) {
     const auto* pixels = static_cast<const uint8_t*>(slot.buffer.GetConstMappedRange(0, slot.bufferSize));
-    if (pixels != nullptr) {
+    if (pixels != nullptr && slot.strideWidth > slot.width) {
+      // Sub-rectangle of a wider image: encode the rectangle, then place each row of tiles at the
+      // destination image's row pitch (a GX texture is stored as rows of 4x4/8x4/8x8 blocks, so
+      // one block row of a W-wide image is encoded_size(fmt, W, 1) bytes).
+      const size_t packedSize = encoded_size(slot.format, slot.width, slot.height);
+      const size_t rowBytes = encoded_size(slot.format, slot.width, 1);
+      const size_t strideBytes = encoded_size(slot.format, slot.strideWidth, 1);
+      std::vector<uint8_t> packed(packedSize);
+      if (rowBytes != 0 && packedSize != 0 &&
+          encode(packed.data(), packedSize, slot.format, slot.width, slot.height, pixels, slot.hostWidth,
+                 slot.hostHeight, slot.bytesPerRow, slot.order)) {
+        const size_t rows = packedSize / rowBytes;
+        auto* dst = static_cast<uint8_t*>(slot.dest);
+        for (size_t row = 0; row < rows; ++row) {
+          std::memcpy(dst + row * strideBytes, packed.data() + row * rowBytes, rowBytes);
+        }
+        notify_guest_write(slot.dest, (rows - 1) * strideBytes + rowBytes);
+      } else {
+        Log.error("Failed to encode strided EFB RAM copy format=0x{:x} size={}x{} stride={}",
+                  static_cast<unsigned>(slot.format), slot.width, slot.height, slot.strideWidth);
+      }
+    } else if (pixels != nullptr) {
       // Writes guest RAM from the event-queue thread while the guest may be reading it. The only
       // consumer min/maxes depth for a fade factor, so a torn tile just mixes two frames' depths.
       const size_t outputSize = encoded_size(slot.format, slot.width, slot.height);
@@ -216,6 +241,47 @@ void schedule(void* dest, uint32_t width, uint32_t height, GXTexFmt format, Text
     *it = std::move(request);
   } else {
     list.push_back(std::move(request));
+  }
+}
+
+void schedule_strided(void* dest, uint32_t width, uint32_t height, uint32_t strideWidth, GXTexFmt format,
+                      TextureHandle texture) noexcept {
+  if (dest == nullptr || width == 0 || height == 0 || strideWidth < width || !texture) {
+    return;
+  }
+  if (!supports_format(format)) {
+    Log.fatal("Unsupported CPU-visible EFB copy format 0x{:x}", static_cast<unsigned>(format));
+  }
+  PendingCopy request{
+      .dest = dest,
+      .width = width,
+      .height = height,
+      .strideWidth = strideWidth,
+      .format = format,
+      .texture = std::move(texture),
+  };
+  if (is_offscreen()) {
+    // Offscreen copies never reach the sealed frame's encode (see schedule); leave the lazy path.
+    request.strideWidth = 0;
+    schedule(dest, width, height, format, std::move(request.texture));
+    return;
+  }
+  std::lock_guard lock{g_asyncMutex};
+  if (!g_asyncSlots.contains(dest)) {
+    if (g_asyncSlots.size() >= kMaxAsyncSlots) {
+      Log.warn("Strided EFB copy slots exhausted; dropping readback to {}", dest);
+      return;
+    }
+    // Unlike the probe path, leave RAM alone until the first readback lands: it still holds the
+    // image's original contents (the tile frame shipped in the tileset), a better placeholder.
+    g_asyncSlots.try_emplace(dest);
+  }
+  if (auto it = std::find_if(g_asyncPending.begin(), g_asyncPending.end(),
+                             [dest](const PendingCopy& pending) { return pending.dest == dest; });
+      it != g_asyncPending.end()) {
+    *it = std::move(request);
+  } else {
+    g_asyncPending.push_back(std::move(request));
   }
 }
 
@@ -399,6 +465,7 @@ void encode_async_downloads(const wgpu::CommandEncoder& encoder) noexcept {
     slot.format = pending.format;
     slot.width = pending.width;
     slot.height = pending.height;
+    slot.strideWidth = pending.strideWidth;
     slot.hostWidth = texture->size.width;
     slot.hostHeight = texture->size.height;
     slot.order = texture_pixel_order(texture);

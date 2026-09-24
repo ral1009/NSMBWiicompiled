@@ -14,6 +14,7 @@
 // (ScnMdlSimple::mpViewPosMtxArray, the array bound for drawing) stays zero. This logs whether the
 // scene's view pass runs at all and samples one palette before/after it.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -42,7 +43,7 @@ constexpr uint32_t kScratchMtx = 0xE0003C10u;
 } // namespace
 
 extern "C" void M3dCalcView_Diag_80164EA0(uint32_t idx) {
-    static const bool logEnabled = std::getenv("NSMBW_LOG_SCNOBJ") != nullptr;
+    static const bool logEnabled = AURORA_ENV("NSMBW_LOG_SCNOBJ") != nullptr;
     static uint64_t calls = 0;
     ++calls;
     const bool doLog = logEnabled && g_nsmbwCurrentSceneProfile == 5u && (calls <= 4 || (calls % 120) == 0);

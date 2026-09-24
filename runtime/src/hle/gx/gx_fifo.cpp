@@ -1,4 +1,5 @@
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
@@ -89,7 +90,7 @@ void FifoDesyncHistPush(u32 value, uint32_t count) {
 }
 
 bool FifoDesyncEnabled() {
-    static const bool enabled = std::getenv("NSMBW_LOG_FIFO_DESYNC") != nullptr;
+    static const bool enabled = AURORA_ENV("NSMBW_LOG_FIFO_DESYNC") != nullptr;
     return enabled;
 }
 
@@ -260,7 +261,7 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     ApplyAuroraVtxStateForRawBegin(vtxFmt);
     EnsureDefaultGxAlphaCompare();
 
-    if (std::getenv("NSMBW_LOG_VERTS") != nullptr && g_hleGxState.vtxDesc[11] != GX_NONE) {
+    if (AURORA_ENV("NSMBW_LOG_VERTS") != nullptr && g_hleGxState.vtxDesc[11] != GX_NONE) {
         static int logged = 0;
         if (logged < 60000) {
             ++logged;
@@ -363,7 +364,7 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     // (NSMBW_DUMP_TEXTURES), so this checks whether the quad's own width/height and UV span match
     // the source texture's size, or whether it's being stretched/tiled onto a much larger quad.
     // Remove once resolved.
-    if (std::getenv("NSMBW_LOG_DRAW_POS") != nullptr && vtxCount <= 8 &&
+    if (AURORA_ENV("NSMBW_LOG_DRAW_POS") != nullptr && vtxCount <= 8 &&
         g_hleGxState.vtxDesc[13] != GX_NONE) {
         static int posLogged = 0;
         if (posLogged < 200) {
@@ -413,7 +414,7 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
                     // which - unlike vertex submission - genuinely is how NSMBW's GXSetTevColorIn/
                     // AlphaIn/Order calls reach aurora, since those don't have their own HLE
                     // override on this project's addresses). Remove once resolved.
-                    if (std::getenv("NSMBW_LOG_DRAW_TEV") != nullptr) {
+                    if (AURORA_ENV("NSMBW_LOG_DRAW_TEV") != nullptr) {
                         // NSMBW_DRAW_TEVREG: the TEV constant color registers (C0-C3, set via
                         // GXSetTevColor) are separate from per-vertex CLR0 - if a combiner's alpha
                         // input references a TEV reg (not vertex/texture alpha), a zeroed register
@@ -507,7 +508,7 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     // every DISTINCT CLR0 corner color seen during the BOOT scene (deduplicated, first-seen order)
     // so the real candidate (a dark/colored quad, not this white one) can be identified by RGBA
     // instead of guessing. Remove once resolved.
-    if (std::getenv("NSMBW_LOG_CLR0_HIST") != nullptr &&
+    if (AURORA_ENV("NSMBW_LOG_CLR0_HIST") != nullptr &&
         (g_nsmbwCurrentSceneProfile == 0 || g_nsmbwCurrentSceneProfile == 5)) {
         uint32_t vertexSize = 0;
         if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0 &&
@@ -584,7 +585,7 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
             }
         }
     }
-    if (std::getenv("NSMBW_FORCE_ALPHA_255_V2") != nullptr) {
+    if (AURORA_ENV("NSMBW_FORCE_ALPHA_255_V2") != nullptr) {
         uint32_t vertexSize = 0;
         if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0 &&
             static_cast<uint64_t>(vertexSize) * vtxCount <= vtxDataBytes) {
@@ -631,7 +632,7 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     // they happen to hit the same exact byte pattern for a legitimate reason. Purely a diagnostic to
     // see whether forcing alpha for just this narrow pattern reveals the WiiStrap boot text/
     // illustration; not a proposed fix either way. Remove once resolved.
-    if (std::getenv("NSMBW_FORCE_WIISTRAP_ALPHA") != nullptr && g_nsmbwCurrentSceneProfile == 0) {
+    if (AURORA_ENV("NSMBW_FORCE_WIISTRAP_ALPHA") != nullptr && g_nsmbwCurrentSceneProfile == 0) {
         uint32_t vertexSize = 0;
         if (TryGetRawDirectFifoVertexSize(vtxFmt, vertexSize) && vertexSize != 0 &&
             static_cast<uint64_t>(vertexSize) * vtxCount <= vtxDataBytes) {
@@ -1060,7 +1061,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             // DIAGNOSTIC (temporary): NSMBW_LOG_ZERO_MTX - raw guest XF packets that load an all-zero
             // 3x4 matrix into PNMTX0 (XF addr 0, 12 words), with the guest return address, to find
             // the code writing them straight to the gather pipe. Distinct callers only.
-            if (std::getenv("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u &&
+            if (AURORA_ENV("NSMBW_LOG_ZERO_MTX") != nullptr && g_nsmbwCurrentSceneProfile == 5u &&
                 ReadBE16(data + 3) < 0x78u) {
                 const uint32_t nWords = static_cast<uint32_t>(countWords) + 1u;
                 bool allZero = true;
@@ -1130,7 +1131,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
                 // the GXLoadTexObj lines gx_texture.cpp prints under the same variable, so the guest's
                 // real load->draw order is visible (is the texture bound before or after the draw?).
                 {
-                    static const char* s_env = std::getenv("NSMBW_LOG_TEXFMT");
+                    static const char* s_env = AURORA_ENV("NSMBW_LOG_TEXFMT");
                     static const long s_scene = s_env && *s_env ? std::strtol(s_env, nullptr, 10) : -1L;
                     static int s_logged = 0;
                     if (s_env && (s_scene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_scene)) && s_logged < 400) {

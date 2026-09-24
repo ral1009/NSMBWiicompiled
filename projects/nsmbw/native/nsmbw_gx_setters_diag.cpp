@@ -39,6 +39,7 @@
 // needed (unlike g_nsmbwCurrentSceneProfile, which nsmbw_create_next_scene_diag.cpp DOES define
 // extern "C", so gx_fifo.cpp's own redeclaration matches that instead).
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "memory.h"
 #include <dolphin/gx/GXTransform.h>
@@ -59,7 +60,7 @@ extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 // gated on NSMBW_LOG_VIEWPORT_SCISSOR so this stays silent otherwise.
 namespace {
 bool ShouldLog() {
-    return std::getenv("NSMBW_LOG_VIEWPORT_SCISSOR") != nullptr && g_nsmbwCurrentSceneProfile == 5u;
+    return AURORA_ENV("NSMBW_LOG_VIEWPORT_SCISSOR") != nullptr && g_nsmbwCurrentSceneProfile == 5u;
 }
 
 // Guest-side bookkeeping the SDK bodies leave in __GXData (bug class 3 in CLAUDE.md: an override

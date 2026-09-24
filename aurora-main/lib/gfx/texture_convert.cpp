@@ -1,4 +1,5 @@
 #include "texture_convert.hpp"
+#include <aurora/env.hpp>
 
 #include "../internal.hpp"
 #include "../gx/gx_fmt.hpp"
@@ -624,8 +625,8 @@ ConvertedTexture convert_texture(u32 format, uint32_t width, uint32_t height, ui
   // garbage - used to localize a garbled on-screen result to texture decode vs. vertex/UV/blend
   // state. Remove once resolved.
   // NSMBW_DUMP_TEXTURES=<directory>; NSMBW_DUMP_TEXTURES_SCENE=<profile> restricts to one scene.
-  static const char* s_dumpDir = std::getenv("NSMBW_DUMP_TEXTURES");
-  static const char* s_dumpSceneEnv = std::getenv("NSMBW_DUMP_TEXTURES_SCENE");
+  static const char* s_dumpDir = AURORA_ENV("NSMBW_DUMP_TEXTURES");
+  static const char* s_dumpSceneEnv = AURORA_ENV("NSMBW_DUMP_TEXTURES_SCENE");
   static const long s_dumpScene = s_dumpSceneEnv ? std::strtol(s_dumpSceneEnv, nullptr, 10) : -1L;
   if (s_dumpDir != nullptr && *s_dumpDir && !converted.empty() &&
       (s_dumpScene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_dumpScene))) {

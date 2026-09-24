@@ -16,6 +16,8 @@
 // this same accessor benefits too), consistent with the SelectThread fix's own approach of running
 // VI's real retrace-advance logic rather than inventing a fake counter increment.
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
+#include "fiber_manager.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
@@ -44,7 +46,7 @@ constexpr uint32_t kWpadButton2 = 1u << 8;
 // 0x80321BD0 there. This samples that word once per VI tick and reports the tick where it
 // changes, plus the scene, to bracket what overwrote it.
 void NsmbwWatchWmObject() {
-    static const bool enabled = std::getenv("NSMBW_WATCH_WMOBJ") != nullptr;
+    static const bool enabled = AURORA_ENV("NSMBW_WATCH_WMOBJ") != nullptr;
     if (!enabled) return;
     static uint32_t lastObj = 0, lastVtable = 0xFFFFFFFFu;
     uint32_t obj = 0, vtable = 0xFFFFFFFFu;
@@ -63,8 +65,60 @@ void NsmbwWatchWmObject() {
 void NsmbwDiagWatch() {
     NsmbwWatchWmObject();
 
+    // NSMBW_LOG_COIN: dCoin_c::execute (0x8008DED0, called from d_basesNP 0x80830720) steps the
+    // shared coin angle every frame; m_frame @ r13-0x5812 = 0x8042A16E, m_shapeAngle.y @
+    // r13-0x5820+2 = 0x8042A162. Static coins with a frozen value here = execute not running.
+    static const bool logCoin = AURORA_ENV("NSMBW_LOG_COIN") != nullptr;
+    static int coinTicks = 0;
+    if (logCoin && (++coinTicks % 60) == 0) {
+        uint32_t frame = 0, angleY = 0;
+        try {
+            frame = Memory::Read8(0x8042A16Eu);
+            angleY = Memory::Read16(0x8042A162u);
+        } catch (...) {}
+        CpuContext* liveCtx = TryGetCpuContext();
+        std::fprintf(stderr, "[nsmbw][coin] thread=%08X gqr3=%08X scene=%u m_frame=%u m_shapeAngle.y=0x%04X\n",
+                     Fiber::GuestFiberManager::GetCurrentGuestThread(), liveCtx ? liveCtx->gqr[3] : 0xDEADu, g_nsmbwCurrentSceneProfile, frame, angleY);
+    }
+
+    // NSMBW_DUMP_PROFILES: once the profile table exists, print fProfile entries 596-598
+    // (AC_BG_WATER / AC_BG_LAVA / AC_BG_POISON, index = position in PROFILE_NAME_e with BOOT = 0)
+    // as {mpClassInit, mExecuteOrder, mDrawOrder}. fProfListMg_c::m_data_p @ 0x8042A698.
+    static const bool dumpProfiles = AURORA_ENV("NSMBW_DUMP_PROFILES") != nullptr;
+    static bool profilesDumped = false;
+    if (dumpProfiles && !profilesDumped) {
+        uint32_t list = 0;
+        Memory::TryRead32(0x8042A698u, list);
+        if (list != 0) {
+            profilesDumped = true;
+            for (uint32_t id = 594; id <= 600; ++id) {
+                uint32_t prof = 0, init = 0, orders = 0;
+                Memory::TryRead32(list + id * 4u, prof);
+                if (prof != 0) {
+                    Memory::TryRead32(prof, init);
+                    Memory::TryRead32(prof + 4u, orders);
+                }
+                if (id == 600) {
+                    // AC_BG_WATER's two m3d::proc_c vtables (stored by its ctor, 0x807B40A0).
+                    for (uint32_t vt : {0x80950C28u, 0x80950C48u}) {
+                        uint32_t w[8] = {};
+                        for (int i = 0; i < 8; ++i) Memory::TryRead32(vt + 4u * i, w[i]);
+                        std::fprintf(stderr, "[nsmbw][profile] vtable 0x%08X: %08X %08X %08X %08X %08X %08X %08X %08X%c", vt,
+                                     w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], 10);
+                    }
+                }
+                std::fprintf(stderr, "[nsmbw][profile] id=%u profile=0x%08X classInit=0x%08X exec=%u draw=%u\n", id, prof,
+                             init, orders >> 16, orders & 0xFFFFu);
+            }
+        }
+    }
+
+    // Every-30-ticks dump of fader / scene globals from the black-screen investigation (settled).
+    // Off unless NSMBW_LOG_HEARTBEAT is set: three unbuffered writes per heartbeat were measurable
+    // frame time (NSMBW_PROFILE_SAMPLER, 2026-09-23).
+    static const bool heartbeatEnabled = AURORA_ENV("NSMBW_LOG_HEARTBEAT") != nullptr;
     static int heartbeatCount = 0;
-    if ((++heartbeatCount % 30) == 0) {
+    if (heartbeatEnabled && (++heartbeatCount % 30) == 0) {
 
         // dScCrsin_c::m_isDispOff (0x8042A490) - DISPROVEN as the black-screen cause:
         // exhaustively scanned main.dol + all 4 RELs (fully relocated) for every
@@ -117,13 +171,13 @@ void NsmbwDiagWatch() {
     // dialog, the title) without a physical key. It goes through the same KPAD sample path as a
     // real key, so it does not test a separate code path. NSMBW_AUTO_PRESS_STOP_SCENE=<profile>
     // stops the presses once that scene is active so a run can park on it.
-    if (std::getenv("NSMBW_AUTO_PRESS_SELFTEST") != nullptr) {
+    if (AURORA_ENV("NSMBW_AUTO_PRESS_SELFTEST") != nullptr) {
         static const long stopScene = [] {
-            const char* v = std::getenv("NSMBW_AUTO_PRESS_STOP_SCENE");
+            const char* v = AURORA_ENV("NSMBW_AUTO_PRESS_STOP_SCENE");
             return v ? static_cast<long>(std::strtoul(v, nullptr, 10)) : -1L;
         }();
         static const int pressWindowTicks = [] {
-            const char* v = std::getenv("NSMBW_AUTO_PRESS_TICKS");
+            const char* v = AURORA_ENV("NSMBW_AUTO_PRESS_TICKS");
             return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 1200;
         }();
         static int diagAutoPressTick = 0;
@@ -133,7 +187,7 @@ void NsmbwDiagWatch() {
         // so tap screen-right early in each map visit and hold the periodic A presses off for the
         // first NSMBW_AUTO_PRESS_MAP_RIGHT_TICKS (default 90) ticks; A alone never leaves the node.
         static const int mapRightTicks = [] {
-            const char* v = std::getenv("NSMBW_AUTO_PRESS_MAP_RIGHT_TICKS");
+            const char* v = AURORA_ENV("NSMBW_AUTO_PRESS_MAP_RIGHT_TICKS");
             return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 90;
         }();
         static int mapTicks = 0;
@@ -141,12 +195,24 @@ void NsmbwDiagWatch() {
         mapTicks = onMap ? mapTicks + 1 : 0;
         // A short tap (ticks 30..33 of the map visit): holding the direction for longer put the
         // map into its free-look mode ("Back to Mario" overlay, lvl8_t150.png) instead of moving.
-        const bool tapRight = onMap && mapTicks >= 30 && mapTicks < 34;
-        const bool walkingRight = onMap && mapTicks <= mapRightTicks;
-        if (tapRight) {
-            g_nsmbwSelfTestPressBits |= kWpadScreenRight;
+        // Repeated every 120 ticks: a single early tap was sometimes swallowed (the map was not
+        // accepting input yet) and the run parked on the start node pressing 2 forever. On a file
+        // with only 1-1 open the path to the right ends at 1-1, so extra taps cannot overshoot.
+        const bool tapRight = onMap && mapTicks >= 30 && ((mapTicks - 30) % 120) < 4;
+        const bool walkingRight = onMap && (mapTicks <= mapRightTicks || ((mapTicks - 30) % 120) < 40);
+        // In a level entered from the map, hold right + 2 (a running jump over the first Goomba)
+        // for ticks 120..600 of the visit (2 pulsed), so the first coins of 1-1 come on screen.
+        static bool visitedMap = false;
+        static int levelTicks = 0;
+        visitedMap = visitedMap || onMap;
+        const bool inLevel = visitedMap && g_nsmbwCurrentSceneProfile == 5u;
+        levelTicks = inLevel ? levelTicks + 1 : 0;
+        const bool walkInLevel = inLevel && levelTicks >= 120 && levelTicks < 600;
+        const bool jumpHeld = walkInLevel && ((levelTicks / 30) % 2) == 0; // re-press 2 every second
+        if (tapRight || walkInLevel) {
+            g_nsmbwSelfTestPressBits |= kWpadScreenRight | (jumpHeld ? kWpadButton2 : 0u);
         } else {
-            g_nsmbwSelfTestPressBits &= ~kWpadScreenRight;
+            g_nsmbwSelfTestPressBits &= ~(kWpadScreenRight | (inLevel ? kWpadButton2 : 0u));
         }
         // On the map A opens free-look ("Back to Mario" overlay); 2 is what enters a level.
         const uint32_t pressBit = onMap ? kWpadButton2 : kWpadButtonA;

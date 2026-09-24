@@ -1,5 +1,6 @@
 // gx_init.cpp - GX Initialization and FIFO Management
 #include "gx_internal.h"
+#include <aurora/env.hpp>
 #include "runtime_log.h"
 
 #include <cstdio>
@@ -31,7 +32,7 @@ extern "C" uint32_t GX__Init_8016b850(uint32_t fifoBase, uint32_t fifoSize)
     // as FALSE - this checks whether GXInit is being invoked more than once, which would wipe out
     // an earlier call's default-state setup (including its colorUpdate=TRUE) mid-sequence. Remove
     // once resolved.
-    if (std::getenv("NSMBW_LOG_GXINIT_CALLS") != nullptr) {
+    if (AURORA_ENV("NSMBW_LOG_GXINIT_CALLS") != nullptr) {
         static int gxInitCalls = 0;
         ++gxInitCalls;
         RT_LOGF(RT_TAG_GX, "NSMBW_GXINIT call#%d fifoBase=0x%08X fifoSize=0x%08X\n", gxInitCalls, fifoBase, fifoSize);

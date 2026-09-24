@@ -1,5 +1,6 @@
 ﻿#include "hle_stubs.h"
 #include "isa/big_endian.h"
+#include <aurora/env.hpp>
 #include "hle/dvd_contract.h"
 #include "hle/runtime_parse_helpers.h"
 #include "memory.h"
@@ -712,7 +713,7 @@ static void BuildAndPublishRuntimeFst() {
               << image.bytes.size() << " bytes) at 0x" << std::hex << fstAddress
               << " inside the boot-time MEM2 reservation" << std::dec << std::endl;
 
-    if (const char* dumpPath = std::getenv("MKW_DUMP_FST")) {
+    if (const char* dumpPath = AURORA_ENV("MKW_DUMP_FST")) {
         std::ofstream dump(dumpPath, std::ios::binary);
         dump.write(reinterpret_cast<const char*>(image.bytes.data()),
                    static_cast<std::streamsize>(image.bytes.size()));
