@@ -482,7 +482,7 @@ What broke / what I didn't expect (liquids):
 Confirmed later the same day by the developer: 8-Castle lava draws, the Switch Pro Controller stick and buttons work, keyboard `=`/`-`/`C` work, and the one-time stall entering a water level did not recur (most likely my test instance overlapping the developer's, or first-time pipeline builds). New report: item boxes look wrong since these changes.
 
 What's next:
-- Item boxes: get a screenshot; `?` blocks are animated tiles, so check the strided tile-copy readback first (`NSMBW_LOG_TEXFMT` lists the copies into the atlas), then the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1` A/B).
+- Regressions from `2688f2c`: item boxes untextured everywhere (1-1 included) and the World 2 map has no ground (objects over black; screenshot from the developer). First check the strided-copy rule against the W2 map's `NSMBW_TEXCOPY` lines (a padded destination width would be misread as a sub-rectangle copy), then `NSMBW_DITHER_LEGACY=1`.
 - A/B the dark sky over water with `NSMBW_DITHER_LEGACY=1` (capture_on_log.ps1 on the title demo), then bind/emulate whichever caller differs.
 - Missing "Quit?" question text in the exit-level dialog (Yes/No render).
 - Post-fix profiler runs across map / 1-1 / 1-2 / tower / transitions to find the next shared bottleneck; check 2x-4x now that tile copies are no longer 1024x1024 x scale each.

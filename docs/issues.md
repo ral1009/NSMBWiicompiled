@@ -441,7 +441,7 @@ The recurring classes, for reference (details in CLAUDE.md):
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
-- Item boxes look wrong since the 2026-09-23 changes (developer report, no screenshot yet). Unconfirmed which change: `?` blocks are animated tiles, so the strided tile-copy readback is the first suspect; the `GXSetDither` binding is the second.
+- Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.
 - `func_801AF900` no-op (colour/curve table), `func_801AC980` / `func_801AD620` / `func_801AD9E0` abort stubs; second cause for their non-translation undiagnosed.
 - `func_801A9CE0` decode bug worked around by override; not fixed in the translator.
