@@ -425,12 +425,12 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Symptom:** Switch Pro Controller: buttons and d-pad work, stick does not.
 - **Root cause:** `TranslatePadToWpad` only read `PADStatus.button`; the stick lives in `stickX/stickY`.
 - **Fix:** stick past 50/127 on an axis sets that d-pad direction (`nsmbw_kpad_overrides.cpp`). Remap menu (`settings_overlay.cpp`) labels the PAD slots with their Wii meaning for NSMBW (1, 2, +, -, Shake...); config keys unchanged.
-- **Scope:** NSMBW-specific.
+- **Scope:** NSMBW-specific. Developer confirmed stick, keyboard (+/-/C) and the remap labels on a Switch Pro Controller.
 
 ### Water, lava and poison never visible
 - **Symptom:** liquid levels play (swimming, lava kills) but no water surface, tint or lava is drawn.
 - **Root cause:** bug class 1 + 3 together. All liquids are drawn by raw GX code in main.dol (`0x8000AFA0` and the helpers `0x8000B530..0x8000CA50`, reached from AC_BG_WATER/LAVA/POISON's `m3d::proc_c` draw slots via `m3d::proc_c_drawProc` 0x801650E0). BP 0x41 (cmode0) holds blend mode *and* colour/alpha update. NSMBW binds `GXSetBlendMode`/`GXSetColorUpdate`/`GXSetAlphaUpdate` natively (aurora's `__gx->cmode0` copy), but `GXSetDither` (0x801C90D0) was only bound at MKW's address, so it ran as guest code and re-sent the *guest's* cmode0 copy (`__GXData+0x220`), which no native setter updates: blend none, colour and alpha update off. Every liquid routine calls it after setting blend/colour update. `NSMBW_LOG_LIQUID` (stream-ordered: a GX debug marker from the `GXLoadTexObj` binding arms aurora's per-draw log) showed the liquid draws with `colorUpdate=0 alphaUpdate=0 blend=0`.
-- **Fix:** bind 0x801C90D0 to the existing `GX__SetDither_80172930` (`nsmbw_gx_overrides.cpp`, shard manifest regenerated). After: all 240 captured liquid draws `blend=1 src=SRCALPHA dst=INVSRCALPHA colorUpdate=1`; developer confirmed water appears (1-4, 4-x); lava not yet re-checked by eye.
+- **Fix:** bind 0x801C90D0 to the existing `GX__SetDither_80172930` (`nsmbw_gx_overrides.cpp`, shard manifest regenerated). After: all 240 captured liquid draws `blend=1 src=SRCALPHA dst=INVSRCALPHA colorUpdate=1`; developer confirmed water (1-4) and lava (8-Castle) draw.
 - **Scope:** NSMBW-specific binding; the class (a register shared between bound and unbound SDK setters) is general - any shared-register setter left unbound re-sends a stale guest copy.
 - **Open:** afterwards the sky above the waterline looks darker than on hardware (developer screenshot vs a 1-4 reference video). Not the liquid geometry (the captured surface draws are 8-unit columns from the crest to y=-8) and not dMaskMng's darkness overlay (it never set a TEV colour in the demo runs). Suspect another `GXSetDither` caller whose draws changed with the binding (tile animator 0x8000A3D0, BG/tile code 0x8008A9C0-0x8008BA00, EGG::StateGX 0x802D32D0, ...). `NSMBW_DITHER_LEGACY=1` restores the old behaviour for every caller outside the liquid renderer for an A/B check (`projects/nsmbw/tools/capture_on_log.ps1`); not run yet.
 
@@ -441,8 +441,7 @@ The recurring classes, for reference (details in CLAUDE.md):
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
-- New inputs (stick, `=`/`-`, `C`/ZL/ZR shake, Wii labels in the remap menu) built but not yet confirmed in play.
-- Level-load stall reported once with water; may have been two instances running at once or first-time pipeline builds - re-check.
+- Item boxes look wrong since the 2026-09-23 changes (developer report, no screenshot yet). Unconfirmed which change: `?` blocks are animated tiles, so the strided tile-copy readback is the first suspect; the `GXSetDither` binding is the second.
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.
 - `func_801AF900` no-op (colour/curve table), `func_801AC980` / `func_801AD620` / `func_801AD9E0` abort stubs; second cause for their non-translation undiagnosed.
 - `func_801A9CE0` decode bug worked around by override; not fixed in the translator.

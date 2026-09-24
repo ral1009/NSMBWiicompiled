@@ -479,7 +479,10 @@ What broke / what I didn't expect (liquids):
 - Two wrong leads before the capture: a `m3d::pushBack` override (matches the original instruction for instruction) and a "draw gate" on `dScStage_c` bytes 0x120C-0x120E (compares against 7/23/3 - a one-level special case, read at first as `!= 0`). Reading the compare operands, not just the branch shape, would have saved a round.
 - The fix exposed a new difference: the sky over water is darker than hardware. Open item; A/B switch ready.
 
+Confirmed later the same day by the developer: 8-Castle lava draws, the Switch Pro Controller stick and buttons work, keyboard `=`/`-`/`C` work, and the one-time stall entering a water level did not recur (most likely my test instance overlapping the developer's, or first-time pipeline builds). New report: item boxes look wrong since these changes.
+
 What's next:
-- A/B the dark sky with `NSMBW_DITHER_LEGACY=1` (capture_on_log.ps1 on the title demo), then bind/emulate whichever caller differs.
-- Confirm 8-Castle lava by eye and the new inputs.
+- Item boxes: get a screenshot; `?` blocks are animated tiles, so check the strided tile-copy readback first (`NSMBW_LOG_TEXFMT` lists the copies into the atlas), then the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1` A/B).
+- A/B the dark sky over water with `NSMBW_DITHER_LEGACY=1` (capture_on_log.ps1 on the title demo), then bind/emulate whichever caller differs.
+- Missing "Quit?" question text in the exit-level dialog (Yes/No render).
 - Post-fix profiler runs across map / 1-1 / 1-2 / tower / transitions to find the next shared bottleneck; check 2x-4x now that tile copies are no longer 1024x1024 x scale each.
