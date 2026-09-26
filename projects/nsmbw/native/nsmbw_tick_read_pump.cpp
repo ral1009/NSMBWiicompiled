@@ -113,6 +113,29 @@ void NsmbwDiagWatch() {
         }
     }
 
+    // DEBUG (NSMBW_DUMP_LIGHTTEX=<dir>): 300 ticks into the world map, save the first four light
+    // textures (32x32 RGBA8 EFB copies at 0x80F67700 + n*0x13E0 on the World 2 map) as raw GX-tiled
+    // bytes. Needs NSMBW_DEBUG_READBACK_SMALL_COPIES so the GPU copies land in RAM.
+    {
+        static const char* dumpDir = AURORA_ENV("NSMBW_DUMP_LIGHTTEX");
+        static int mapTicks = 0;
+        static bool dumped = false;
+        mapTicks = g_nsmbwCurrentSceneProfile == 3u ? mapTicks + 1 : 0;
+        if (dumpDir && !dumped && mapTicks == 300) {
+            dumped = true;
+            for (uint32_t i = 0; i < 4; ++i) {
+                const uint32_t addr = 0x80F67700u + i * 0x13E0u;
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s/lighttex_%u_%08X.bin", dumpDir, i, addr);
+                if (FILE* f = std::fopen(path, "wb")) {
+                    for (uint32_t o = 0; o < 4096; ++o) std::fputc(Memory::Read8(addr + o), f);
+                    std::fclose(f);
+                }
+            }
+            std::fprintf(stderr, "[nsmbw][lighttex] dumped 4 light textures to %s\n", dumpDir);
+        }
+    }
+
     // Every-30-ticks dump of fader / scene globals from the black-screen investigation (settled).
     // Off unless NSMBW_LOG_HEARTBEAT is set: three unbuffered writes per heartbeat were measurable
     // frame time (NSMBW_PROFILE_SAMPLER, 2026-09-23).
@@ -219,8 +242,11 @@ void NsmbwDiagWatch() {
         if (parked || walkingRight) {
             g_nsmbwSelfTestPressBits &= ~(kWpadButtonA | kWpadButton2);
         } else if (diagAutoPressTick <= pressWindowTicks && (diagAutoPressTick % 60) == 0) {
-            g_nsmbwSelfTestPressBits |= pressBit;
-            std::fprintf(stderr, "[nsmbw][diag] self-test: synthesized %s press (tick=%d)\n", onMap ? "2" : "A", diagAutoPressTick);
+            // Outside the map, alternate A and 2: the file-select screen sometimes ignored A alone
+            // and the run parked there (developer had to step in, 2026-09-26).
+            const bool useTwo = onMap || ((diagAutoPressTick / 60) % 2) == 1;
+            g_nsmbwSelfTestPressBits |= useTwo ? kWpadButton2 : kWpadButtonA;
+            std::fprintf(stderr, "[nsmbw][diag] self-test: synthesized %s press (tick=%d)\n", useTwo ? "2" : "A", diagAutoPressTick);
             std::fflush(stderr);
         }
     }

@@ -568,9 +568,23 @@ void GXCopyTex(void* dest, GXBool clear) {
   handle.dataSize = GXGetTexBufferSize(static_cast<u16>(logicalDstWidth), static_cast<u16>(logicalDstHeight), texCopyFmt, GX_FALSE, 0);
   aurora::gx::notify_copy_texture_created();
   g_gxState.copyTextures[dest] = handle;
+  if (AURORA_ENV("NSMBW_LOG_COPYMATCH") != nullptr && aurora::g_nsmbwCurrentSceneProfile == 3u) {
+    static int logged = 0;
+    if (logged < 60) {
+      ++logged;
+      std::fprintf(stderr, "[copymatch] copy dest=%p %ux%u fmt=%u\n", dest, logicalDstWidth, logicalDstHeight,
+                   (unsigned)texCopyFmt);
+    }
+  }
   if (stridedSubRect) {
     aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
                                            texCopyFmt, handle.handle);
+  } else if (AURORA_ENV("NSMBW_DEBUG_READBACK_SMALL_COPIES") != nullptr && logicalDstWidth <= 64 &&
+             logicalDstHeight <= 64) {
+    // DEBUG: land small copies in guest RAM too (contiguous: stride == width), so their pixels can
+    // be inspected from the guest side (NSMBW_DUMP_LIGHTTEX).
+    aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, logicalDstWidth, texCopyFmt,
+                                           handle.handle);
   } else {
     // Keep the GPU copy and download it only if guest code reads the destination.
     aurora::gfx::efb_ram::schedule(dest, logicalDstWidth, logicalDstHeight, texCopyFmt, handle.handle);

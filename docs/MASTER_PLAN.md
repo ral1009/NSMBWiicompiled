@@ -486,3 +486,22 @@ What's next:
 - A/B the dark sky over water with `NSMBW_DITHER_LEGACY=1` (capture_on_log.ps1 on the title demo), then bind/emulate whichever caller differs.
 - Missing "Quit?" question text in the exit-level dialog (Yes/No render).
 - Post-fix profiler runs across map / 1-1 / 1-2 / tower / transitions to find the next shared bottleneck; check 2x-4x now that tile copies are no longer 1024x1024 x scale each.
+
+## 2026-09-26 — Phase 7 (World 2 map investigation, test tooling)
+What I did:
+1. **Isolated test runs.** Runtime portable mode (a `portable.txt` next to the exe moves config + NAND into `UserData\`) lets a copy of the exe run with its own save: `projects/nsmbw/tools/portable_shot.ps1` boots a portable copy with the self-test, waits for a scene and screenshots it. The test save puts the developer's completed file into file 1 with `mCurrentWorld = 1` (World 2) and a recomputed CRC; the real save is never touched. `burst.ps1` now uses `PrintWindow`, so captures work when Windows will not bring the game to the front.
+2. **Self-test:** alternates A and 2 outside the map (it stalled on file select with A alone).
+3. **EFB copy addressing fix** (issues.md 2026-09-26): copies were keyed by the cached address, textures by the physical one; canonicalised.
+4. **World 2 ground - not fixed.** Traced the ground's shading end to end with new capture switches: `NSMBW_ARM_ON_TEX=<w>x<h>:<fmt>` (arms the per-draw log when a texture of that shape is bound; the armed dump now includes position/TEX0/CLR0/NRM formats, colour/normal array heads, dualTex and all three rows of the texture and post matrices), `NSMBW_DEBUG_READBACK_SMALL_COPIES` + `NSMBW_DUMP_LIGHTTEX=<dir>` (land small GPU copies in RAM and dump the map's light textures), `NSMBW_LOG_COPYMATCH`, `NSMBW_DEBUG_NO_FOG`, `NSMBW_DEBUG_NO_LIGHTING`. Every input checked is correct; the open theory is a later full-screen alpha composite (details and next step in issues.md).
+
+What broke / what I didn't expect:
+- About an hour on World 2 without a fix. Each hypothesis needed a 2-4 minute boot-to-map run; the self-test's file-select stalls cost several. Cheaper next time: arm on the *output* side first (what covers the pixels) before verifying every input of the draw.
+
+What I learned:
+- One concept used above: NSMBW's world-map lighting is "light textures" - EGG renders each light set into small ramp textures every frame and models look them up by surface normal; a black ground can come from any link in that chain, which is why it took so many captures.
+- Guest memory views are separate host mappings - any cache keyed by host pointer must canonicalise guest addresses first.
+
+What's next:
+- W2 ground: test the full-screen A8 composite theory.
+- The developer's PC-port feature list (not started): drop quick saves / allow normal saves before completion; fullscreen without borders and sharper output at 4K; performance for iGPUs and Steam Deck; Newer Super Mario Bros. Wii as a launch option; a custom settings/input menu replacing the MKW-derived overlay; online multiplayer. Each needs a viability assessment before any work.
+- Still open: dark sky over water (`NSMBW_DITHER_LEGACY` A/B), missing "Quit?" dialog text.

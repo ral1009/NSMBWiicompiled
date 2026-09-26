@@ -1301,6 +1301,8 @@ static void handle_bp(u32 value, bool bigEndian) {
     const u32 fogProj = bp_get(value, 1, 20);
     GXFogType fogType = static_cast<GXFogType>(fogFunc | (fogProj << 3));
     g_gxState.fog.type = fogType;
+    // DEBUG (NSMBW_DEBUG_NO_FOG): force fog off, to test whether fog is what blacks out a scene.
+    if (AURORA_ENV("NSMBW_DEBUG_NO_FOG") != nullptr) g_gxState.fog.type = GX_FOG_NONE;
     // Decode C parameter (same partial float encoding as A)
     u32 c_mant = bp_get(value, 11, 0);
     u32 c_exp = bp_get(value, 8, 11);
@@ -1890,6 +1892,8 @@ static void handle_xf(const u8* data, u32& pos, u32 size, bool bigEndian) {
           chan.matSrc = static_cast<GXColorSrc>(bp_get(val, 1, 0));
           g_nsmbwLiveChanMatSrc[chanId] = static_cast<uint32_t>(chan.matSrc); // DIAGNOSTIC (temporary)
           chan.lightingEnabled = bp_get(val, 1, 1) != 0;
+          // DEBUG (NSMBW_DEBUG_NO_LIGHTING): channels output their material colour unlit.
+          if (AURORA_ENV("NSMBW_DEBUG_NO_LIGHTING") != nullptr) chan.lightingEnabled = false;
           u32 lightsLo = bp_get(val, 4, 2);
           chan.ambSrc = static_cast<GXColorSrc>(bp_get(val, 1, 6));
           chan.diffFn = static_cast<GXDiffuseFn>(bp_get(val, 2, 7));
@@ -2374,6 +2378,33 @@ if (armedDraw) {
   const u32 mi = g_gxState.currentPnMtx / 3;
   float pm[12] = {};
   if (mi < g_gxState.pnMtx.size()) std::memcpy(pm, &g_gxState.pnMtx[mi].pos, sizeof(pm));
+  { const auto& ca = g_gxState.arrays[GX_VA_CLR0];
+    const auto& cf = g_gxState.vtxFmts[fmt].attrs[GX_VA_CLR0];
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   clr0 desc=%u fmt cnt=%u type=%u | array data=%p size=%u stride=%u le=%d first:",
+                 (unsigned)g_gxState.vtxDesc[GX_VA_CLR0], (unsigned)cf.cnt, (unsigned)cf.type, ca.data, ca.size,
+                 (unsigned)ca.stride, ca.le ? 1 : 0);
+    if (ca.data != nullptr && ca.size >= 4) {
+      const auto* b = static_cast<const uint8_t*>(ca.data);
+      for (u32 k = 0; k < (ca.size < 16 ? ca.size : 16); ++k) std::fprintf(stderr, " %02X", b[k]);
+    }
+    std::fprintf(stderr, "%c", 10); }
+  { const auto& na = g_gxState.arrays[GX_VA_NRM];
+    const auto& nf = g_gxState.vtxFmts[fmt].attrs[GX_VA_NRM];
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   nrm desc=%u fmt cnt=%u type=%u frac=%u | array size=%u stride=%u first:",
+                 (unsigned)g_gxState.vtxDesc[GX_VA_NRM], (unsigned)nf.cnt, (unsigned)nf.type, (unsigned)nf.frac, na.size, (unsigned)na.stride);
+    if (na.data != nullptr) { const auto* b = static_cast<const uint8_t*>(na.data);
+      for (u32 k = 0; k < (na.size < 24 ? na.size : 24); ++k) std::fprintf(stderr, " %02X", b[k]); }
+    std::fprintf(stderr, "%c", 10); }
+  { std::fprintf(stderr, "[NSMBW_TEXGEN]   dualTex=%u", (unsigned)g_gxState.dualTex);
+    for (u32 t = 0; t < 3; ++t) { const u32 pm = g_gxState.tcgs[t].postMtx; if (pm >= GX_PTTEXMTX0 && pm < GX_PTIDENTITY) {
+      const auto& m = g_gxState.ptTexMtxs[(pm - GX_PTTEXMTX0) / 3]; float f[12]; std::memcpy(f, &m, sizeof(f));
+      std::fprintf(stderr, " post%u(tc%u)=[%.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f]", pm, t, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]); }
+      const u32 tm = g_gxState.tcgs[t].mtx; if (tm >= 30 && tm < 60) { float g[12]; std::memcpy(g, &g_gxState.texMtxs[(tm - 30) / 3], sizeof(g));
+        std::fprintf(stderr, " tex%u(tc%u)=[%.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f]", tm, t, g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], g[9], g[10], g[11]); } }
+    std::fprintf(stderr, "%c", 10); }
+  { const auto& tf = g_gxState.vtxFmts[fmt].attrs[GX_VA_TEX0];
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   tex0Fmt cnt=%u type=%u frac=%u clr0Fmt type=%u%c", (unsigned)tf.cnt, (unsigned)tf.type,
+                 (unsigned)tf.frac, (unsigned)g_gxState.vtxFmts[fmt].attrs[GX_VA_CLR0].type, 10); }
   std::fprintf(stderr, "[NSMBW_TEXGEN]   posFmt cnt=%u type=%u frac=%u pnMtx[%u]=[%.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f]\n",
                (unsigned)pf.cnt, (unsigned)pf.type, (unsigned)pf.frac, mi, pm[0], pm[1], pm[2], pm[3], pm[4], pm[5], pm[6],
                pm[7], pm[8], pm[9], pm[10], pm[11]);

@@ -330,7 +330,15 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     // later. RISK: copies above the probe threshold, or on the offscreen list, are not
     // auto-downloaded, so guest reads see stale RAM; call aurora_flush_efb_copies_to_ram if a
     // copy needs reading back.
-    GXCopyTex(GuestToHostPtr(da), (GXBool)c);
+    // Key the copy by the canonical (physical) address, as texture objects are
+    // (WriteGuestTexObj -> CanonicalizeGxMainRamAddress). The physical, cached and uncached views
+    // of MEM1/MEM2 are separate host mappings of one backing store, so GuestToHostPtr(0x80F67700)
+    // and GuestToHostPtr(0x00F67700) are different pointers to the same bytes, and aurora matches
+    // copy textures to texture objects by exact pointer. NSMBW copies its world-map light textures
+    // to cached addresses (0x80F67700...) and samples them through physical ones (0x00F67700...):
+    // the lookup missed, the texture was uploaded from RAM the GPU-only copy never wrote, and the
+    // World 2 map ground (sand x two light textures) came out black.
+    GXCopyTex(GuestToHostPtr(CanonicalizeGxMainRamAddress(da)), (GXBool)c);
     {
         // NSMBW_LOG_TEXFMT also lists each distinct texture-copy destination once, so a copy that
         // lands inside a bound texture (tile animation into a tileset atlas) can be spotted

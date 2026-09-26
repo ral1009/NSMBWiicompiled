@@ -711,6 +711,26 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         }
     }
 
+    // DIAGNOSTIC (NSMBW_ARM_ON_TEX=<w>x<h>:<fmt>, e.g. 256x256:14): when a texture of that shape is
+    // bound, arm aurora's per-draw state log (NSMBW_TEXGEN lines) for the next draws via a
+    // stream-ordered marker - finds the draws that use one texture without knowing who issues them.
+    {
+        static const char* armSpec = AURORA_ENV("NSMBW_ARM_ON_TEX");
+        static uint32_t armW = 0, armH = 0, armFmt = 0;
+        static bool parsed = false;
+        if (armSpec && !parsed) {
+            parsed = true;
+            std::sscanf(armSpec, "%ux%u:%u", &armW, &armH, &armFmt);
+        }
+        static std::map<uint32_t, int> armedPerObj;
+        if (armSpec && meta.width == armW && meta.height == armH && meta.format == armFmt && armedPerObj[oa] < 3) {
+            ++armedPerObj[oa];
+            RT_LOGF(RT_TAG_GX, "NSMBW_ARM_ON_TEX bind oa=0x%08X data=0x%08X %ux%u fmt=%u tid=%u\n", oa, meta.dataAddr,
+                    meta.width, meta.height, meta.format, tid);
+            GXInsertDebugMarker("nsmbw-arm-drawlog");
+        }
+    }
+
     if (meta.dataAddr == 0 || meta.width == 0 || meta.height == 0) {
         if (s_invalidMetaLogCount++ < 64) {
             RT_LOGF(RT_TAG_GX,

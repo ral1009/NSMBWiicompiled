@@ -434,6 +434,21 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Scope:** NSMBW-specific binding; the class (a register shared between bound and unbound SDK setters) is general - any shared-register setter left unbound re-sends a stale guest copy.
 - **Open:** afterwards the sky above the waterline looks darker than on hardware (developer screenshot vs a 1-4 reference video). Not the liquid geometry (the captured surface draws are 8-unit columns from the crest to y=-8) and not dMaskMng's darkness overlay (it never set a TEV colour in the demo runs). Suspect another `GXSetDither` caller whose draws changed with the binding (tile animator 0x8000A3D0, BG/tile code 0x8008A9C0-0x8008BA00, EGG::StateGX 0x802D32D0, ...). `NSMBW_DITHER_LEGACY=1` restores the old behaviour for every caller outside the liquid renderer for an A/B check (`projects/nsmbw/tools/capture_on_log.ps1`); not run yet.
 
+## 2026-09-26 — EFB copy addressing, World 2 map (open)
+
+### GPU copies registered under the virtual address, textures looked up under the physical one
+- **Symptom:** found while chasing the black World 2 map ground: the map's light-texture copies go to `0x80F67700...` (cached) and are sampled through texture objects at `0x00F67700...` (physical).
+- **Root cause:** guest memory is several host mappings of one backing store (physical / cached / uncached views), so `GuestToHostPtr(0x80F67700)` and `GuestToHostPtr(0x00F67700)` are different pointers to the same bytes. `WriteGuestTexObj` canonicalises texture addresses; `GX__CopyTex` passed the game's address through, and aurora matches copy textures by exact pointer.
+- **Fix:** `GXCopyTex(GuestToHostPtr(CanonicalizeGxMainRamAddress(da)), ...)` (`runtime/src/hle/gx/gx_copy.cpp`). `NSMBW_LOG_COPYMATCH` afterwards: 194 cached-copy hits for the map's 32x32 light textures. Did **not** by itself fix the W2 ground.
+- **Scope:** General (runtime) - any title copying to a cached/uncached address and sampling through another view.
+
+### World 2 map ground black (open)
+- **Symptom:** World 2 map: paths, props and UI draw, the sand ground is solid black (developer screenshot; reproduced in the portable test copy with a save parked in W2). Other worlds fine.
+- **Established (each by a capture):** the ground draw uses the 256x256 CMPR sand texture (decodes fine) x two 32x32 RGBA8 light textures sampled by normal (texgen MTX3x4 from NRM, tex matrix 33/36, dual-tex post matrix 67/70, normalize) x vertex colour. Light textures are rendered each frame (EGG LightTexture, 640x72 strip at y=456, ramp textures 64x4 I8) and copied; dumped via readback they are bright (avg RGB ~190,189,140 / specular ~57,61,54). Vertex colour = FF FF FF FF (1-entry indexed array). Normals: S16 frac 14, sane. All three rows of tex 33/36 and post 67/70 sane; dualTex=1; post row 2 = (0,0,0,1). Worked through for an up-facing normal the lookup lands near the bright centre.
+- **Ruled out:** strided-copy rule (all map copies have dst == src size), fog (`NSMBW_DEBUG_NO_FOG`), lighting (`NSMBW_DEBUG_NO_LIGHTING`), copy lookup (fixed above, now hits), light-texture content, vertex colour, normals, matrices, SU scale (only used for indirect fixed-point UVs).
+- **Current theory (unconfirmed):** the ground is drawn correctly and later masked/covered by a full-screen pass. The map makes one 640x332 A8 (alpha) EFB copy per frame, and the ground draw has alpha update off - a composite that uses EFB alpha as a mask would black out whatever never wrote alpha. Next: find the draw that samples that A8 copy and what it does with it (`NSMBW_ARM_ON_TEX=640x332:39`-style arming, or dump the A8 copy with the readback switch).
+- **Scope:** Unconfirmed.
+
 ---
 
 ## Open / unconfirmed items
@@ -441,7 +456,8 @@ The recurring classes, for reference (details in CLAUDE.md):
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
-- Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
+- Item boxes untextured (2026-09-23 report): developer could not reproduce on 2026-09-26 - closed unless it returns. World 2 map ground black: see the 2026-09-26 entry (open, theory recorded).
+- (superseded) Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.
 - `func_801AF900` no-op (colour/curve table), `func_801AC980` / `func_801AD620` / `func_801AD9E0` abort stubs; second cause for their non-translation undiagnosed.
 - `func_801A9CE0` decode bug worked around by override; not fixed in the translator.

@@ -1264,11 +1264,34 @@ GXState::CopyTextureRef* find_copy_texture_for_texobj(const GXTexObj_& obj) noex
     return nullptr;
   }
 
+  // DIAGNOSTIC (NSMBW_LOG_COPYMATCH): every lookup of a 32x32 texture on the world map (scene 3).
+  const bool logMatch = AURORA_ENV("NSMBW_LOG_COPYMATCH") != nullptr && g_nsmbwCurrentSceneProfile == 3u &&
+                        obj.width() == 32 && obj.height() == 32;
+  static int matchLogged = 0;
   if (auto* cached = find_cached_copy_texture(obj.data, obj)) {
+    if (logMatch && matchLogged < 200) {
+      ++matchLogged;
+      std::fprintf(stderr, "[copymatch] tex data=%p fmt=%u: cached copy hit\n", obj.data, (unsigned)obj.format());
+    }
     return cached;
   }
 
   const auto exact = g_gxState.copyTextures.find(obj.data);
+  // DIAGNOSTIC (NSMBW_LOG_COPYMATCH): for small textures, show the looked-up pointer and whether a
+  // GPU copy with that exact destination exists (and why it does not match, if it does not).
+  if (logMatch) {
+    if (matchLogged < 200) {
+      ++matchLogged;
+      if (exact == g_gxState.copyTextures.end()) {
+        std::fprintf(stderr, "[copymatch] tex data=%p %ux%u fmt=%u: no copy at this pointer\n", obj.data, obj.width(),
+                     obj.height(), (unsigned)obj.format());
+      } else {
+        std::fprintf(stderr, "[copymatch] tex data=%p %ux%u fmt=%u: copy %ux%u fmt=%u match=%d\n", obj.data,
+                     obj.width(), obj.height(), (unsigned)obj.format(), exact->second.width, exact->second.height,
+                     (unsigned)exact->second.format, copy_ref_matches_texobj(exact->second, obj) ? 1 : 0);
+      }
+    }
+  }
   if (exact != g_gxState.copyTextures.end() && copy_ref_matches_texobj(exact->second, obj)) {
     mark_copy_texture_sampled(obj.data, exact->second);
     return &exact->second;
