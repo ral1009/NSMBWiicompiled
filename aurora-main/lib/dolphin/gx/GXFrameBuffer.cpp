@@ -576,6 +576,21 @@ void GXCopyTex(void* dest, GXBool clear) {
                    (unsigned)texCopyFmt);
     }
   }
+  if (stridedSubRect && AURORA_ENV("NSMBW_LOG_TILECOPY") != nullptr) {
+    // DIAGNOSTIC: animated-tile copies vanish at >1x render scale. Show the logical source rect, the
+    // render-space rect it maps to, and the render target it must fit inside.
+    static int logged = 0;
+    if (logged < 40) {
+      ++logged;
+      const auto [rtW, rtH] = aurora::gfx::get_render_target_size();
+      const auto [lfW, lfH] = aurora::gx::logical_fb_size();
+      std::fprintf(stderr,
+                   "[tilecopy] src=(%d,%d %dx%d) -> render=(%d,%d %dx%d) rt=%ux%u logicalFb=%ux%u dst=%ux%u\n",
+                   g_gxState.texCopySrc.x, g_gxState.texCopySrc.y, g_gxState.texCopySrc.width,
+                   g_gxState.texCopySrc.height, rect.x, rect.y, rect.width, rect.height, rtW, rtH, lfW, lfH,
+                   scaledDstWidth, scaledDstHeight);
+    }
+  }
   if (stridedSubRect) {
     aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
                                            texCopyFmt, handle.handle);

@@ -326,6 +326,11 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     // (which reads Config.toml) showed it disabled; at 4x its taps are 4 rows apart, smearing every
     // horizontal edge over ~8 px.
     config.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
+    // Dolphin-style custom textures, as in main.cpp: aurora indexes
+    // nsmbw_data/texture_replacements/ once at init, so Dolphin packs (Load/Textures/SMN/...) can
+    // be dropped in unchanged. Without this the NSMBW init left both off regardless of Config.toml.
+    config.allowTextureReplacements = RuntimeConfigFile::TextureReplacements(false);
+    config.allowTextureDumps = config.allowTextureReplacements && RuntimeConfigFile::TextureDumps(false);
     // We already own guest memory via Memory::Init() above; don't have aurora allocate its own.
     config.mem1Size = 0;
     config.mem2Size = 0;

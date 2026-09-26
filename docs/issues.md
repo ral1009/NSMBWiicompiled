@@ -469,6 +469,18 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** `config.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true)` in `InitializeAuroraWindow`. Developer confirmed the output is now as sharp as Dolphin. No controlled A/B capture was taken: the scripted one failed, and an earlier pair landed on different scenes.
 - **Scope:** General to this init path. "Deflicker" is a CRT-era smoothing the Wii applies when copying the frame out; Dolphin disables it by default too.
 
+### Dolphin texture packs ignored
+- **Symptom:** `texture_replacements = true` in Config.toml had no effect in NSMBW; aurora never logged `Indexed N texture replacements`.
+- **Root cause:** same gap as the copy filter: `InitializeAuroraWindow` never set `AuroraConfig::allowTextureReplacements` / `allowTextureDumps` (MKW's `main.cpp` does), so both stayed false.
+- **Fix:** set both from Config.toml (`nsmbw_product.cpp`). aurora also logs `texture_replacement: loaded <file>` once per file it loads (`aurora-main/lib/gfx/texture_replacement.cpp`). Verified with nymo's HD HUD Tweaks (GameBanana 480785, a Dolphin pack: `SMN/` copied unchanged into `build_nsmbw/nsmbw_data/texture_replacements/`). Result: `Indexed 36`, and 11 files loaded during boot, title, map and a level: 8 font sheets (64x1024 IA4) and the 40x40/48x48 HUD and map icons. So aurora's XXH64 naming matches Dolphin's for these formats. Developer confirmed visually. The 24 MotionHint textures were not exercised: the game shows that hint only to players who haven't used the shake/spin yet.
+- **Scope:** General to this init path. Hash compatibility is confirmed only for IA4 and RGB5A3 so far; palette (CI) formats are untested.
+
+### Item boxes, bricks and coins untextured above 1x (the "item box regression")
+- **Symptom:** above 1x render scale, ? blocks are flat yellow squares, bricks show vertical stripes and coins vanish. 1x is fine (developer, confirmed by a direct 1x/4x switch). Texture replacement on/off made no difference.
+- **Root cause:** NSMBW's animated tiles draw each frame into a 32x32 scratch area of the EFB at y=456 and copy it into its slot of the 1024-wide tileset atlas in guest RAM (strided copy, written back via `efb_ram::schedule_strided`). Above 1x the GPU copy is larger than the slot, so `ensure_native_texture` blits it down to native size first. That blit's uniform set `flags.w` (the clamp's max V) to 0, and `clamp_copy_uv` pinned every sample to row 0. The written-back tile was its top row smeared downward. `NSMBW_LOG_TILECOPY` confirmed the copy geometry itself was correct at 4x (`src=(0,456 32x32) -> render=(0,1824 128x128) rt=2560x2112`). This blit runs only when the copy is scaled, which is why the regression "came and went": it tracked the render scale, which was forced back to 1x on most launches until today.
+- **Fix:** max V = 1 in `nativeBlitUniform` (`aurora-main/lib/gfx/efb_ram_copy.cpp`). After: 4x capture of 1-1 shows textured ? blocks, bricks and coins.
+- **Scope:** General (aurora). It affects every >1x readback of a scaled copy into guest RAM, in any title. Remaining limitation: those tiles are written back at native resolution, so they look 1x next to the 4x scene. A scaled tile cache is being built for that.
+
 ---
 
 ## Open / unconfirmed items
@@ -479,7 +491,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
-- Item boxes untextured (2026-09-23 report): developer could not reproduce on 2026-09-26 - closed unless it returns. World 2 map ground black: see the 2026-09-26 entry (open, theory recorded).
+- Item boxes untextured (2026-09-23 report): cause found and fixed 2026-09-26 (native-readback blit clamp, only above 1x). World 2 map ground black: see the 2026-09-26 entry (open, theory recorded).
 - (superseded) Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.
 - `func_801AF900` no-op (colour/curve table), `func_801AC980` / `func_801AD620` / `func_801AD9E0` abort stubs; second cause for their non-translation undiagnosed.

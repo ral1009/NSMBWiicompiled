@@ -789,6 +789,8 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   }
 
   cache_replacement(key, handle);
+  // Once per load (cache hits return above), so a run shows which pack files actually matched.
+  Log.info("texture_replacement: loaded {}", fs_path_to_string(path->path.filename()));
   return handle;
 }
 

@@ -200,6 +200,9 @@ Not code, but the documentation this project depends on:
 - [Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind) by ZPL - the mod distribution this
   project can build as a static profile. No Retro Rewind content is redistributed here; users
   supply their own copy.
+- [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by nymo642 - the Dolphin texture
+  pack used to verify NSMBW's texture-replacement support (2026-09-26). Not redistributed here;
+  users download it from GameBanana.
 
 ---
 

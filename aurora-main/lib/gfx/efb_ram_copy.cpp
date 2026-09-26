@@ -106,8 +106,13 @@ void ensure_native_texture(PendingCopy& pending, TextureHandle* cache = nullptr)
       *cache = pending.nativeTexture;
     }
   }
+  // Layout (tex_copy_conv's UVTransform): offset.xy, scale.xy, copy_filter (identity, w=0 = off),
+  // flags = {opaque alpha, row stride, clamp min V, clamp max V}. clamp_copy_uv clamps every sample's
+  // V to [flags.z, flags.w], so max V must be 1: it was 0, which pinned every sample to row 0 and
+  // turned each >1x-scaled readback into its top row smeared downward (NSMBW's animated tiles: flat
+  // ? blocks, vertically striped bricks, missing coins - only above 1x, where this blit runs).
   const std::array nativeBlitUniform{
-      0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
   };
   pending.nativeBlitUniform = push_uniform(nativeBlitUniform);
 }

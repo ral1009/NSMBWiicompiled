@@ -96,6 +96,10 @@ Run it with the helper, which captures the stderr log and periodic window screen
 
 Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 3 world map, 5 title *and* levels, 6/7 course-in, 8 cutscene, 10 file select). The NAND save (`%LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav`) is kept between runs so a started file resumes at the world map; `NSMBW_RESET_SAVE=1` deletes it at launch, and the window config is still reset unless `NSMBW_KEEP_STATE=1`. With the self-test presses on, a resumed save gets from boot to 1-1 in about two minutes.
 
+## HD textures (Dolphin texture packs)
+
+Dolphin custom-texture packs work unchanged. Set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`, then copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`. Tested with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642** (sharper fonts, HUD and map icons). Packs are not included in this repository; download them from their authors.
+
 ## Debugging notes worth knowing before touching this code
 
 Three bug classes account for almost every fix so far (full write-ups in `CLAUDE.md`):

@@ -553,3 +553,27 @@ What I learned:
 What's next:
 - Audit `main.cpp`'s aurora setup against `InitializeAuroraWindow` for other skipped settings.
 - Blocky texels on the blurred title-screen background at 4x (not investigated).
+
+## 2026-09-26 (evening) — Phase 12 item 5 (HD HUD via Dolphin texture packs)
+What I did:
+- Downloaded nymo's HD HUD Tweaks (GameBanana 480785, with the developer's permission).
+- It turned out to be a Dolphin *texture pack* (`Load/Textures/SMN/...`), not a Riivolution mod. So the plan's `.LZ` / `<memory>` concerns don't apply to it.
+- NSMBW's aurora init never enabled texture replacement. It now does, from Config.toml's `texture_replacements` (issues.md 2026-09-26).
+- The pack's `SMN/` folder works unchanged under `build_nsmbw/nsmbw_data/texture_replacements/`. 11 of its 36 files loaded in a boot-to-level run; the developer confirmed the sharper HUD and fonts.
+
+What broke / what I didn't expect:
+- Nothing broke. The MotionHint textures went untested because the game only shows that hint to players who haven't used the spin yet.
+
+What I learned:
+- *Texture pack* = Dolphin's mechanism: every texture the game uploads is hashed, and a file named with that hash replaces it. It needs no disc or code changes, only a matching hash algorithm. aurora already implements Dolphin's.
+- Third setting skipped by NSMBW's own init (after copy filter and render scale). The audit of `main.cpp` vs `InitializeAuroraWindow` is now clearly worth doing.
+
+- The item-box regression came back once the render scale persisted: ? blocks, bricks and coins broke at 4x only.
+  - First suspect was texture replacement; an A/B with it on and off ruled that out.
+  - The developer then confirmed 1x fine / 4x broken.
+  - `NSMBW_LOG_TILECOPY` showed the tile copy geometry was correct at 4x.
+  - Cause: the downscale blit that runs only for scaled copies clamped every sample to row 0 (issues.md). Fixed; 4x capture verified.
+
+What's next:
+- Scaled tile cache: animated tiles are written back to RAM at native size, so at 4x they look 1x next to everything else. Dolphin keeps them scaled on the GPU and stitches them into an upscaled tileset; aurora needs the same.
+- Controller-specific button glyphs: find which textures carry the Wii Remote button art, then choose a replacement root per controller type.
