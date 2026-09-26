@@ -24,6 +24,7 @@
 #include "timebase_contract.h"
 
 #include <aurora/aurora.h>
+#include <dolphin/vi.h>
 
 #include <algorithm>
 #include <atomic>
@@ -320,11 +321,33 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     config.windowHeight = 480;
     config.desiredBackend = BACKEND_AUTO;
     config.allowJoystickBackgroundEvents = true;
+    // Mirror main.cpp's MKW init: skip the display copy's vertical deflicker filter (default on,
+    // as in Dolphin). Left zero-initialised, the filter ran on every frame while the F10 checkbox
+    // (which reads Config.toml) showed it disabled; at 4x its taps are 4 rows apart, smearing every
+    // horizontal edge over ~8 px.
+    config.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
     // We already own guest memory via Memory::Init() above; don't have aurora allocate its own.
     config.mem1Size = 0;
     config.mem2Size = 0;
 
     outInfo = aurora_initialize(0, nullptr, &config);
+    // Apply the render scale saved by the F10 menu (Config.toml video.resolution_multiplier; 0 =
+    // match window size). Unlike MKW's main.cpp path, this init never called VISetFrameBufferScale,
+    // so the saved value only took effect after re-selecting it in the menu. NSMBW_RES_SCALE=<n>
+    // overrides it for reproducible test runs.
+    if (outInfo.window != nullptr) {
+        float scale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
+        if (const char* s = AURORA_ENV("NSMBW_RES_SCALE"); s != nullptr) {
+            scale = static_cast<float>(std::atof(s));
+        }
+        VISetFrameBufferScale(scale);
+    }
+    // With widescreen on, SCGetAspectRatio (nsmbw_sc_aspect_ratio.cpp) tells the game 16:9 and it
+    // renders an anamorphic frame into the same 640-wide XFB. Without a present-aspect lock the
+    // presenter fits that XFB as 4:3, horizontally squeezing the scene inside pillarboxes.
+    if (outInfo.window != nullptr && RuntimeConfigFile::WidescreenEnabled(true)) {
+        VILockAspectRatio(16, 9);
+    }
     return outInfo.window != nullptr;
 }
 
@@ -681,10 +704,16 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
                     static_cast<unsigned long long>(removed), saveDir.string().c_str());
     }
 
-    const bool wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(1.0f) &&
-                            RuntimeConfigFile::SetDisplayMode("windowed") &&
-                            RuntimeConfigFile::SetWindowSize(640u, 480u);
-    std::printf("[nsmbw] Reset: Config.toml video/window keys -> windowed 640x480 @1x (%s)\n",
+    // The render scale the F10 menu saved is kept (it is applied at startup in
+    // InitializeAuroraWindow); only scales above 4x are pulled back, since the crash that motivated
+    // this reset ended at 8x. Forcing 1x here made every launch render at native 640x456 no matter
+    // what the menu said.
+    constexpr float kMaxStartupResolutionScale = 4.0f;
+    bool wroteVideo = RuntimeConfigFile::SetDisplayMode("windowed") && RuntimeConfigFile::SetWindowSize(640u, 480u);
+    if (RuntimeConfigFile::ResolutionMultiplier(1.0f) > kMaxStartupResolutionScale) {
+        wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(kMaxStartupResolutionScale) && wroteVideo;
+    }
+    std::printf("[nsmbw] Reset: Config.toml video/window keys -> windowed 640x480, render scale kept (%s)\n",
                 wroteVideo ? "ok" : "FAILED");
 
     const auto marker = cacheDir / kCrashMarkerName;

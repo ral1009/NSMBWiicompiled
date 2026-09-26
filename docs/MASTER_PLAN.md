@@ -159,10 +159,34 @@ Order matters:
 
 ### Phase 11 — Polish and release scaffolding
 
-- Settings UI (reuse WiiCompiled's pattern)
+- Settings UI (reuse WiiCompiled's pattern) — the F10 overlay already runs in NSMBW; making it NSMBW's own is Phase 12 item 1
 - Installer/wrapper if distributing
 - Confirm no bundled Nintendo assets/code
 - Final license check before any public release
+
+---
+
+### Phase 12 — Enhancements (post-playable; added 2026-09-26)
+
+Each item was checked against the code on 2026-09-26. None of it starts until the open regressions in the latest progress-log entry are fixed. In recommended order:
+
+1. **F10 settings overlay → NSMBW's own.** This is the MKW ImGui bar (`runtime/src/settings_overlay.cpp`). It already runs here, and resolution / remap / interpolation all work, but none of them work well.
+   - Settings don't persist: `nsmbw_product.cpp` resets Config.toml every launch unless `NSMBW_KEEP_STATE` is set.
+   - The remap page is GC-pad based. It should be laid out as a sideways Wii Remote.
+   - MKW-only items should be hidden, and the UI styling cleaned up.
+   - 1a — "4x doesn't look like Dolphin": **done 2026-09-26**. Causes were 4:3 mode via an unbound `SCGetAspectRatio`, the render scale being reset, and an active copy filter (see the progress log). The render scale now persists across launches; the rest of the reset still applies.
+   - 1b — interpolation never reaches 180 fps: run the profiler with it on to see whether the limit is CPU or GPU, and check whether objects are really interpolated.
+2. **Tilt on A/D + right stick.** Read the decomp's tilt consumer to learn which acc axes it reads. Then feed a gravity vector through `KPADStatus.acc` in `nsmbw_kpad_overrides.cpp`, the same pattern as the shake.
+3. **Texture dump/replace.** aurora already has Dolphin-style replacement (`aurora-main/lib/gfx/texture_replacement.cpp`); NSMBW's `AuroraConfig` just never enables it. Check that the hashes match Dolphin's so existing HD packs work. HD fonts go through the same path.
+4. **Early permanent save.** Find the real Save-vs-Quick-Save predicate in the decomp and override it. The address `0x8077AA7C` from an outside spec is unverified. The NAND HLE already persists saves.
+5. **Then:**
+   - Inspect nymo's HD HUD Tweaks: file overlays already work; `.LZ` files and `<memory>` patches don't.
+   - Controller-specific button glyphs: per-controller texture-replacement roots, switched on `SDL_GetGamepadType`.
+   - 16:9 via NSMBW's own `SCGetAspectRatio`: done 2026-09-26. Ultrawide is much harder because of camera-bound culling and 16:9 HUD anchoring.
+   - Steam Deck: try the exe under Proton first; a native Linux build is its own project.
+6. **Parked:**
+   - Newer SMBW. Its Kamek code arrives via `<memory>` patches and a runtime loader. Supporting it would need a separate build that patches the DOL/RELs *before* translation and translates Newer's code as an extra module.
+   - Online play. Prerequisites: channels 1-3 and verified co-op, a cross-machine determinism check (hash guest RAM per frame), and for rollback, save/restore of guest RAM, thread contexts and HLE state.
 
 ---
 
@@ -505,3 +529,27 @@ What's next:
 - W2 ground: test the full-screen A8 composite theory.
 - The developer's PC-port feature list (not started): drop quick saves / allow normal saves before completion; fullscreen without borders and sharper output at 4K; performance for iGPUs and Steam Deck; Newer Super Mario Bros. Wii as a launch option; a custom settings/input menu replacing the MKW-derived overlay; online multiplayer. Each needs a viability assessment before any work.
 - Still open: dark sky over water (`NSMBW_DITHER_LEGACY` A/B), missing "Quit?" dialog text.
+
+## 2026-09-26 (later) — Phase 12 item 1a (output matches Dolphin)
+What I did:
+- Compared the developer's port and Dolphin screenshots of the title screen. The port had bars on all four sides, less of the scene left/right, and softer edges, even at 4x.
+- Found three separate causes. Each is in issues.md (2026-09-26, "Output quality vs Dolphin"):
+  1. `SCGetAspectRatio` was bound only at MKW's address, so the game ran in 4:3 mode and letterboxed itself. It is now bound at 0x801DD310, and the presenter is locked to 16:9.
+  2. The F10 render scale was reset to 1x every launch and never applied at startup.
+  3. The display-copy deflicker filter was running because NSMBW's init never set `disableCopyFilter`.
+- New switch: `NSMBW_RES_SCALE=<n>` sets the render scale at launch for reproducible runs.
+
+What broke / what I didn't expect:
+- My first read ("it's rendering at 1x") was wrong for the developer's run. The render really was 4x (2560x1824 per `NSMBW_LOG_COPYDISP_GEOM`), and the blur came from the copy filter.
+- Screenshot tooling: `CopyFromScreen` grabbed whatever window was in front (the game was not). `PrintWindow` captures the game window itself.
+- Two of my before/after captures landed on different scenes (title vs attract demo), so they were not comparable. The final confirmation is the developer's own view, not a controlled capture.
+
+What I learned:
+- Concepts used above:
+  - *Anamorphic* 16:9: the Wii renders widescreen squeezed into the same 640-wide frame, and the TV (here, the presenter) stretches it back out.
+  - *Deflicker / copy filter*: a vertical blur applied when the frame is copied out for display, meant for CRT TVs.
+- Two of the three bugs are one class: NSMBW's own aurora init (`InitializeAuroraWindow`) skipped settings that MKW's `main.cpp` applies (copy filter, render scale). Worth auditing the rest of `main.cpp`'s aurora config against it.
+
+What's next:
+- Audit `main.cpp`'s aurora setup against `InitializeAuroraWindow` for other skipped settings.
+- Blocky texels on the blurred title-screen background at 4x (not investigated).

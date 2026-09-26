@@ -449,11 +449,34 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Current theory (unconfirmed):** the ground is drawn correctly and later masked/covered by a full-screen pass. The map makes one 640x332 A8 (alpha) EFB copy per frame, and the ground draw has alpha update off - a composite that uses EFB alpha as a mask would black out whatever never wrote alpha. Next: find the draw that samples that A8 copy and what it does with it (`NSMBW_ARM_ON_TEX=640x332:39`-style arming, or dump the A8 copy with the readback switch).
 - **Scope:** Unconfirmed.
 
+## 2026-09-26 — Output quality vs Dolphin (aspect, render scale, copy filter)
+
+### Title and levels shown at 4:3 inside a black border
+- **Symptom:** in a 16:9 window the picture filled a 1500x873 box of a 2000x1125 window (measured on a `PrintWindow` capture), with bars on all four sides; less of the scene visible left/right than in Dolphin.
+- **Root cause:** bug class 1. `SCGetAspectRatio_HLE` (`runtime/src/hle/sc.cpp`) was registered only at MKW's 0x801B1BE4. NSMBW's copy at 0x801DD310 ran translated, read the emulated SYSCONF (IPL.AR), got 4:3, and the game letterboxed its 16:9 scene inside the 640x480 frame. The presenter then fitted that frame as 4:3 in the 16:9 window (pillarbox).
+- **Fix:** bind 0x801DD310 to the HLE (`projects/nsmbw/native/nsmbw_sc_aspect_ratio.cpp`, shard manifest regenerated; the function writes only its own stack, so there is no guest bookkeeping to mirror). The game then renders anamorphic 16:9 (squeezed into the 640-wide frame), so `InitializeAuroraWindow` also calls `VILockAspectRatio(16, 9)` when `widescreen` is on (`runtime/src/product/nsmbw_product.cpp`). After: in a 2560x1417 window the picture is 2518x1417, which is 16:9, and the framing matches Dolphin's.
+- **Scope:** NSMBW-specific binding. The present-aspect lock is general to any title on this init path.
+
+### F10 render scale lost on every launch
+- **Symptom:** the resolution picked in F10 was saved to Config.toml but each launch rendered at 1x (`Using framebuffer size 640x528 scale 1`).
+- **Root cause:** `ResetPersistentStateForCleanRun` wrote `resolution_multiplier = 1` on every launch, and NSMBW's `InitializeAuroraWindow` never called `VISetFrameBufferScale` (MKW's `main.cpp` does).
+- **Fix:** the reset keeps the saved scale (it only pulls values above 4x down to 4x), and init applies it; `NSMBW_RES_SCALE=<n>` overrides it for test runs (`nsmbw_product.cpp`). After: a normal launch with 4 saved logs `scaledDst=2560x1920 rect=(0,0,2560x1824)` (`NSMBW_LOG_COPYDISP_GEOM`) from the first frame.
+- **Scope:** General to this init path (not title behaviour). The 4x cap reads config inside the reset and may run before Config.toml is loaded (its log line printed 1x during a 4x run), so the cap is **untested**.
+
+### Edges blurred compared to Dolphin at the same resolution
+- **Symptom:** at 4x the 3D edges and logo were visibly softer than in Dolphin (developer's side-by-side screenshots).
+- **Root cause:** the NSMBW init never set `AuroraConfig::disableCopyFilter` (MKW's `main.cpp:1327` sets it from Config.toml, default true), so it was zero, meaning `false`. The display copy therefore applied the game's vertical deflicker filter: each line is averaged with its neighbours, and at 4x the taps are 4 rendered rows apart (`copyFilterRowStride` = 1824/456). The F10 checkbox reads Config.toml and showed the filter disabled while it was active.
+- **Fix:** `config.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true)` in `InitializeAuroraWindow`. Developer confirmed the output is now as sharp as Dolphin. No controlled A/B capture was taken: the scripted one failed, and an earlier pair landed on different scenes.
+- **Scope:** General to this init path. "Deflicker" is a CRT-era smoothing the Wii applies when copying the frame out; Dolphin disables it by default too.
+
 ---
 
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
+
+- Render-scale cap at 4x in `ResetPersistentStateForCleanRun` may read config before it is loaded (2026-09-26 entry); untested with 8x saved.
+- Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
 - Item boxes untextured (2026-09-23 report): developer could not reproduce on 2026-09-26 - closed unless it returns. World 2 map ground black: see the 2026-09-26 entry (open, theory recorded).
