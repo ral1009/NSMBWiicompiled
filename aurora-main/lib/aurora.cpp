@@ -4,6 +4,7 @@
 #ifdef AURORA_ENABLE_GX
 #include "gfx/common.hpp"
 #include "gfx/efb_ram_copy.hpp"
+#include "gfx/texture_replacement.hpp"
 #include "gx/fifo.hpp"
 #include "gx/shader_info.hpp"
 #include "imgui.hpp"
@@ -1944,6 +1945,15 @@ void aurora_set_log_level(AuroraLogLevel level) { aurora::g_config.logLevel = le
 void aurora_set_pause_on_focus_lost(bool value) { aurora::g_config.pauseOnFocusLost = value; }
 void aurora_set_disable_copy_filter(bool disabled) { aurora::g_config.disableCopyFilter = disabled; }
 bool aurora_get_disable_copy_filter() { return aurora::g_config.disableCopyFilter; }
+void aurora_set_texture_replacements_enabled(bool enabled) {
+  aurora::gfx::texture_replacement::set_enabled(enabled);
+}
+bool aurora_get_texture_replacements_enabled() { return aurora::gfx::texture_replacement::enabled(); }
+bool aurora_texture_replacements_available() { return aurora::g_config.allowTextureReplacements; }
+void aurora_set_texture_patches(uint64_t textureHash, uint32_t width, uint32_t height, uint32_t format,
+                                const AuroraTexturePatch* patches, size_t count) {
+  aurora::gfx::texture_replacement::set_patches(textureHash, width, height, format, patches, count);
+}
 void aurora_set_background_input(bool value) {
   aurora::g_config.allowJoystickBackgroundEvents = value;
   aurora::window::set_background_input(value);

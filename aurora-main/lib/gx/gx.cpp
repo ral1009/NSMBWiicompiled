@@ -1097,6 +1097,29 @@ static void prune_idle_texture_caches() noexcept {
   }
 }
 
+// Tears down every tier that can hold a resolved static texture. Unlike a revision bump, this also
+// drops source-cache entries whose guest bytes are unchanged, which re-validation would keep.
+static void drop_all_static_textures() noexcept {
+  s_textureObjectCaches.clear();
+  s_tlutObjectCaches.clear();
+  s_staticTextureSourceCache.clear();
+  s_staticPaletteTextureSourceCache.clear();
+  s_texObjSourceKeys.clear();
+  s_texObjPaletteSourceKeys.clear();
+  s_texObjSourceKeyMemo.reset();
+  s_texObjPaletteSourceKeyMemo.reset();
+  clear_static_source_front_cache();
+  for (auto& entry : s_textureResolveIdentityCache) {
+    entry.valid = false;
+    entry.binding.reset();
+  }
+  s_lastTextureResolveIdentityValid.fill(false);
+  s_lastNoCopyResolveRevision.fill(0);
+  s_lastStaticSourceResolveKeyValid.fill(false);
+  s_lastStaticSourceNoCopyRevision.fill(0);
+  g_gxState.stateDirty = true;
+}
+
 void invalidate_static_texture_cache() noexcept {
   // Nothing has been marked reusable since the last bump, so every entry in every tier is already stale at the current revision.
   if (s_textureCacheStamps == 0) {
@@ -1303,6 +1326,14 @@ GXState::CopyTextureRef* find_copy_texture_for_texobj(const GXTexObj_& obj) noex
 
 void resolve_sampled_textures(const ShaderInfo& info) noexcept {
   ZoneScoped;
+
+  // HD texture pack switched on/off from the settings menu: every cached texture may be the wrong
+  // one (pack art or original), so resolve everything from scratch.
+  static u32 s_seenReplacementRevision = 0;
+  if (const u32 revision = gfx::texture_replacement::revision(); revision != s_seenReplacementRevision) {
+    s_seenReplacementRevision = revision;
+    drop_all_static_textures();
+  }
 
   for (u32 i = 0; i < MaxTextures; ++i) {
     if (!info.sampledTextures.test(i)) {

@@ -13,11 +13,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cstring>
 #include <filesystem>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string_view>
 
@@ -29,6 +31,10 @@ using aurora::webgpu::g_device;
 
 namespace aurora::gfx::texture_replacement {
 Module Log("aurora::gfx::texture_replacement");
+
+// Written by the settings UI thread, read by the GX thread on every lookup.
+std::atomic<bool> s_enabled{true};
+std::atomic<uint32_t> s_revision{0};
 
 struct RuntimeTextureKey {
   uint64_t textureHash = 0;
@@ -591,14 +597,7 @@ const gfx::TextureHandle* find_cached_replacement(const RuntimeTextureKey& key) 
   return &cached->second.handle;
 }
 
-gfx::TextureHandle load_replacement_texture(const RuntimeTextureKey& key, const ReplacementIndexEntry& entry) noexcept {
-  const auto replacement = load_replacement(entry);
-  if (!replacement.has_value()) {
-    s_failedKeys.insert(key);
-    return {};
-  }
-
-  const auto label = fmt::format("TextureReplacement {}", format_replacement_filename(key));
+gfx::TextureHandle upload_converted(const std::string& label, const ConvertedTexture* replacement) noexcept {
   const wgpu::Extent3D size{
       .width = replacement->width,
       .height = replacement->height,
@@ -627,6 +626,15 @@ gfx::TextureHandle load_replacement_texture(const RuntimeTextureKey& key, const 
   handle->isReplacement = true;
   gfx::write_texture(*handle, replacement->data);
   return handle;
+}
+
+gfx::TextureHandle load_replacement_texture(const RuntimeTextureKey& key, const ReplacementIndexEntry& entry) noexcept {
+  const auto replacement = load_replacement(entry);
+  if (!replacement.has_value()) {
+    s_failedKeys.insert(key);
+    return {};
+  }
+  return upload_converted(fmt::format("TextureReplacement {}", format_replacement_filename(key)), &*replacement);
 }
 
 void cache_replacement(const RuntimeTextureKey& key, const gfx::TextureHandle& handle) noexcept {
@@ -761,14 +769,222 @@ void load_tlut(const GXTlutObj* obj, uint32_t idx) noexcept {
   s_loadedTluts[idx] = {};
 }
 
+// ---- Texture patches -------------------------------------------------------------------------
+// A product can paint images over rectangles of a game texture (NSMBW: controller glyphs over the
+// Wii button icons of its PictureFont sheet). The base is the texture pack's file when the pack is
+// on and has one, otherwise the decoded original, so patches work with or without a pack.
+
+struct PatchImage {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> rgba; // straight alpha
+};
+
+struct TexturePatch {
+  uint16_t x, y, width, height; // native texels
+  std::shared_ptr<const PatchImage> image;
+};
+
+struct PatchedTexture {
+  uint32_t generation = 0;
+  bool fromPack = false;
+  TextureHandle handle;
+};
+
+// Patch sets are written by the event thread and read by the GX thread.
+std::mutex s_patchMutex;
+absl::flat_hash_map<RuntimeTextureKey, std::vector<TexturePatch>> s_patches;
+std::atomic<bool> s_hasPatches{false};
+std::atomic<uint32_t> s_patchGeneration{0};
+// Decoded images keyed by the caller's PNG buffer, which must stay alive (embedded data).
+absl::flat_hash_map<const uint8_t*, std::shared_ptr<const PatchImage>> s_patchImages;
+// GX thread only.
+absl::flat_hash_map<RuntimeTextureKey, PatchedTexture> s_patchedCache;
+
+RuntimeTextureKey make_patch_key(uint64_t hash, uint32_t width, uint32_t height, uint32_t format) noexcept {
+  return RuntimeTextureKey{.textureHash = hash, .width = width, .height = height, .format = format};
+}
+
+std::shared_ptr<const PatchImage> decode_patch_image(const uint8_t* png, size_t size) noexcept {
+  if (const auto it = s_patchImages.find(png); it != s_patchImages.end()) {
+    return it->second;
+  }
+  auto decoded = png::load_png_bytes(png, size);
+  if (!decoded.has_value() || decoded->format != wgpu::TextureFormat::RGBA8Unorm) {
+    Log.warn("texture_replacement: could not decode a {}-byte patch image", size);
+    return {};
+  }
+  auto image = std::make_shared<PatchImage>();
+  image->width = decoded->width;
+  image->height = decoded->height;
+  image->rgba.assign(decoded->data.data(), decoded->data.data() + decoded->data.size());
+  s_patchImages.emplace(png, image);
+  return image;
+}
+
+void set_patches(uint64_t hash, uint32_t width, uint32_t height, uint32_t format, const AuroraTexturePatch* patches,
+                 size_t count) noexcept {
+  std::vector<TexturePatch> list;
+  std::lock_guard lock(s_patchMutex);
+  for (size_t i = 0; i < count; ++i) {
+    const auto& p = patches[i];
+    auto image = p.png != nullptr ? decode_patch_image(p.png, p.pngSize) : nullptr;
+    list.push_back({p.x, p.y, p.width, p.height, std::move(image)});
+  }
+  const auto key = make_patch_key(hash, width, height, format);
+  if (list.empty()) {
+    s_patches.erase(key);
+  } else {
+    s_patches[key] = std::move(list);
+  }
+  s_hasPatches.store(!s_patches.empty(), std::memory_order_relaxed);
+  s_patchGeneration.fetch_add(1, std::memory_order_relaxed);
+  // Same flush as the pack toggle: every texture gx already resolved may now be stale.
+  s_revision.fetch_add(1, std::memory_order_release);
+}
+
+// Samples `image` bilinearly at (u, v) in [0,1]; colour is premultiplied by alpha.
+std::array<float, 4> sample_premultiplied(const PatchImage& image, float u, float v) noexcept {
+  const float fx = std::clamp(u * image.width - 0.5f, 0.0f, static_cast<float>(image.width - 1));
+  const float fy = std::clamp(v * image.height - 0.5f, 0.0f, static_cast<float>(image.height - 1));
+  const uint32_t x0 = static_cast<uint32_t>(fx), y0 = static_cast<uint32_t>(fy);
+  const uint32_t x1 = std::min(x0 + 1, image.width - 1), y1 = std::min(y0 + 1, image.height - 1);
+  const float tx = fx - x0, ty = fy - y0;
+  std::array<float, 4> out{};
+  const auto add = [&](uint32_t x, uint32_t y, float w) {
+    const uint8_t* p = &image.rgba[(static_cast<size_t>(y) * image.width + x) * 4];
+    const float a = p[3] / 255.0f;
+    out[0] += p[0] * a * w;
+    out[1] += p[1] * a * w;
+    out[2] += p[2] * a * w;
+    out[3] += a * w;
+  };
+  add(x0, y0, (1 - tx) * (1 - ty));
+  add(x1, y0, tx * (1 - ty));
+  add(x0, y1, (1 - tx) * ty);
+  add(x1, y1, tx * ty);
+  return out;
+}
+
+// Clears each patch rectangle and draws its image into it, aspect-fit and centred. The base may be
+// an upscaled pack texture, so rectangles are scaled from native texels to the base's size.
+// Minification (a 256 px glyph into a 32 px native cell) samples bilinearly with no mip, which is
+// fine for flat-colour icons but would alias fine detail.
+void apply_patches(ConvertedTexture& base, uint32_t nativeWidth, uint32_t nativeHeight,
+                   const std::vector<TexturePatch>& patches) noexcept {
+  const bool bgra = base.format == wgpu::TextureFormat::BGRA8Unorm;
+  const float sx = static_cast<float>(base.width) / nativeWidth;
+  const float sy = static_cast<float>(base.height) / nativeHeight;
+  uint8_t* pixels = base.data.data();
+  for (const auto& patch : patches) {
+    const uint32_t rx0 = std::min(static_cast<uint32_t>(patch.x * sx), base.width);
+    const uint32_t ry0 = std::min(static_cast<uint32_t>(patch.y * sy), base.height);
+    const uint32_t rx1 = std::min(static_cast<uint32_t>((patch.x + patch.width) * sx), base.width);
+    const uint32_t ry1 = std::min(static_cast<uint32_t>((patch.y + patch.height) * sy), base.height);
+    for (uint32_t y = ry0; y < ry1; ++y) {
+      std::memset(pixels + (static_cast<size_t>(y) * base.width + rx0) * 4, 0, (rx1 - rx0) * 4);
+    }
+    if (!patch.image || patch.image->width == 0 || patch.image->height == 0) {
+      continue;
+    }
+    const auto& image = *patch.image;
+    const float rw = static_cast<float>(rx1 - rx0), rh = static_cast<float>(ry1 - ry0);
+    const float fit = std::min(rw / image.width, rh / image.height);
+    const float dw = image.width * fit, dh = image.height * fit;
+    const float ox = rx0 + (rw - dw) * 0.5f, oy = ry0 + (rh - dh) * 0.5f;
+    for (uint32_t y = ry0; y < ry1; ++y) {
+      const float v = (y + 0.5f - oy) / dh;
+      if (v < 0.0f || v > 1.0f) {
+        continue;
+      }
+      for (uint32_t x = rx0; x < rx1; ++x) {
+        const float u = (x + 0.5f - ox) / dw;
+        if (u < 0.0f || u > 1.0f) {
+          continue;
+        }
+        const auto c = sample_premultiplied(image, u, v);
+        uint8_t* d = pixels + (static_cast<size_t>(y) * base.width + x) * 4;
+        const float a = c[3];
+        const float inv = a > 0.0f ? 1.0f / a : 0.0f;
+        const uint8_t r = static_cast<uint8_t>(std::clamp(c[0] * inv, 0.0f, 255.0f));
+        const uint8_t g = static_cast<uint8_t>(std::clamp(c[1] * inv, 0.0f, 255.0f));
+        const uint8_t b = static_cast<uint8_t>(std::clamp(c[2] * inv, 0.0f, 255.0f));
+        d[0] = bgra ? b : r;
+        d[1] = g;
+        d[2] = bgra ? r : b;
+        d[3] = static_cast<uint8_t>(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
+      }
+    }
+  }
+}
+
+std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GXTexObj_& obj, bool packOn) noexcept {
+  std::vector<TexturePatch> patches;
+  uint32_t generation = 0;
+  {
+    std::lock_guard lock(s_patchMutex);
+    const auto it = s_patches.find(make_patch_key(key.textureHash, key.width, key.height, key.format));
+    if (it == s_patches.end()) {
+      return std::nullopt;
+    }
+    patches = it->second;
+    generation = s_patchGeneration.load(std::memory_order_relaxed);
+  }
+
+  const auto* packEntry = packOn ? find_replacement_path(key) : nullptr;
+  const bool fromPack = packEntry != nullptr;
+  if (const auto it = s_patchedCache.find(key);
+      it != s_patchedCache.end() && it->second.generation == generation && it->second.fromPack == fromPack) {
+    return it->second.handle;
+  }
+
+  std::optional<ConvertedTexture> base;
+  if (fromPack) {
+    base = load_replacement(*packEntry);
+  }
+  if (!base.has_value()) {
+    const u32 dataSize = GXGetTexBufferSize(static_cast<u16>(obj.width()), static_cast<u16>(obj.height()),
+                                            obj.format(), false, 0);
+    base = convert_texture(obj.format(), obj.width(), obj.height(), 1,
+                           {static_cast<const uint8_t*>(obj.data), dataSize});
+  }
+  if (base->format != wgpu::TextureFormat::RGBA8Unorm && base->format != wgpu::TextureFormat::BGRA8Unorm) {
+    Log.warn("texture_replacement: cannot patch {} (base format {} is not 8-bit RGBA)",
+             format_replacement_filename(key), static_cast<uint32_t>(base->format));
+    return std::nullopt;
+  }
+  if (base->mips != 1) {
+    // Patching only the top level would leave the unpatched icons in the smaller mips.
+    Log.warn("texture_replacement: cannot patch {} (base has {} mips)", format_replacement_filename(key), base->mips);
+    return std::nullopt;
+  }
+
+  apply_patches(*base, key.width, key.height, patches);
+  auto handle = upload_converted(fmt::format("PatchedTexture {}", format_replacement_filename(key)), &*base);
+  s_patchedCache[key] = PatchedTexture{.generation = generation, .fromPack = fromPack, .handle = handle};
+  Log.info("texture_replacement: patched {} ({} rects, base {})", format_replacement_filename(key), patches.size(),
+           fromPack ? "pack" : "original");
+  return handle;
+}
+
 std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   ZoneScoped;
 
-  if (!g_config.allowTextureReplacements) {
+  const bool packOn = g_config.allowTextureReplacements && s_enabled.load(std::memory_order_relaxed);
+  const bool hasPatches = s_hasPatches.load(std::memory_order_relaxed);
+  if (!packOn && !hasPatches) {
     return std::nullopt;
   }
 
   const RuntimeTextureKey key = build_runtime_key(obj);
+  if (hasPatches) {
+    if (auto patched = find_patched(key, obj, packOn); patched.has_value()) {
+      return patched;
+    }
+  }
+  if (!packOn) {
+    return std::nullopt;
+  }
   const auto* path = find_replacement_path(key);
   if (path == nullptr) {
     report_missing_key(key, obj);
@@ -798,5 +1014,15 @@ std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept {
   const RuntimeTextureKey key = build_runtime_key(obj);
   return format_replacement_filename(key);
 }
+
+void set_enabled(bool enabled) noexcept {
+  if (s_enabled.exchange(enabled, std::memory_order_relaxed) != enabled) {
+    s_revision.fetch_add(1, std::memory_order_release);
+  }
+}
+
+bool enabled() noexcept { return g_config.allowTextureReplacements && s_enabled.load(std::memory_order_relaxed); }
+
+uint32_t revision() noexcept { return s_revision.load(std::memory_order_acquire); }
 
 } // namespace aurora::gfx::texture_replacement

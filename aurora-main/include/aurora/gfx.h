@@ -82,6 +82,30 @@ uint32_t aurora_get_queued_pipeline_count();
 void aurora_set_disable_copy_filter(bool disabled);
 bool aurora_get_disable_copy_filter();
 
+// Live switch for Dolphin-style texture packs. Only has an effect when
+// AuroraConfig::allowTextureReplacements was set at init (that builds the pack index);
+// available() reports whether it was.
+void aurora_set_texture_replacements_enabled(bool enabled);
+bool aurora_get_texture_replacements_enabled();
+bool aurora_texture_replacements_available();
+
+// Paints images over rectangles of one game texture, identified the way a Dolphin texture-pack file
+// name identifies it (tex1_<width>x<height>_<hash>_<format>). Works on the pack's file when the pack
+// is on and has one, otherwise on the original. Each rectangle is in native texels and is cleared,
+// then filled with its PNG aspect-fit and centred (png == NULL leaves it transparent). The PNG
+// buffers must outlive every later call (decoded images are cached by pointer). count == 0
+// removes the texture's patches. Takes effect on the next draw.
+typedef struct AuroraTexturePatch {
+  uint16_t x;
+  uint16_t y;
+  uint16_t width;
+  uint16_t height;
+  const uint8_t* png;
+  size_t pngSize;
+} AuroraTexturePatch;
+void aurora_set_texture_patches(uint64_t textureHash, uint32_t width, uint32_t height, uint32_t format,
+                                const AuroraTexturePatch* patches, size_t count);
+
 // Guest-RAM write tracking. `generation` changes whenever guest RAM covering a host range was
 // written (or returns AURORA_GUEST_WRITE_UNTRACKED); `notify` reports writes aurora made itself.
 #define AURORA_GUEST_WRITE_UNTRACKED UINT64_MAX
