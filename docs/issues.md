@@ -442,11 +442,11 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** `GXCopyTex(GuestToHostPtr(CanonicalizeGxMainRamAddress(da)), ...)` (`runtime/src/hle/gx/gx_copy.cpp`). `NSMBW_LOG_COPYMATCH` afterwards: 194 cached-copy hits for the map's 32x32 light textures. Did **not** by itself fix the W2 ground.
 - **Scope:** General (runtime) - any title copying to a cached/uncached address and sampling through another view.
 
-### World 2 map ground black (open)
+### World 2 map ground black (fixed 2026-09-27 - see that day's entry; the theory below was wrong)
 - **Symptom:** World 2 map: paths, props and UI draw, the sand ground is solid black (developer screenshot; reproduced in the portable test copy with a save parked in W2). Other worlds fine.
 - **Established (each by a capture):** the ground draw uses the 256x256 CMPR sand texture (decodes fine) x two 32x32 RGBA8 light textures sampled by normal (texgen MTX3x4 from NRM, tex matrix 33/36, dual-tex post matrix 67/70, normalize) x vertex colour. Light textures are rendered each frame (EGG LightTexture, 640x72 strip at y=456, ramp textures 64x4 I8) and copied; dumped via readback they are bright (avg RGB ~190,189,140 / specular ~57,61,54). Vertex colour = FF FF FF FF (1-entry indexed array). Normals: S16 frac 14, sane. All three rows of tex 33/36 and post 67/70 sane; dualTex=1; post row 2 = (0,0,0,1). Worked through for an up-facing normal the lookup lands near the bright centre.
 - **Ruled out:** strided-copy rule (all map copies have dst == src size), fog (`NSMBW_DEBUG_NO_FOG`), lighting (`NSMBW_DEBUG_NO_LIGHTING`), copy lookup (fixed above, now hits), light-texture content, vertex colour, normals, matrices, SU scale (only used for indirect fixed-point UVs).
-- **Current theory (unconfirmed):** the ground is drawn correctly and later masked/covered by a full-screen pass. The map makes one 640x332 A8 (alpha) EFB copy per frame, and the ground draw has alpha update off - a composite that uses EFB alpha as a mask would black out whatever never wrote alpha. Next: find the draw that samples that A8 copy and what it does with it (`NSMBW_ARM_ON_TEX=640x332:39`-style arming, or dump the A8 copy with the readback switch).
+- **Superseded theory:** the ground is drawn correctly and later masked/covered by a full-screen pass. The map makes one 640x332 A8 (alpha) EFB copy per frame, and the ground draw has alpha update off - a composite that uses EFB alpha as a mask would black out whatever never wrote alpha. Next: find the draw that samples that A8 copy and what it does with it (`NSMBW_ARM_ON_TEX=640x332:39`-style arming, or dump the A8 copy with the readback switch).
 - **Scope:** Unconfirmed.
 
 ## 2026-09-26 — Output quality vs Dolphin (aspect, render scale, copy filter)
@@ -514,6 +514,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** wait for the previous present's GPU work outside the lock before acquiring (`aurora.cpp`); skip RAM write-back for tile copies the scaled tile cache owns (`GXFrameBuffer.cpp`, `scaled_tile_cache.cpp`); amortized cache sweeps (`gx.cpp`). After: 120 mode locked; 180 improved but not locked.
 - **Scope:** General (aurora). 180 remains partly open.
 
+### World 2 map ground black: palette (CI) textures never got their palette
+- **Symptom:** World 2 map sand ground solid black; paths, props, UI fine (developer; reproduced with the portable test copy parked in W2).
+- **How it was found:** the 2026-09-26 trace had armed on 256x256 CMPR draws, which turned out to be the fortress, so every "ground input" it verified belonged to another draw. New `NSMBW_DEBUG_TEXWHITE=<w>x<h>:<fmt>[,...]` (aurora `gx.cpp`) samples solid white for textures of those shapes. Light textures white: ground still black. A group of large textures white: dunes appear. Bisected to the two CI8 textures (128x128 and 256x128, TLUT 0).
+- **Root cause:** two layers. (1) Bug class 1: `GXInitTlutObj` / `GXLoadTlut` were bound only at MKW's 0x80170F80 / 0x80170FA8, so NSMBW's 0x801C7660 / 0x801C7690 ran translated and aurora never got a palette. (2) Binding them was not enough: NSMBW's NW4R g3d fills its `GXTlutObj`s itself, so the `GXInitTlutObj` HLE is never called (`NSMBW_LOG_TLUT` showed GXLoadTlut calls and no init), and the HLE load saw an unknown object -> empty palette.
+- **Fix:** bind both at NSMBW's addresses (`projects/nsmbw/native/nsmbw_gx_overrides.cpp`, shard manifest regenerated). The `GXLoadTlut` HLE (`runtime/src/hle/gx/gx_texture.cpp`) decodes objects the HLE never initialized from their guest bytes, laid out as `GXInitTlutObj` writes them: +0 format bits 10-11, +4 physical address >> 5 in bits 0-23, +8 u16 count. The first attempt masked 21 address bits and read MEM1 garbage for these MEM2 palettes: grey dunes. With 24 bits: golden sand (screenshot). Title, W1 map and 1-1 unchanged.
+- **Scope:** NSMBW-specific bindings. The guest-byte decoding is general to any title whose engine builds TLUT objects without `GXInitTlutObj`. Also found: aurora's BP 0x65 handler treats the TMEM address bits as a TLUT slot index, which only matters for palettes loaded via display lists (not the case here) - left as an open item.
+
 ---
 
 ## Open / unconfirmed items
@@ -524,7 +531,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
-- Item boxes untextured (2026-09-23 report): cause found and fixed 2026-09-26 (native-readback blit clamp, only above 1x). World 2 map ground black: see the 2026-09-26 entry (open, theory recorded).
+- Item boxes untextured (2026-09-23 report): cause found and fixed 2026-09-26 (native-readback blit clamp, only above 1x). World 2 map ground black: fixed 2026-09-27 (palette objects).
 - (superseded) Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.
 - `func_801AF900` no-op (colour/curve table), `func_801AC980` / `func_801AD620` / `func_801AD9E0` abort stubs; second cause for their non-translation undiagnosed.
@@ -536,3 +543,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Leftover `[debug]` print for target 0x60 in `Program.cs` discovery loop.
 - `*_diag.cpp` overrides whose areas are now stable (each removal needs the shard manifest regenerated).
 - 180 FPS interpolation still misses frames: EFB-probe downloads and `gfx::end_frame` contend for Dawn's device lock with the presenter (2026-09-27 night).
+- aurora `command_processor.cpp` BP 0x65 (LOADTLUT1) uses the TMEM-address bits as a TLUT slot index; display-list palette loads would be dropped. Not hit by NSMBW so far (2026-09-27).

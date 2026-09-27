@@ -682,3 +682,19 @@ What I learned:
 What's next:
 - 180 still misses frames. The remaining worker stalls are EFB-probe downloads (`ensure_native_texture` creating resources per frame) and `gfx::end_frame`, both still contending for Dawn's device lock with the presenter. Fixing that means presenting from a path that does not share the lock, or caching those downscale textures.
 - The Vulkan A/B did not take effect (the run logged present mode Immediate), so it is untested.
+
+## 2026-09-27 (night, later) — Phase 7 (World 2 map ground fixed)
+What I did:
+- Reproduced the black World 2 sand with the portable test copy (W2 save). Checked the output side first, as the 2026-09-26 entry advised: a new switch, `NSMBW_DEBUG_TEXWHITE=<w>x<h>:<fmt>[,...]`, makes aurora sample solid white for textures of those shapes.
+  - Light textures white: the ground stayed black, so they were not the cause.
+  - The 256x256 CMPR "ground" texture white: only the fortress changed. The previous day's traced draw was the fortress, not the ground.
+  - A group of large textures white: the dunes appeared. Bisected to two CI8 (palette) textures.
+- `NSMBW_LOG_TLUT` showed `GXLoadTlut` calls but no `GXInitTlutObj`, and `GXInitTlutObj`/`GXLoadTlut` were bound only at MKW's addresses. Bound them at NSMBW's (0x801C7660 / 0x801C7690, identified from the translated bodies), and made the load HLE decode guest-built TLUT objects. Details in issues.md.
+- Result: golden sand dunes (screenshot); title, W1 map and 1-1 unchanged.
+
+What broke / what I didn't expect:
+- The first decode used a 21-bit address mask and gave grey dunes: these palettes are in MEM2, and the SDK stores 24 bits. Grey = the right geometry sampling the wrong memory.
+
+What I learned:
+- Forcing an input to a known value (white) answers "does this input matter?" in one run. It is the output-side test the previous day's advice asked for, and it found in 20 minutes what input-by-input verification missed in an hour.
+- *CI / palette texture*: pixels store indices into a separate colour table (TLUT) loaded into texture memory; if the table never arrives, every index maps to nothing.

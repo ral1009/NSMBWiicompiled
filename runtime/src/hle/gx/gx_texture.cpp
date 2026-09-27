@@ -1178,12 +1178,35 @@ extern "C" void GX__InitTlutObj_80170f80(uint32_t oa, uint32_t da, uint32_t f, u
     // Leave the object unconstructed on a bad descriptor. A later GXLoadTlut
     // then takes GetHostTlutObj's soft-fail path and gets a fresh empty object
     // instead of aurora reading entries*2 bytes off an unvalidated pointer.
-    if (!ValidateTlutData(oa, meta)) return;
+    const bool valid = ValidateTlutData(oa, meta);
+    { static const bool logTlut = AURORA_ENV("NSMBW_LOG_TLUT") != nullptr; static int logged = 0;
+      if (logTlut && logged < 40) { ++logged; RT_LOGF(RT_TAG_GX, "[NSMBW_TLUT] HLE GXInitTlutObj oa=0x%08X data=0x%08X fmt=%u entries=%u valid=%d\n", oa, da, f, e, valid ? 1 : 0); } }
+    if (!valid) return;
     GXInitTlutObj(obj, GuestToHostPtr(da), (GXTlutFmt)f, (u16)e); MarkHostTlutObjConstructed(oa);
 }
 PPC_NATIVE_OVERRIDE_VOID(80170f80, GX__InitTlutObj_80170f80, (uint32_t oa, uint32_t da, uint32_t f, uint32_t e), (oa, da, f, e));
 
-extern "C" void GX__LoadTlut_80170fa8(uint32_t oa, uint32_t tl) { std::lock_guard<std::mutex> guard(g_tlutObjMutex); if (tl >= kMaxTluts) { RT_LOGF(RT_TAG_GX, "GXLoadTlut: invalid TLUT index %u (oa=0x%08X)\n", tl, oa); return; } TlutObjMeta& meta = GetTlutObjMeta(oa); if (meta.dirty) { if (ValidateTlutData(oa, meta)) { GXTlutObj* rebuild = CreateHostTlutObj(oa); GXInitTlutObj(rebuild, GuestToHostPtr(meta.dataAddr), (GXTlutFmt)meta.format, meta.entries); MarkHostTlutObjConstructed(oa); } meta.dirty = false; } GXTlutObj* obj = GetHostTlutObj(oa); GXLoadTlut(obj, (GXTlut)tl); try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {} }
+extern "C" void GX__LoadTlut_80170fa8(uint32_t oa, uint32_t tl) { std::lock_guard<std::mutex> guard(g_tlutObjMutex);
+    { static const bool logTlut = AURORA_ENV("NSMBW_LOG_TLUT") != nullptr; static int logged = 0;
+      if (logTlut && logged < 40) { ++logged; RT_LOGF(RT_TAG_GX, "[NSMBW_TLUT] HLE GXLoadTlut oa=0x%08X idx=%u\n", oa, tl); } } if (tl >= kMaxTluts) { RT_LOGF(RT_TAG_GX, "GXLoadTlut: invalid TLUT index %u (oa=0x%08X)\n", tl, oa); return; } TlutObjMeta& meta = GetTlutObjMeta(oa);
+    // An object the GXInitTlutObj HLE never saw (NSMBW: NW4R g3d fills its GXTlutObjs itself, so
+    // the HLE init is never called and every CI texture sampled an empty palette - the black World
+    // 2 map ground, 2026-09-27): decode the guest bytes, laid out as the SDK's GXInitTlutObj writes
+    // them (NSMBW 0x801C7660): +0 format in bits 10-11, +4 BP 0x64 value with the palette's
+    // physical address >> 5 in bits 0-23, +8 u16 entry count.
+    if (meta.dataAddr == 0 || meta.fromGuestBytes) {
+        uint32_t w0 = 0, w1 = 0, w2 = 0;
+        if (Memory::TryRead32(oa, w0) && Memory::TryRead32(oa + 4, w1) && Memory::TryRead32(oa + 8, w2)) {
+            const uint16_t n = static_cast<uint16_t>(w2 >> 16); // big-endian u16 at +8
+            const uint32_t addr = CanonicalizeGxMainRamAddress((w1 & 0xFFFFFFu) << 5); // 24 bits: MEM2 palettes need all of them
+            const uint32_t fmt = (w0 >> 10) & 3u;
+            if (addr != meta.dataAddr || fmt != meta.format || n != meta.entries) {
+                meta.dataAddr = addr; meta.format = fmt; meta.entries = n; meta.dirty = true;
+            }
+            meta.fromGuestBytes = true;
+        }
+    }
+    if (meta.dirty) { if (ValidateTlutData(oa, meta)) { GXTlutObj* rebuild = CreateHostTlutObj(oa); GXInitTlutObj(rebuild, GuestToHostPtr(meta.dataAddr), (GXTlutFmt)meta.format, meta.entries); MarkHostTlutObjConstructed(oa); } meta.dirty = false; } GXTlutObj* obj = GetHostTlutObj(oa); GXLoadTlut(obj, (GXTlut)tl); try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {} }
 PPC_NATIVE_OVERRIDE_VOID(80170fa8, GX__LoadTlut_80170fa8, (uint32_t oa, uint32_t tl), (oa, tl));
 
 // ============================================================================

@@ -1433,6 +1433,42 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
       }
     }
 
+    // DIAGNOSTIC (NSMBW_DEBUG_TEXWHITE=<w>x<h>:<fmt>): sample solid white instead of any texture of
+    // that shape, to test whether a draw's black output comes from that texture input.
+    {
+      static const char* whiteSpec = std::getenv("NSMBW_DEBUG_TEXWHITE");
+      if (whiteSpec != nullptr) {
+        // Comma-separated list of <w>x<h>:<fmt>.
+        static const std::vector<std::array<uint32_t, 3>> shapes = [] {
+          std::vector<std::array<uint32_t, 3>> out;
+          const char* p = whiteSpec;
+          while (*p) {
+            std::array<uint32_t, 3> s{};
+            if (std::sscanf(p, "%ux%u:%u", &s[0], &s[1], &s[2]) == 3) out.push_back(s);
+            const char* comma = std::strchr(p, ',');
+            if (!comma) break;
+            p = comma + 1;
+          }
+          return out;
+        }();
+        bool match = false;
+        for (const auto& s : shapes) {
+          match = match || (obj.width() == s[0] && obj.height() == s[1] && obj.format() == s[2]);
+        }
+        if (match) {
+          static gfx::TextureHandle white = [] {
+            static const std::array<u8, 64> kWhiteBlock = [] {
+              std::array<u8, 64> b{};
+              b.fill(0xFF); // one 4x4 GX RGBA8 block: AR and GB planes all 0xFF
+              return b;
+            }();
+            return gfx::new_static_texture_2d(4, 4, 1, GX_TF_RGBA8, {kWhiteBlock.data(), kWhiteBlock.size()}, false,
+                                              "Debug white");
+          }();
+          handle = white;
+        }
+      }
+    }
     obj.mFormat = resolved_format_for_handle(handle);
     textureBind = gfx::TextureBind{obj, std::move(handle)};
     // The per-texmap memo below lets a later draw reuse this binding without touching guest memory again, including for no_cache textures that never reach any of the stamped caches above, so it has to count as a stamp.

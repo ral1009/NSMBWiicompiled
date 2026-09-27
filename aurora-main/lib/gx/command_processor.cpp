@@ -1183,6 +1183,15 @@ static void handle_bp(u32 value, bool bigEndian) {
     break;
   case 0x65: {
     const auto idx = bp_get(value, 10, 0);
+    {
+      static const bool logTlut = std::getenv("NSMBW_LOG_TLUT") != nullptr;
+      static int logged = 0;
+      if (logTlut && logged < 40) {
+        ++logged;
+        std::fprintf(stderr, "[NSMBW_TLUT] BP65 value=0x%06X tmem=0x%03X count=%u src(BP64)=0x%06X\n", value, idx,
+                     bp_get(value, 11, 10), g_gxState.bpRegCache[0x64]);
+      }
+    }
     if (idx < MaxTluts) {
       auto& slot = g_gxState.loadedTluts[idx];
       slot.loadTlut0 = g_gxState.bpRegCache[0x64];

@@ -147,6 +147,18 @@ extern "C" void NsmbwCallDisplayList_801C9720(uint32_t listAddr, uint32_t nbytes
 PPC_NATIVE_OVERRIDE_VOID(801C9720, NsmbwCallDisplayList_801C9720, (uint32_t listAddr, uint32_t nbytes), (listAddr, nbytes));
 PPC_NATIVE_OVERRIDE_VOID(801C48C0, GX__SetArray_8016e32c, (uint32_t attr, uint32_t base, uint32_t stride), (attr, base, stride));
 PPC_NATIVE_OVERRIDE_VOID(801C7600, GX__LoadTexObj_80170f2c, (uint32_t oa, uint32_t tid), (oa, tid));
+// Palette (CI) textures: GXInitTlutObj / GXLoadTlut were bound only at MKW's 0x80170F80 /
+// 0x80170FA8, so NSMBW's copies ran translated and aurora never received a palette - every CI4/CI8
+// texture sampled black. Visible as the World 2 map's sand ground (two CI8 textures, 128x128 and
+// 256x128, TLUT 0): forcing them white with NSMBW_DEBUG_TEXWHITE brought the lit dunes back.
+// Identified from the translated bodies: 0x801C7660 takes (obj, lut, fmt, n) and packs them into
+// obj+0/+4/+8; 0x801C7690 calls __GXData->tlutRegionCallback(idx) (gd+1308) and copies the object
+// into the returned TMEM region. The HLE InitTlutObj does not write the guest object back; its only
+// reader in NSMBW is GXLoadTlut, now bound too.
+extern "C" void GX__InitTlutObj_80170f80(uint32_t oa, uint32_t da, uint32_t f, uint32_t e);
+extern "C" void GX__LoadTlut_80170fa8(uint32_t oa, uint32_t tl);
+PPC_NATIVE_OVERRIDE_VOID(801C7660, GX__InitTlutObj_80170f80, (uint32_t oa, uint32_t da, uint32_t f, uint32_t e), (oa, da, f, e));
+PPC_NATIVE_OVERRIDE_VOID(801C7690, GX__LoadTlut_80170fa8, (uint32_t oa, uint32_t tl), (oa, tl));
 PPC_NATIVE_OVERRIDE_VOID(801C8F00, GX__SetBlendMode_8017277c, (uint32_t t, uint32_t s, uint32_t d, uint32_t op), (t, s, d, op));
 PPC_NATIVE_OVERRIDE_VOID(801C8F50, GX__SetColorUpdate_801727cc, (uint32_t en), (en));
 PPC_NATIVE_OVERRIDE_VOID(801C8F80, GX__SetAlphaUpdate_801727f8, (uint32_t en), (en));

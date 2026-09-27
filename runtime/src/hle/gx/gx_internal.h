@@ -208,6 +208,9 @@ struct TlutObjMeta {
     uint16_t entries = 0;
     uint32_t format = 0;
     bool dirty = true;
+    // Built by decoding the guest GXTlutObj in GXLoadTlut (the object was never passed to the
+    // GXInitTlutObj HLE, e.g. NW4R g3d writing its palette objects itself), so re-read each load.
+    bool fromGuestBytes = false;
 };
 
 using BoundTexInfo = GxTextureBindingContract::State;
