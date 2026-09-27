@@ -83,3 +83,4 @@ output.txt
 /.venv/
 /.claude/
 /MKWiicompiled/
+__pycache__/
