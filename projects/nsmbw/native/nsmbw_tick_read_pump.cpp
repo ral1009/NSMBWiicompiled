@@ -189,7 +189,7 @@ void NsmbwDiagWatch() {
     }
 
     // SELF-TEST ONLY, opt-in via NSMBW_AUTO_PRESS_SELFTEST: hand KPADRead one frame of "A held"
-    // once a second for the first NSMBW_AUTO_PRESS_TICKS (default 1200) ticks, so an unattended
+    // once a second for the first NSMBW_AUTO_PRESS_TICKS (default 4000) ticks, so an unattended
     // run gets past every button-gated wait (strap / controller-info skip, the save-data-created
     // dialog, the title) without a physical key. It goes through the same KPAD sample path as a
     // real key, so it does not test a separate code path. NSMBW_AUTO_PRESS_STOP_SCENE=<profile>
@@ -201,7 +201,9 @@ void NsmbwDiagWatch() {
         }();
         static const int pressWindowTicks = [] {
             const char* v = AURORA_ENV("NSMBW_AUTO_PRESS_TICKS");
-            return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 1200;
+            // 4000, not 1200: with the strap skip (nsmbw_skip_boot_screens.cpp) a 1200-tick window
+            // ran out at file select on 2026-09-27 (both input paths); 4000 reached 1-1 in ~30 s.
+            return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 4000;
         }();
         static int diagAutoPressTick = 0;
         ++diagAutoPressTick;

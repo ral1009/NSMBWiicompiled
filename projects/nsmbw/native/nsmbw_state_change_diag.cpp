@@ -34,6 +34,7 @@
 #include <cstring>
 
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+extern "C" void NsmbwSkipBootScreensApply(); // nsmbw_skip_boot_screens.cpp
 
 namespace {
 constexpr uint32_t kIsNullSlot = 0x0Cu;
@@ -109,5 +110,7 @@ extern "C" void StateChangeDiag_8015FD50(uint32_t thisPtr, uint32_t newIdPtr)
     try {
         Memory::Write8(thisPtr + kStateChangedOff, 1);
     } catch (const Memory::AccessViolation&) {}
+    // After the new state's initializer ran, which may have just set a boot layout visible.
+    NsmbwSkipBootScreensApply();
 }
 PPC_NATIVE_OVERRIDE_VOID(8015FD50, StateChangeDiag_8015FD50, (uint32_t thisPtr, uint32_t newIdPtr), (thisPtr, newIdPtr));
