@@ -6,6 +6,7 @@
 #include "../../gfx/efb_ram_copy.hpp"
 #include "../../gfx/texture.hpp"
 #include "../../gx/fifo.hpp"
+#include "../../gx/scaled_tile_cache.hpp"
 #include "../../internal.hpp"
 #include "../../window.hpp"
 #include "../../gfx/clear.hpp"
@@ -592,6 +593,9 @@ void GXCopyTex(void* dest, GXBool clear) {
     }
   }
   if (stridedSubRect) {
+    // Keep the scaled result for an upscaled atlas too; the RAM write-back below is native size.
+    aurora::gx::scaled_tile_cache::note_tile_copy(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
+                                                  texCopyFmt, handle.handle);
     aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
                                            texCopyFmt, handle.handle);
   } else if (AURORA_ENV("NSMBW_DEBUG_READBACK_SMALL_COPIES") != nullptr && logicalDstWidth <= 64 &&

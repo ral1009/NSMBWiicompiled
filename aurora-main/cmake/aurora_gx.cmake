@@ -16,6 +16,7 @@ add_library(aurora_gx STATIC
         lib/gx/frame_interpolation.cpp
         lib/gx/gx.cpp
         lib/gx/pipeline.cpp
+        lib/gx/scaled_tile_cache.cpp
         lib/gx/shader.cpp
         lib/gx/shader_info.cpp
         lib/dolphin/gx/GXBump.cpp

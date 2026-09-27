@@ -184,6 +184,7 @@ struct RenderPass {
   bool resolveLinearSampling = false;
   bool snapshotColorResolveSource = false;
   std::vector<tex_palette_conv::ConvRequest> paletteConvs;
+  std::vector<PostResolveOp> postResolveOps;
 };
 static std::vector<RenderPass> g_renderPasses;
 static u32 g_currentRenderPass = UINT32_MAX;
@@ -505,6 +506,20 @@ void push_draw_command(clear::DrawData data) {
 template <>
 PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
   return find_pipeline(ShaderType::Clear, config, [=] { return create_pipeline(config); });
+}
+
+bool add_post_resolve_op(PostResolveOp op) noexcept {
+  // resolve_pass finishes pass N (sets its resolve) and opens N+1, so the pass that just resolved
+  // is the one before the current pass.
+  if (!has_current_render_pass() || g_currentRenderPass == 0 || !op.src || !op.dst) {
+    return false;
+  }
+  auto& resolved = g_renderPasses[g_currentRenderPass - 1];
+  if (!resolved.resolveTarget) {
+    return false;
+  }
+  resolved.postResolveOps.push_back(std::move(op));
+  return true;
 }
 
 void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
@@ -1428,6 +1443,33 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         firedB = true;
         webgpu::nsmbw_diag_peek_texture(cmd, passInfo.resolveTarget->texture, passInfo.resolveTarget->size.width,
                                         passInfo.resolveTarget->size.height, "B_displayCopyTexture_after_resolve");
+      }
+      for (const auto& op : passInfo.postResolveOps) {
+        if (op.blit) {
+          tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
+                                       .fmt = GX_TF_RGBA8,
+                                       .srcView = op.src->sampleTextureView,
+                                       .uniformRange = op.uniformRange,
+                                       .dst = op.dst,
+                                       .sampleFilter = tex_copy_conv::SampleFilter::Linear,
+                                   });
+          continue;
+        }
+        if (op.src->format != op.dst->format || op.dstX + op.src->size.width > op.dst->size.width ||
+            op.dstY + op.src->size.height > op.dst->size.height) {
+          continue;
+        }
+        const wgpu::TexelCopyTextureInfo src{.texture = op.src->texture};
+        const wgpu::TexelCopyTextureInfo dst{
+            .texture = op.dst->texture,
+            .origin = wgpu::Origin3D{.x = op.dstX, .y = op.dstY},
+        };
+        const wgpu::Extent3D size{
+            .width = op.src->size.width,
+            .height = op.src->size.height,
+            .depthOrArrayLayers = 1,
+        };
+        cmd.CopyTextureToTexture(&src, &dst, &size);
       }
     }
   }

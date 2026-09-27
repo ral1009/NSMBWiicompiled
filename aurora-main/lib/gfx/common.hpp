@@ -332,6 +332,23 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
                   float copyFilterRowStride = 1.0f, bool clampTop = false, bool clampBottom = false,
                   bool persistentCopy = false);
 
+// GPU work that runs right after the most recent resolve_pass's resolve, in stream order: later
+// draws in the frame see its result. Used by the scaled tile cache (gx/scaled_tile_cache.cpp) to
+// paste internally-scaled tile copies into an upscaled atlas.
+struct PostResolveOp {
+  TextureHandle src;
+  TextureHandle dst;
+  // Copy: all of `src` lands at (dstX, dstY) in `dst`; both must share a wgpu format.
+  uint32_t dstX = 0;
+  uint32_t dstY = 0;
+  // Blit: `src` is sampled (linear) across the whole of `dst` using the tex_copy_conv uniform at
+  // `uniformRange` (so formats may differ). Used to upscale an atlas's native base image.
+  bool blit = false;
+  Range uniformRange;
+};
+// Returns false (and drops the op) when no resolve has been recorded yet this frame.
+bool add_post_resolve_op(PostResolveOp op) noexcept;
+
 void begin_offscreen(uint32_t width, uint32_t height);
 void end_offscreen();
 bool is_offscreen() noexcept;

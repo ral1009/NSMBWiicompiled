@@ -12,6 +12,7 @@
 #include "../gfx/texture_convert.hpp"
 #include "../gfx/texture_replacement.hpp"
 #include "gx_fmt.hpp"
+#include "scaled_tile_cache.hpp"
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
@@ -1382,6 +1383,10 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
       handle = copyRef->handle;
     } else if (obj.data != nullptr) {
       handle = resolve_static_texture(obj);
+      // A texture that scaled tile copies land in (NSMBW's tileset atlas) samples its upscaled build.
+      if (auto scaled = scaled_tile_cache::lookup(obj, handle)) {
+        handle = std::move(*scaled);
+      }
     }
 
     obj.mFormat = resolved_format_for_handle(handle);
