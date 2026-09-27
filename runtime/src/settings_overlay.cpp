@@ -49,6 +49,16 @@ void SetMixWorkerEnabled(bool enabled);
 }
 
 namespace settings_overlay {
+
+// Product hooks (NSMBW: button glyphs), set once at startup.
+void (*g_productEventHook)(const AuroraEvent* events) noexcept = nullptr;
+
+void SetProductEventHook(void (*hook)(const AuroraEvent* events) noexcept) noexcept { g_productEventHook = hook; }
+
+void (*g_productControllerMenuHook)() noexcept = nullptr;
+
+void SetProductControllerMenuHook(void (*hook)() noexcept) noexcept { g_productControllerMenuHook = hook; }
+
 namespace {
 
 const char* GraphicsApiDisplayName() {
@@ -101,6 +111,7 @@ int g_displayMode = [] {
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
+bool g_textureReplacements = RuntimeConfigFile::TextureReplacements(false);
 uint32_t g_disabledPostProcessingPaths = RuntimeConfigFile::DisabledPostProcessingPaths(0);
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
@@ -495,6 +506,17 @@ void DrawControllerSettings() {
         altRowExpanded.fill(false);
     }
 
+    // A product with its own control scheme (NSMBW: per-context action bindings) replaces the
+    // GameCube presets and button mapping below, which it no longer reads.
+    if (g_productControllerMenuHook != nullptr) {
+        ImGui::SeparatorText("Controls");
+        g_productControllerMenuHook();
+#if defined(_WIN32)
+        DrawGameCubeAdapterInfo();
+#endif
+        return;
+    }
+
     ImGui::SeparatorText("Presets");
     if (ImGui::Button("GameCube")) {
         const uint32_t port = static_cast<uint32_t>(g_controllerPort);
@@ -763,6 +785,15 @@ void DrawGraphicsSettings() {
     if (ImGui::Checkbox("Show FPS", &g_showFps)) {
         RuntimeConfigFile::SetShowFps(g_showFps);
     }
+    if (ImGui::Checkbox("HD texture pack", &g_textureReplacements)) {
+        aurora_set_texture_replacements_enabled(g_textureReplacements);
+        RuntimeConfigFile::SetTextureReplacements(g_textureReplacements);
+    }
+    if (!aurora_texture_replacements_available()) {
+        ImGui::TextDisabled("Takes effect after a restart.");
+    } else {
+        ImGui::TextDisabled("Loads packs from texture_replacements/ (Dolphin format).");
+    }
     ImGui::Separator();
     ImGui::Text("Graphics API: %s", GraphicsApiDisplayName());
 }
@@ -992,6 +1023,9 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     if (!events) {
         return;
     }
+    if (g_productEventHook != nullptr) {
+        g_productEventHook(events);
+    }
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
@@ -1008,6 +1042,8 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         }
     }
 }
+
+bool InputBlocked() noexcept { return g_topBarVisible; }
 
 void Draw() noexcept {
     // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists

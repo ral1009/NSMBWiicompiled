@@ -94,11 +94,29 @@ Run it with the helper, which captures the stderr log and periodic window screen
 .\projects\nsmbw\tools\run_nsmbw.ps1 -Tag test -Seconds 120 -ShotEvery 10 -EnvVars @('NSMBW_AUTO_PRESS_SELFTEST=1')
 ```
 
-Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 3 world map, 5 title *and* levels, 6/7 course-in, 8 cutscene, 10 file select). The NAND save (`%LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav`) is kept between runs so a started file resumes at the world map; `NSMBW_RESET_SAVE=1` deletes it at launch, and the window config is still reset unless `NSMBW_KEEP_STATE=1`. With the self-test presses on, a resumed save gets from boot to 1-1 in about two minutes.
+Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 3 world map, 5 title *and* levels, 6/7 course-in, 8 cutscene, 10 file select). The NAND save (`%LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav`) is kept between runs so a started file resumes at the world map; `NSMBW_RESET_SAVE=1` deletes it at launch, and the window config is still reset unless `NSMBW_KEEP_STATE=1`. With the self-test presses on, a resumed save gets from boot to 1-1 in about 30 seconds.
 
 ## HD textures (Dolphin texture packs)
 
-Dolphin custom-texture packs work unchanged. Set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`, then copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`. Tested with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642** (sharper fonts, HUD and map icons). Packs are not included in this repository; download them from their authors.
+Dolphin custom-texture packs work unchanged. Copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`, then tick **Graphics → HD texture pack** in the F10 menu (or set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`). The checkbox switches the pack on and off while the game runs. Tested with the full *NSMBW HD v2.81 (DDS)* pack and with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642**. Packs contain Nintendo-derived art, so none are included in this repository; download them from their authors.
+
+## Controls
+
+NSMBW is played with a keyboard or any SDL gamepad; there is no Wii Remote support, so the boot goes straight to the title screen (the strap warning and "Hold the Wii Remote sideways" screens are skipped; `NSMBW_SHOW_BOOT_SCREENS=1` keeps them).
+
+Buttons are bound to **actions, separately for courses, the world map and menus** (F10 → Controller settings → NSMBW controls): Jump and Confirm are both the Wii Remote's 2 button to the game, but they can sit on different buttons. Click a slot and press the button or key to bind it; right-click clears it. Bindings are saved in `%LOCALAPPDATA%\WiiCompiled\nsmbw_controls.ini`. Defaults:
+
+| | Gamepad | Keyboard |
+|---|---|---|
+| Jump / Confirm | South (A / Cross) | Z, Space / Enter |
+| Run, fireball / Back | West / East | X / Backspace |
+| Spin jump | Shoulders | C |
+| Pause | Start | = or Esc |
+| Move | D-pad, left stick | Arrows |
+
+## Controller button glyphs
+
+Button prompts ("Press (2) to Start", the (2) on the controller screen, Erase/Copy on file select, the map's Menu/Items hints) show the button you actually press, for the device you last used (Xbox, PlayStation, Switch or keyboard) and for the current context's bindings. **F10 → Controller settings → Button icons** pins one set or keeps the original Wii icons. The icons are [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0), built into the executable, and work with or without a texture pack. `NSMBW_GLYPH_TEST=xbox|playstation|switch|keyboard` pins a set for testing; `NSMBW_LOG_GLYPHS=1` logs each change.
 
 ## Debugging notes worth knowing before touching this code
 

@@ -13,6 +13,8 @@
 #include <aurora/env.hpp>
 #include "runtime_config.h"
 #include "settings_overlay.h"
+#include "nsmbw_button_glyphs.h"
+#include "nsmbw_controls.h"
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -24,6 +26,7 @@
 #include "timebase_contract.h"
 
 #include <aurora/aurora.h>
+#include <aurora/gfx.h>
 #include <dolphin/vi.h>
 
 #include <algorithm>
@@ -326,11 +329,14 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     // (which reads Config.toml) showed it disabled; at 4x its taps are 4 rows apart, smearing every
     // horizontal edge over ~8 px.
     config.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
-    // Dolphin-style custom textures, as in main.cpp: aurora indexes
-    // nsmbw_data/texture_replacements/ once at init, so Dolphin packs (Load/Textures/SMN/...) can
-    // be dropped in unchanged. Without this the NSMBW init left both off regardless of Config.toml.
-    config.allowTextureReplacements = RuntimeConfigFile::TextureReplacements(false);
-    config.allowTextureDumps = config.allowTextureReplacements && RuntimeConfigFile::TextureDumps(false);
+    // Dolphin-style custom textures: aurora indexes nsmbw_data/texture_replacements/ once at init,
+    // so Dolphin packs (Load/Textures/SMN/...) can be dropped in unchanged. The index is always
+    // built (a few hundred file names) so the F10 menu can switch the pack on and off live;
+    // Config.toml's texture_replacements only picks the starting state. Without the index the
+    // pack could not be turned on until a restart.
+    config.allowTextureReplacements = true;
+    aurora_set_texture_replacements_enabled(RuntimeConfigFile::TextureReplacements(false));
+    config.allowTextureDumps = RuntimeConfigFile::TextureReplacements(false) && RuntimeConfigFile::TextureDumps(false);
     // We already own guest memory via Memory::Init() above; don't have aurora allocate its own.
     config.mem1Size = 0;
     config.mem2Size = 0;
@@ -782,6 +788,16 @@ int main() {
     // through. See settings_overlay::DisableStartupScreen's own comment for why this is an
     // opt-out rather than a change to the card's default behavior.
     settings_overlay::DisableStartupScreen();
+    // Per-context action bindings (rebind capture reads events) and controller glyphs for the
+    // in-text button icons; both driven by the overlay's per-frame event batch and F10 menu.
+    settings_overlay::SetProductEventHook(+[](const AuroraEvent* events) noexcept {
+        nsmbw_controls::HandleEvents(events);
+        nsmbw_button_glyphs::HandleEvents(events);
+    });
+    settings_overlay::SetProductControllerMenuHook(+[]() noexcept {
+        nsmbw_controls::DrawMenu();
+        nsmbw_button_glyphs::DrawSettingsMenu();
+    });
 
     std::printf("[nsmbw] Opening window...\n");
     AuroraInfo auroraInfo{};
@@ -811,27 +827,8 @@ int main() {
     // Must precede any guest GX call - see the declaration above and GXManage.cpp for why.
     GXInitShadowRegisterIds();
 
-    // DIAGNOSTIC (temporary): NSMBW_AUTO_SKIP_STRAP - dInfo_c::mGameFlag (0x8042A260, confirmed via
-    // projects/nsmbw/function_map.txt) has a real, game-supported GAME_FLAG_AUTO_SKIP bit (bit 19,
-    // 0x80000; see NSMBW-Decomp's d_info.hpp: "Whether to automatically skip the Wii strap and
-    // controller information screens"). dScBoot_c::executeState_WiiStrapDispEndWait's own
-    // mAutoAdvanceTimer (should expire after 1200 frames / 20s) has not fired after 120+ real
-    // seconds of observed runtime - this sets the game's own documented skip flag to test whether
-    // boot progresses past WiiStrap/ControllerInformation at all, to determine what's actually
-    // reachable, independent of (and without yet explaining) why the auto-advance timer itself
-    // isn't firing. Not a permanent fix. Remove once the real timer/state-machine issue is found.
-    if (AURORA_ENV("NSMBW_AUTO_SKIP_STRAP") != nullptr) {
-        constexpr uint32_t kGameFlagAddr = 0x8042A260u;
-        constexpr uint32_t kGameFlagAutoSkip = 1u << 19;
-        try {
-            const uint32_t existing = Memory::Read32(kGameFlagAddr);
-            Memory::Write32(kGameFlagAddr, existing | kGameFlagAutoSkip);
-            std::printf("[nsmbw] NSMBW_AUTO_SKIP_STRAP: set dInfo_c::mGameFlag |= GAME_FLAG_AUTO_SKIP (0x%08X -> 0x%08X)\n",
-                        existing, existing | kGameFlagAutoSkip);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "[nsmbw] NSMBW_AUTO_SKIP_STRAP: failed to set mGameFlag: %s\n", e.what());
-        }
-    }
+    // The strap / controller-information skip lives in projects/nsmbw/native/nsmbw_skip_boot_screens.cpp
+    // (it replaced the NSMBW_AUTO_SKIP_STRAP flag-only experiment, which still showed both screens).
 
     InitializePersistentCpuContext();
     CpuContext& cpu = GetPersistentCpuContext();

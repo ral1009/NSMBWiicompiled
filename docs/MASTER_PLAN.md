@@ -577,3 +577,55 @@ What I learned:
 What's next:
 - Scaled tile cache: animated tiles are written back to RAM at native size, so at 4x they look 1x next to everything else. Dolphin keeps them scaled on the GPU and stitches them into an upscaled tileset; aurora needs the same.
 - Controller-specific button glyphs: find which textures carry the Wii Remote button art, then choose a replacement root per controller type.
+
+## 2026-09-27 — Phase 12 item 5 (full HD pack, live toggle, controller button glyphs)
+What I did:
+- Swapped nymo's HUD pack for the full "NSMBW HD v2.81 (DDS)" Dolphin pack (its `SMN/` folder; the optional `~PSX Buttons` variant was left out). nymo's pack is kept in `build_nsmbw/nsmbw_data/texture_packs_inactive/`, not deleted. A boot-to-file-select run indexed 306 of the 312 files and loaded 69, with no load or format failures. I haven't confirmed why 312 files give 306 keys; my guess is duplicate keys across the pack's folders, since the index keeps only the first.
+- **Live toggle**: "HD texture pack" checkbox in the F10 Graphics menu, saved to Config.toml `texture_replacements`. NSMBW now always builds the pack index (`allowTextureReplacements = true`), and the config value only picks the starting state. Turning it on or off bumps a revision counter, and `gx.cpp` then drops every cached static texture (`drop_all_static_textures`). A plain cache-revision bump is not enough: the source cache re-validates entries by their guest bytes, which don't change, so it would keep serving the old texture.
+- **Button glyphs that follow the bindings**. The in-text button icons ("Press (2) to Start") are characters of `mj2d00_PictureFont_32_RGBA8.brfnt`. I parsed its TGLP/CMAP blocks and decoded the sheets. The layout is two 256×256 RGB5A3 sheets of 7×7 cells, each 32×32 at a 33-texel pitch; glyph index = char − 0x20; the Wii icons are on sheet 0 at `!"#$%&'(`. Its pack name is `tex1_256x256_7b53229a3b86fede_5`.
+  - aurora: `aurora_set_texture_patches(hash, w, h, fmt, rects)`. Each rectangle, in native texels, is cleared and filled with a PNG, scaled to the base texture's size. The base is the pack file when the pack is on, otherwise the decoded original, so glyphs work without any pack. `png_io` gained in-memory decoding.
+  - runtime: `runtime/src/product/nsmbw_button_glyphs.cpp`. It tracks the last-used device from SDL events (key press → keyboard, gamepad button/axis → `SDL_GetGamepadType`). For each icon it resolves Wii button ← GC PAD bit (fixed by `TranslatePadToWpad`) ← SDL button (live `PADGetButtonMappings`), then picks `<set>/<control>.png`. It re-patches only when that result changes.
+  - Art: white icon sets for Xbox, PlayStation and Switch, cut from sheets the developer supplied by `projects/nsmbw/tools/cut_button_glyphs.py` into `projects/nsmbw/assets/button_glyphs/`, and compiled into the exe with `#embed`. `gen_button_glyphs.py` regenerates the glyph table. Keyboard and GameCube pads keep the Wii icons, since there is no art for them yet.
+  - Verified: with `NSMBW_GLYPH_TEST=xbox` the title shows "Press (A) to Start" over the HD pack at 4× (screenshot). The log shows `xbox:dpad:north:-:start:back:west:south (6 cells)`, i.e. Wii 2 → south (A), because the config has `y = "south,east"`. The developer confirmed the PlayStation and Switch sets on screen.
+
+What broke / what I didn't expect:
+- The developer tested all three sets and reported two problems:
+  - PlayStation Erase/Copy (Wii − / +, bound to back/start) showed bare pills. On that sheet, Share and Options are a pill with a faint grey label, and background removal drops the label. Replaced them with drawn white-disc icons (≡ for Options, arrow-out-of-tray for Share) in `cut_button_glyphs.py`.
+  - The (2) on "Hold the Wii Remote sideways" stayed a Wii icon, because it is a separate layout texture, not a font character. The HD pack's `SMN/Buttons` holds exactly two such textures, `tex1_40x40_332ba0ec293b70b9_5` (the "2") and `tex1_48x48_6de12cfa944308b1_5` (a d-pad); its `~PSX Buttons` variant replaces the same two. Both are now patched whole. Other screens may use further icon textures that no pack covers; a texture dump would find them. The fix is built but not yet run: the link failed because the game was open.
+- I claimed from reading the code that F10 couldn't work in NSMBW (events pumped, never polled). A before/after screenshot of pressing F10 showed the menu opening. The poller is `UpdateAuroraAndProcessEvents()` in `runtime/include/aurora_events.h`, called from `vi.cpp`; my grep only covered `.cpp` files. No change was made.
+
+What I learned:
+- *Texture patching vs. replacement*: replacement swaps a whole texture for a file; patching edits rectangles of whichever texture would otherwise be used, so it composes with any pack.
+- `#embed` (a C23 feature clang also accepts in C++): the compiler pastes a file's bytes into an array initializer, so assets ship inside the exe with no generator step.
+- SDL3 names gamepad buttons by *position* (south/east/west/north), not label. That's why one binding table works for all three pads: Xbox A, PlayStation ✕ and Switch B are all "south".
+
+What's next:
+- Licenses for the Xbox and PlayStation icon sheets must be confirmed before the art is committed. The Switch sheet is Zacksly's, CC-BY.
+- Keyboard glyph art (keycaps); a "Glyphs: Auto / Wii / controller" override in the F10 menu.
+- The 80×76 "shake" prompt textures and the Remote icons (`,` `-`) are still Wii art. Shake is bound to L/R, which the overlay only offers as analog triggers.
+- The live pack toggle's own on/off switching has not been exercised in a recorded run yet.
+
+## 2026-09-27 (later) — Phase 7/12 (boot skip, per-context controls, Kenney glyphs)
+Supersedes two points of the entry above: the glyph art now comes from Kenney's CC0 "Input Prompts", replacing the sheets cut from store previews (the Xbox pack forbids redistribution and the PlayStation one is a paid Fab listing). So the license to-do is closed.
+
+What I did:
+- **Boot skip** (`projects/nsmbw/native/nsmbw_skip_boot_screens.cpp`). The strap warning and "Hold the Wii Remote sideways" screens no longer show, since this port has no Wii Remote support. The game's own `GAME_FLAG_AUTO_SKIP` (0x8042A260 bit 19) alone was not enough. A run with only the flag still faded the strap in, held it for WiiStrapKeyWait's 60-frame minimum, then showed the controller screen, because the flag only ends the *DispEndWait* states (d_s_boot.cpp:589/683/820). Jumping past the states would skip real work (warning end, HOME-menu enable, the sound-load wait). So every state still runs, and each one is made instant and invisible: flag set, `dScBoot_c::mMinWaitTimer` (+268) = 0, and both layouts' `mVisible` (+521) = false. Offsets were read from the translated func_8015CE80 / func_8015D010 / func_8015D0B0. This is applied after every state change (the existing changeStateMethod override) and once per frame. Result: black → title by 9 s (screenshots at 3/6/9 s), boot scene done at call #143 instead of #1369. `NSMBW_SHOW_BOOT_SCREENS=1` keeps the screens.
+- **Per-context action controls** (`runtime/src/product/nsmbw_controls.cpp`). Physical controls are bound to actions separately for course / world map / menus, and each action produces its Wii button. Reason: the game gives one Wii button different meanings (2 = Jump / Confirm / enter course; 1 = Run / Back / Items), so one fixed mapping couldn't separate them. Gamepads (port-0 pad, else all pads) and the keyboard are read straight from SDL; the KPAD override calls `NsmbwControlsReadWpad()` instead of `TranslatePadToWpad` (`NSMBW_LEGACY_PAD_MAPPING=1` restores it).
+  - Context comes from the scene profile, `dInfo_c::m_startGameInfo.mGameMode` (0x80315E98; title = 2/3), and the game-stop word at 0x8042A228. That address was derived from `isGameStop` (`[r13-22360]`, SDA base 0x8042F980) and confirmed: a 200 ms Escape hold in 1-1 logged `game-stop word 0x0 -> 0x1`, the context went to menu, and it went back to gameplay when the game resumed.
+  - The F10 Controller settings menu now shows "NSMBW controls" (tabs per context, click a slot then press, right-click clears, reset) in place of the GameCube presets and mapping table. Saved to `nsmbw_controls.ini`. Verified by clicking: rebinding Jump's key to K wrote `gameplay.jump.key = k,space`, and "Reset to defaults" restored `z,space`.
+- **Glyphs follow the context**. Each icon shows the first control bound to the action that produces its Wii button *in the current context*. Logged: 1 → east in menus, west on the map and in a course; A → east in a course, north on the map. A keyboard set (66 keys) was added. The F10 "Button icons" choice (Auto / Wii / Xbox / PlayStation / Switch / Keyboard) is saved as `[controller] button_icons`; its dropdown was not click-tested.
+- **Art**: `import_kenney_glyphs.py` converts Kenney's 128 px icons. Kenney cuts the symbol out as transparency, so enclosed transparent areas are filled black (developer: "make the letters black") so they stay readable on light panels. Kenney's PlayStation Create/Options are bare pills, so those two are drawn as white discs (≡ and share-arrow).
+
+What broke / what I didn't expect:
+- Unattended runs stalled at file select on *both* input paths (A/B with the legacy mapping), because the self-test's 1200-tick press window ran out there. The default is now 4000; a default run reached 1-1 in ~30 s.
+- The first rebind attempt failed: the per-context table was a third popup level that opened over its parent menu, and the parent kept the mouse where they overlapped. Now tabs in one popup; the formerly dead top row rebinds.
+- `SendKeys` taps are shorter than a frame and never reach the game, which samples key *state* once per VI frame. Scripts must hold keys (~200 ms) with `keybd_event`.
+
+What I learned:
+- *Small-data area (SDA)*: PowerPC games keep small globals near a base register (r13), so a read like `[r13 - 22360]` names a fixed address once the base is known (0x8042F980 here).
+- The game-state flags a port needs (pause, title mode) are often a few bytes the decomp already names; reading them beats inferring state from screens.
+
+What's next:
+- The GameCube pad glyph set (Kenney has one; SDL's GameCube positions need checking first).
+- Glyphs for the 80×76 "shake" prompt textures, which are still Wii art.
+- A file-select FPS dip (one capture showed 15.6 FPS there; not reproduced and not investigated).

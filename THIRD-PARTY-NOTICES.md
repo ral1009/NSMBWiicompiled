@@ -204,6 +204,13 @@ Not code, but the documentation this project depends on:
   pack used to verify NSMBW's texture-replacement support (2026-09-26). Not redistributed here;
   users download it from GameBanana.
 
+- *NSMBW HD v2.81 (DDS)* - Dolphin texture pack used to verify the full-pack path and the live
+  toggle (2026-09-27). Not redistributed here.
+- [Input Prompts](https://kenney.nl/assets/input-prompts) by Kenney (www.kenney.nl), CC0 1.0 -
+  controller and keyboard button icons in `projects/nsmbw/assets/button_glyphs/` (enclosed areas
+  filled black by `projects/nsmbw/tools/import_kenney_glyphs.py`), embedded in the NSMBW
+  executable. The PlayStation Create/Options icons there are drawn by that script.
+
 ---
 
 If you believe a component is missing or misattributed here, please open an issue.

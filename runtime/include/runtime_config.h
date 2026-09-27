@@ -63,6 +63,9 @@ struct RuntimeUserConfig {
     // comma-separated SDL-style physical button names ("south", or
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
+    // NSMBW button prompt icons: "auto" (follow the last-used device), "wii", "xbox",
+    // "playstation", "switch" or "keyboard".
+    std::optional<std::string> buttonIcons;
 #ifdef _WIN32
     // One-based physical WUP-028 adapter port assigned to each game port.
     // Zero or a missing value means the adapter does not own that game port.
@@ -410,6 +413,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
+    config.buttonIcons = FindConfigValue<std::string>(document, "controller", "button_icons");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
     if (auto value = FindConfigUint(document, "video", "disabled_post_processing_paths");
@@ -618,6 +622,11 @@ inline bool SetDisableCopyFilter(bool value) {
     return WriteSetting("video", "disable_copy_filter", value ? "true" : "false");
 }
 
+inline bool SetTextureReplacements(bool value) {
+    Mutable().textureReplacements = value;
+    return WriteSetting("video", "texture_replacements", value ? "true" : "false");
+}
+
 inline bool SetShowFps(bool value) {
     Mutable().showFps = value;
     return WriteSetting("video", "show_fps", value ? "true" : "false");
@@ -628,6 +637,11 @@ inline bool SetDisabledPostProcessingPaths(uint32_t value) {
     std::ostringstream formatted;
     formatted << "0x" << std::hex << std::uppercase << value;
     return WriteSetting("video", "disabled_post_processing_paths", formatted.str());
+}
+
+inline bool SetButtonIcons(std::string value) {
+    Mutable().buttonIcons = value;
+    return WriteSetting("controller", "button_icons", FormatString(value));
 }
 
 inline bool SetControllerButton(size_t index, std::string value) {
@@ -776,6 +790,10 @@ inline bool SkipUnreadyPipelines(bool fallback = true) {
 
 inline bool DisableCopyFilter(bool fallback = true) {
     return Get().disableCopyFilter.value_or(fallback);
+}
+
+inline std::string ButtonIcons(std::string fallback = "auto") {
+    return Get().buttonIcons.value_or(std::move(fallback));
 }
 
 inline bool ShowFps(bool fallback = true) {

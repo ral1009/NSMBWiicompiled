@@ -92,6 +92,8 @@ if(MKW_BUILD_NSMBW)
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/base_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/retro_rewind_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/host_cpu_baseline.cpp")
     if(NOT WIN32)
         list(REMOVE_ITEM NSMBW_RUNTIME_COMMON_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/wup028_adapter.cpp")
@@ -169,7 +171,9 @@ if(MKW_BUILD_NSMBW)
     # comment for why this isn't runtime/src/main.cpp, and for what happens next (an
     # unimplemented HLE call will hit RuntimeCrash::FatalMissingGuestTarget - expected, and
     # Phase 6's actual starting point).
-    add_executable(NSMBWCompiled "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp")
+    add_executable(NSMBWCompiled "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp")
     mkw_configure_object_target(NSMBWCompiled)
     target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
     target_compile_options(NSMBWCompiled PRIVATE -march=x86-64-v3 -g)

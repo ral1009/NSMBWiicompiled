@@ -1,0 +1,289 @@
+// Controller button glyphs for NSMBW's in-text button icons.
+// (Generated from projects/nsmbw/tools/nsmbw_button_glyphs.cpp.in by gen_button_glyphs.py -
+// edit the template, not this file.)
+//
+// NSMBW draws button prompts ("Press (2) to Start", the (1)/(2) in menus and course messages) as
+// characters of its picture font, mj2d00_PictureFont_32_RGBA8.brfnt (byte-identical in every EU
+// language folder). Parsing its TGLP/CMAP blocks: two 256x256 GX_TF_RGB5A3 sheets, 7x7 cells of
+// 32x32 texels at a 33-texel pitch (32 + 1 spacing, measured from the decoded sheet), glyph index
+// = character - 0x20. Sheet 0 holds the Wii Remote icons:
+//   '!' d-pad   '"' A   '#' B   '$' HOME   '%' +   '&' -   '\'' 1   '(' 2
+//   ')' Nunchuk stick   '*' C   '+' Z   ',' '-' Remote (sideways / upright)
+// Its Dolphin texture-pack name is tex1_256x256_7b53229a3b86fede_5, so aurora can identify it by
+// that hash with or without a pack installed. Two layout textures carry standalone Wii icons too
+// (the "2" on the "Hold the Wii Remote sideways" screen, and a d-pad); those are repainted whole.
+// Other screens may use more such textures - a Wii icon that stays unchanged under a controller
+// set is one of those, found with texture dumps.
+//
+// Each Wii icon is repainted with the glyph of the physical control that currently produces that
+// Wii button, in the current context (nsmbw_controls.cpp: in a course, 2 is "Jump"; in menus it is
+// "Confirm", possibly on a different button):
+//   Wii button <- action in the current context <- first bound pad control / key
+//              -> <set>/<control>.png, embedded below.
+// The set follows the last-used device (keyboard, or SDL_GetGamepadType of the pad), unless the
+// F10 "Button icons" choice pins one ([controller] button_icons in Config.toml). Cells whose
+// control has no glyph keep the game's own Wii icon; HOME, Nunchuk and Remote cells are left alone.
+//
+// Art: projects/nsmbw/assets/button_glyphs/, built from Kenney's CC0 "Input Prompts" by
+// projects/nsmbw/tools/import_kenney_glyphs.py.
+
+#include "nsmbw_button_glyphs.h"
+#include "nsmbw_controls.h"
+
+#include "runtime_config.h"
+
+#include <aurora/gfx.h>
+#include <dolphin/pad.h>
+#include <imgui.h>
+
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_keyboard.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iterator>
+#include <string>
+#include <vector>
+
+namespace nsmbw_button_glyphs {
+namespace {
+
+enum class GlyphSet { Wii, Xbox, PlayStation, Switch, Keyboard };
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc23-extensions"
+@ARRAYS@
+#pragma clang diagnostic pop
+
+struct Glyph {
+    GlyphSet set;
+    const char* control;
+    const unsigned char* png;
+    size_t size;
+};
+
+constexpr Glyph kGlyphs[] = {
+@TABLE@
+};
+
+// Textures carrying Wii button art, by their Dolphin texture-pack identity. All GX_TF_RGB5A3 (5).
+struct IconTexture {
+    uint64_t hash;
+    uint16_t width, height;
+};
+constexpr IconTexture kPictureFont{0x7b53229a3b86fedeULL, 256, 256};
+// Identified from the HD pack's SMN/Buttons (Wii art) and its ~PSX Buttons variant, which replaces
+// exactly these two with a cross and a d-pad.
+constexpr IconTexture kLayoutTwo{0x332ba0ec293b70b9ULL, 40, 40};
+constexpr IconTexture kLayoutDpad{0x6de12cfa944308b1ULL, 48, 48};
+constexpr const IconTexture* kIconTextures[] = {&kPictureFont, &kLayoutTwo, &kLayoutDpad};
+constexpr uint32_t kIconFormat = 5;
+
+// WPAD bits (NSMBW-Decomp WPAD.h). The d-pad icon follows screen-up, which is WPAD RIGHT on the
+// sideways remote.
+constexpr uint32_t kWpadRight = 1u << 1, kWpadPlus = 1u << 4, kWpad2 = 1u << 8, kWpad1 = 1u << 9;
+constexpr uint32_t kWpadB = 1u << 10, kWpadA = 1u << 11, kWpadMinus = 1u << 12;
+
+struct IconCell {
+    const IconTexture* texture;
+    uint16_t x, y, width, height;
+    uint32_t wpad; // the Wii button this icon shows
+};
+
+// A picture-font character's cell: 32x32 at a 33-texel pitch, 7 per row, index = ch - 0x20.
+constexpr IconCell FontCell(char ch, uint32_t wpad) {
+    const int index = ch - 0x20;
+    return {&kPictureFont, static_cast<uint16_t>(index % 7 * 33), static_cast<uint16_t>(index / 7 * 33), 32, 32, wpad};
+}
+
+constexpr IconCell kCells[] = {
+    FontCell('!', kWpadRight),
+    FontCell('"', kWpadA),
+    FontCell('#', kWpadB),
+    FontCell('%', kWpadPlus),
+    FontCell('&', kWpadMinus),
+    FontCell('\'', kWpad1),
+    FontCell('(', kWpad2),
+    {&kLayoutTwo, 0, 0, 40, 40, kWpad2},
+    {&kLayoutDpad, 0, 0, 48, 48, kWpadRight},
+};
+
+GlyphSet g_lastDevice = GlyphSet::Wii; // what "Auto" shows
+GlyphSet g_pinned = GlyphSet::Wii;     // NSMBW_GLYPH_TEST
+bool g_initialized = false;
+std::string g_appliedSignature;
+bool g_log = false;
+
+struct Choice {
+    const char* config;
+    const char* label;
+};
+constexpr Choice kChoices[] = {
+    {"auto", "Auto (last used device)"}, {"wii", "Wii Remote (original)"}, {"xbox", "Xbox"},
+    {"playstation", "PlayStation"},      {"switch", "Nintendo Switch"},    {"keyboard", "Keyboard"},
+};
+int g_choice = 0;
+
+const char* SetName(GlyphSet set) {
+    switch (set) {
+    case GlyphSet::Xbox: return "xbox";
+    case GlyphSet::PlayStation: return "playstation";
+    case GlyphSet::Switch: return "switch";
+    case GlyphSet::Keyboard: return "keyboard";
+    default: return "wii";
+    }
+}
+
+GlyphSet SetFromName(const char* name) {
+    for (GlyphSet set : {GlyphSet::Xbox, GlyphSet::PlayStation, GlyphSet::Switch, GlyphSet::Keyboard}) {
+        if (std::strcmp(name, SetName(set)) == 0) return set;
+    }
+    return GlyphSet::Wii;
+}
+
+GlyphSet SetForGamepadType(SDL_GamepadType type) {
+    switch (type) {
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5:
+        return GlyphSet::PlayStation;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+        return GlyphSet::Switch;
+    case SDL_GAMEPAD_TYPE_GAMECUBE:
+        return GlyphSet::Wii; // no GameCube set yet
+    default:
+        return GlyphSet::Xbox; // Xbox, and generic "standard" pads, which use Xbox labels
+    }
+}
+
+const Glyph* FindGlyph(GlyphSet set, const std::string& control) {
+    if (control.empty()) return nullptr;
+    for (const auto& glyph : kGlyphs) {
+        if (glyph.set == set && control == glyph.control) return &glyph;
+    }
+    return nullptr;
+}
+
+// Before any input: the pad on port 0 if there is one, else the keyboard.
+GlyphSet DefaultDevice() {
+    const s32 index = PADGetIndexForPort(0);
+    if (index < 0) return GlyphSet::Keyboard;
+    SDL_Gamepad* gamepad = PADGetSDLGamepadForIndex(static_cast<u32>(index));
+    return gamepad != nullptr ? SetForGamepadType(SDL_GetGamepadType(gamepad)) : GlyphSet::Keyboard;
+}
+
+void NoteSdlEvent(const SDL_Event& event) {
+    switch (event.type) {
+    case SDL_EVENT_KEY_DOWN:
+        // F-keys drive the overlay (F10), not the game; don't let opening it flip the icons.
+        if (!event.key.repeat && !(event.key.scancode >= SDL_SCANCODE_F1 && event.key.scancode <= SDL_SCANCODE_F12)) {
+            g_lastDevice = GlyphSet::Keyboard;
+        }
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        g_lastDevice = SetForGamepadType(SDL_GetGamepadTypeForID(event.gbutton.which));
+        break;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        // Past resting drift only: about half tilt / half pull.
+        if (event.gaxis.value > 16000 || event.gaxis.value < -16000) {
+            g_lastDevice = SetForGamepadType(SDL_GetGamepadTypeForID(event.gaxis.which));
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+GlyphSet ActiveSet() {
+    if (g_pinned != GlyphSet::Wii) return g_pinned;
+    if (g_choice == 0) return g_lastDevice;
+    return SetFromName(kChoices[g_choice].config);
+}
+
+// Rebuilds the patch list and hands it to aurora only when the resulting icons would change;
+// each hand-off flushes every resolved texture, so it must not happen per frame.
+void ApplyIfChanged() {
+    const GlyphSet set = ActiveSet();
+    std::vector<AuroraTexturePatch> patches[std::size(kIconTextures)];
+    std::string signature = SetName(set);
+    size_t total = 0;
+    if (set != GlyphSet::Wii) {
+        signature += '@';
+        signature += nsmbw_controls::ContextName(nsmbw_controls::CurrentContext());
+        for (const auto& cell : kCells) {
+            const std::string control = set == GlyphSet::Keyboard ? nsmbw_controls::KeyGlyphFor(cell.wpad)
+                                                                  : nsmbw_controls::GamepadGlyphFor(cell.wpad);
+            const Glyph* glyph = FindGlyph(set, control);
+            signature += ':';
+            signature += glyph != nullptr ? control : "-";
+            if (glyph == nullptr) continue; // keep the game's Wii icon
+            for (size_t t = 0; t < std::size(kIconTextures); ++t) {
+                if (kIconTextures[t] != cell.texture) continue;
+                patches[t].push_back(AuroraTexturePatch{
+                    .x = cell.x,
+                    .y = cell.y,
+                    .width = cell.width,
+                    .height = cell.height,
+                    .png = glyph->png,
+                    .pngSize = glyph->size,
+                });
+                ++total;
+            }
+        }
+    }
+    if (signature == g_appliedSignature) return;
+    g_appliedSignature = signature;
+    for (size_t t = 0; t < std::size(kIconTextures); ++t) {
+        const IconTexture& tex = *kIconTextures[t];
+        aurora_set_texture_patches(tex.hash, tex.width, tex.height, kIconFormat, patches[t].data(), patches[t].size());
+    }
+    if (g_log) std::fprintf(stderr, "[nsmbw] button glyphs -> %s (%zu cells)\n", signature.c_str(), total);
+}
+
+} // namespace
+
+void HandleEvents(const AuroraEvent* events) noexcept {
+    if (!g_initialized) {
+        g_initialized = true;
+        g_log = std::getenv("NSMBW_LOG_GLYPHS") != nullptr;
+        g_lastDevice = DefaultDevice();
+        const std::string configured = RuntimeConfigFile::ButtonIcons("auto");
+        for (int i = 0; i < static_cast<int>(std::size(kChoices)); ++i) {
+            if (configured == kChoices[i].config) g_choice = i;
+        }
+        // NSMBW_GLYPH_TEST=xbox|playstation|switch|keyboard pins a set, to check the art without
+        // that device.
+        if (const char* test = std::getenv("NSMBW_GLYPH_TEST")) g_pinned = SetFromName(test);
+    }
+    for (const AuroraEvent* ev = events; ev != nullptr && ev->type != AURORA_NONE; ++ev) {
+        if (ev->type == AURORA_SDL_EVENT) {
+            NoteSdlEvent(ev->sdl);
+        } else if (ev->type == AURORA_CONTROLLER_REMOVED) {
+            g_lastDevice = DefaultDevice();
+        }
+    }
+    // Every batch, not only on events: the context (course / map / menu) and rebinds change
+    // without an input event, and the check is a few table lookups.
+    ApplyIfChanged();
+}
+
+void DrawSettingsMenu() noexcept {
+    const char* current = kChoices[g_choice].label;
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo("Button icons", current)) {
+        for (int i = 0; i < static_cast<int>(std::size(kChoices)); ++i) {
+            if (ImGui::Selectable(kChoices[i].label, i == g_choice)) {
+                g_choice = i;
+                RuntimeConfigFile::SetButtonIcons(kChoices[i].config);
+            }
+        }
+        ImGui::EndCombo();
+    }
+}
+
+} // namespace nsmbw_button_glyphs

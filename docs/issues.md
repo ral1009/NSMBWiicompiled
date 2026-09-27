@@ -481,6 +481,15 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** max V = 1 in `nativeBlitUniform` (`aurora-main/lib/gfx/efb_ram_copy.cpp`). After: 4x capture of 1-1 shows textured ? blocks, bricks and coins.
 - **Scope:** General (aurora). It affects every >1x readback of a scaled copy into guest RAM, in any title. Remaining limitation: those tiles are written back at native resolution, so they look 1x next to the 4x scene. A scaled tile cache is being built for that.
 
+
+## 2026-09-27
+
+### Unattended self-test runs stall at file select
+- **Symptom:** with `NSMBW_AUTO_PRESS_SELFTEST=1` the run reached file select (profile 0xA) and stopped there. This happened with both the new action-binding input path and `NSMBW_LEGACY_PAD_MAPPING=1`, so input translation was ruled out.
+- **Root cause:** the self-test only synthesizes A/2 presses during its first `NSMBW_AUTO_PRESS_TICKS` ticks (default 1200). All 20 presses (every 60 ticks) were used up before file select accepted one. With a 4000-tick window, the same build reached the map and 1-1.
+- **Fix:** default window 4000 (`projects/nsmbw/native/nsmbw_tick_read_pump.cpp`). A default run then reached 1-1 in ~30 s.
+- **Scope:** NSMBW-specific (test tooling only; no effect on real play).
+
 ---
 
 ## Open / unconfirmed items
@@ -498,7 +507,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - `func_801A9CE0` decode bug worked around by override; not fixed in the translator.
 - OSAlarm HLE unbound for NSMBW (`os_internal.h`).
 - `EXIProbe` always "not found"; `nsmbw_disk_id_check_sync.cpp` skips 0x801D2D60's own bookkeeping.
-- Strap screen never auto-advances without input (decomp's 1200-frame `mAutoAdvanceTimer` path).
+- Strap screen never auto-advances without input (decomp's 1200-frame `mAutoAdvanceTimer` path). Hidden since 2026-09-27: the boot screens are skipped (`nsmbw_skip_boot_screens.cpp`), and `NSMBW_SHOW_BOOT_SCREENS=1` brings them back for investigating it.
 - aurora viewport offset 340 vs hardware 342.
 - Leftover `[debug]` print for target 0x60 in `Program.cs` discovery loop.
 - `*_diag.cpp` overrides whose areas are now stable (each removal needs the shard manifest regenerated).

@@ -54,6 +54,8 @@
 #include <cstring>
 
 extern "C" void SDL_PumpEvents();
+extern "C" void NsmbwSkipBootScreensApply();
+extern "C" uint32_t NsmbwControlsReadWpad(); // runtime/src/product/nsmbw_controls.cpp
 extern "C" const bool* SDL_GetKeyboardState(int* numkeys);
 // Set by nsmbw_tick_read_pump.cpp's self-test (NSMBW_AUTO_PRESS_SELFTEST): a synthetic A press
 // is delivered as one frame of "held" through the same path as a real key.
@@ -158,11 +160,16 @@ void SampleKeyboardForFrame() {
     g_lastSampledTick = tick;
 
     InitKeyboardOnce();
+    NsmbwSkipBootScreensApply(); // once per frame; see nsmbw_skip_boot_screens.cpp
     SDL_PumpEvents();
     PADStatus statuses[PAD_CHANMAX]{};
     PADRead(statuses);
 
-    uint32_t hold = TranslatePadToWpad(statuses[0]);
+    // Action bindings per context (runtime/src/product/nsmbw_controls.cpp). PADRead above still
+    // runs for the PAD layer's own bookkeeping; TranslatePadToWpad is kept only as documentation
+    // of the old fixed mapping and for NSMBW_LEGACY_PAD_MAPPING=1.
+    static const bool legacy = AURORA_ENV("NSMBW_LEGACY_PAD_MAPPING") != nullptr;
+    uint32_t hold = legacy ? TranslatePadToWpad(statuses[0]) : NsmbwControlsReadWpad();
     hold |= g_nsmbwSelfTestPressBits;
     g_nsmbwSelfTestPressBits = 0;
 
