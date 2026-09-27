@@ -502,6 +502,18 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** `scaled_tile_cache::lookup_unchanged` returns the composite while the bytes outside the tile slots are unchanged, and `gx.cpp` tries it before decoding; the cache now also runs at scale 1. Verified at 4x and 1x: tiles animate, and the decode is gone from the profile.
 - **Scope:** General (any title that EFB-copies into a texture it also samples); the atlas layout itself is NSMBW's.
 
+### Saved F10 settings ignored at startup (interpolation 180 needed re-selecting)
+- **Symptom:** Config.toml said `frame_interpolation_fps = 180`, but interpolation stayed off until 180 was picked again in F10 (developer; `NSMBW_LOG_INTERP` logged `target=0`). The saved volume/mute were ignored too.
+- **Root cause:** `settings_overlay::InitializeRuntimeSettings()` applies them, and only MKW's `main.cpp` called it.
+- **Fix:** `nsmbw_product.cpp` calls it after the window's first frames. After: `target=180` from the first logged window.
+- **Scope:** NSMBW-specific init path (the class - NSMBW's `main` skipping something `main.cpp` does - is general).
+
+### 180 FPS interpolation stalled the game (Dawn lock held by a blocking surface acquire)
+- **Symptom:** at 180 FPS target, ~130 FPS presented and the game itself fell to ~51 real frames/s (60 with interpolation off); worse on the world map.
+- **Root cause:** the presenter's `GetCurrentTexture` blocked 6-59 ms per present inside Dawn's device lock. That stalled the worker's seal, which stalled the producer's `fifo::drain`. Measured with `AURORA_LOG_WORKER_TIMING` / `NSMBW_LOG_INTERP`, see the progress log. Contributing: per-frame RAM readbacks of GPU-owned tile copies, and a texture-cache sweep that re-ran on every insert.
+- **Fix:** wait for the previous present's GPU work outside the lock before acquiring (`aurora.cpp`); skip RAM write-back for tile copies the scaled tile cache owns (`GXFrameBuffer.cpp`, `scaled_tile_cache.cpp`); amortized cache sweeps (`gx.cpp`). After: 120 mode locked; 180 improved but not locked.
+- **Scope:** General (aurora). 180 remains partly open.
+
 ---
 
 ## Open / unconfirmed items
@@ -523,3 +535,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - aurora viewport offset 340 vs hardware 342.
 - Leftover `[debug]` print for target 0x60 in `Program.cs` discovery loop.
 - `*_diag.cpp` overrides whose areas are now stable (each removal needs the shard manifest regenerated).
+- 180 FPS interpolation still misses frames: EFB-probe downloads and `gfx::end_frame` contend for Dawn's device lock with the presenter (2026-09-27 night).

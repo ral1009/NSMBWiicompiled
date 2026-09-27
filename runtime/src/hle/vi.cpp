@@ -599,6 +599,11 @@ void PaceToRetraceBoundary(Clock::time_point deadline) {
 // Game frames presented (XFB presents only, not black/boot presents). Read by the NSMBW profile
 // sampler to report frames/s per window; a relaxed counter is enough for a rate.
 std::atomic<uint64_t> g_viPresentedXfbFrames{0};
+// Retraces that elapsed while each paced frame was produced: [0], [1], [2], [3+]. One is the
+// healthy locked-60 cadence; read by NSMBW's NSMBW_LOG_INTERP to tell pacing jitter from overload.
+std::atomic<uint64_t> g_viRetracesPerFrame[4]{};
+// [kept up, late][count, production us sum, end_frame us sum, production us max, end_frame us max].
+std::atomic<uint64_t> g_viFrameTiming[2][5]{};
 
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
@@ -610,6 +615,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     } sequenceGuard;
     Clock::time_point paceDeadline{};
     bool paceThisFrame = false;
+    uint32_t retracesElapsedForStats = 0;
     if (paceToRetrace) {
         uint64_t baseNanos = 0;
         uint64_t intervalNanos = 0;
@@ -633,6 +639,8 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         // but free-running late frames matches the previous pacer and keeps a
         // heavy scene at e.g. 50 fps instead of hard 30.
         const uint32_t retracesElapsed = retraceCount - s_lastPacedRetraceCount;
+        retracesElapsedForStats = retracesElapsed;
+        g_viRetracesPerFrame[std::min<uint32_t>(retracesElapsed, 3u)].fetch_add(1, std::memory_order_relaxed);
         paceThisFrame = retracesElapsed == 0;
         s_lastPacedRetraceCount = retraceCount;
         // aurora_report_producer_paced needs a different signal than the pace-wait above: the guest
@@ -663,11 +671,34 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         aurora_set_present_schedule(0, 0);
     }
 
+    // Frame timing split for NSMBW_LOG_INTERP: production (end of the previous paced present to
+    // this one: guest work plus any waits inside it) and aurora_end_frame (the wait for the render
+    // worker), accumulated separately for frames that kept up and frames that missed a retrace.
+    static Clock::time_point s_prevFrameDone{};
+    const auto endFrameStart = Clock::now();
     aurora_end_frame();
+    const auto endFrameDone = Clock::now();
+    if (paceToRetrace && s_prevFrameDone != Clock::time_point{}) {
+        const bool late = !paceThisFrame && retracesElapsedForStats >= 2;
+        auto& stats = g_viFrameTiming[late ? 1 : 0];
+        const auto us = [](auto d) {
+            return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(d).count());
+        };
+        const uint64_t produceUs = us(endFrameStart - s_prevFrameDone);
+        const uint64_t endUs = us(endFrameDone - endFrameStart);
+        stats[0].fetch_add(1, std::memory_order_relaxed);
+        stats[1].fetch_add(produceUs, std::memory_order_relaxed);
+        stats[2].fetch_add(endUs, std::memory_order_relaxed);
+        if (produceUs > stats[3].load(std::memory_order_relaxed)) stats[3].store(produceUs, std::memory_order_relaxed);
+        if (endUs > stats[4].load(std::memory_order_relaxed)) stats[4].store(endUs, std::memory_order_relaxed);
+    }
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);
         std::lock_guard<std::mutex> lock(g_viMutex);
         s_lastPacedRetraceCount = g_vi.retraceCount;
+    }
+    if (paceToRetrace) {
+        s_prevFrameDone = Clock::now();
     }
     settings_overlay::AdvancePresentedFrame();
     g_auroraFrameActive.store(false, std::memory_order_release);

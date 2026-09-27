@@ -655,3 +655,30 @@ What's next:
 - Memory: 927 MB working set, mostly GPU-side textures (4096^2 atlas at 4x, 2048^2 pack textures) and driver mappings - measure and trim.
 - GPU side is unmeasured: at 4x with 120 FPS interpolation a weak GPU is the likelier bottleneck in heavy levels; add GPU timing.
 - The build targets x86-64-v3 (AVX2), so CPUs without AVX2 cannot run it at all. "Runs on anything" needs a v2 build or runtime dispatch - a decision for the developer.
+
+## 2026-09-27 (night) — Phase 8 (frame interpolation: 120 locked, 180 improved)
+Developer report: 180 FPS interpolation only reached ~130 (~100 in menus) on an RTX 4060 with a 180 Hz monitor, and the saved 180 only took effect after re-selecting it in F10.
+
+What I did:
+- **Saved F10 settings were never applied at startup.** `settings_overlay::InitializeRuntimeSettings()` (interpolation target, volume/mute, display mode, skip-unready-pipelines) is called by MKW's `main.cpp` only. A `NSMBW_LOG_INTERP` run logged `target=0` with Config.toml at 180. NSMBW now calls it after the window's first frames. This is the fourth "NSMBW init skips what main.cpp does" item.
+- **New diagnostics** (all env-gated): `NSMBW_LOG_INTERP=1` prints, every 2 s, presented and real game FPS, retraces per game frame (0/1/2/3+), interpolation counters (late / low-match / replay-unsafe), production vs end_frame time for kept-up and late frames, and the producer's FIFO-drain wait for the render worker. `AURORA_LOG_WORKER_TIMING=1` prints the worker cycle's phases (renderer lock, seal and its parts, prepare, overlapped encode), interpolation matching time, and the presenter's per-present surface lock / acquire / submit / schedule wait / Present.
+- **What the measurements showed**, in order:
+  - Interpolation made the *game* drop to ~51 real frames/s in 1-1 (60 with it off). Each late frame also loses its interpolated slots.
+  - `end_frame` never blocked. The game waited in `fifo::drain` for the worker to prepare the next frame: 500-900 ms per 2 s, up to 75 ms at once.
+  - The worker's seal phase spiked to 20-380 ms. Interpolation matching was < 0.7 ms, so matching was not the cause.
+  - GPU load was 40-60 % at full clocks, and halving the resolution (2x) still stalled, so not GPU horsepower.
+  - The presenter's surface acquire (`GetCurrentTexture`) averaged 6.6-8.6 ms per present, with peaks of 59 ms, against a 5.5 ms budget at 180 Hz. It blocks until a swapchain buffer is free, inside Dawn's device lock, so every Dawn call on the worker waited behind it.
+- **Fixes:**
+  - The presenter now waits for the previous present's GPU work (`Queue::OnSubmittedWorkDone` + `Instance::WaitAny`, 50 ms cap) *before* acquiring, outside Dawn's lock.
+  - Tile copies the scaled tile cache owns no longer read back to RAM (a GPU->CPU sync per copy per frame that nothing read; `note_tile_copy` now reports ownership).
+  - The static texture source caches sweep amortized: a fixed 512-entry threshold re-swept the whole map on every insert when nothing was freeable (17.7 % of the game thread on the world map).
+- Tested and reverted: 4 staging-buffer slots instead of 3 (no improvement).
+
+Results (self-test run, 4x, HD pack): **120 FPS mode holds 120** in 1-1, the world map and file select (dips only at scene loads). 180 mode: 1-1 135-160 (was 120-147), world map 119-155 (was 81-87), real game rate 47-53 (was 37-39).
+
+What I learned:
+- Lock coupling across threads can make an idle CPU and a half-busy GPU look like "too slow". The per-phase timers found it where the sampling profiler could not, because waits look like idle time there.
+
+What's next:
+- 180 still misses frames. The remaining worker stalls are EFB-probe downloads (`ensure_native_texture` creating resources per frame) and `gfx::end_frame`, both still contending for Dawn's device lock with the presenter. Fixing that means presenting from a path that does not share the lock, or caching those downscale textures.
+- The Vulkan A/B did not take effect (the run logged present mode Immediate), so it is untested.

@@ -822,7 +822,23 @@ void begin_frame_interpolation() noexcept {
   s_frameInterpolationReplaySafe.store(true, std::memory_order_release);
 }
 
+static void finalize_frame_interpolation_impl() noexcept;
+
+std::atomic<uint64_t> g_finalizeInterpolationNanos{0};
+std::atomic<uint64_t> g_finalizeInterpolationMaxNanos{0};
+
 void finalize_frame_interpolation() noexcept {
+  const auto started = std::chrono::steady_clock::now();
+  finalize_frame_interpolation_impl();
+  const auto nanos = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+  g_finalizeInterpolationNanos.fetch_add(nanos, std::memory_order_relaxed);
+  if (nanos > g_finalizeInterpolationMaxNanos.load(std::memory_order_relaxed)) {
+    g_finalizeInterpolationMaxNanos.store(nanos, std::memory_order_relaxed);
+  }
+}
+
+static void finalize_frame_interpolation_impl() noexcept {
   // A frame reported late seals without inserted slots, so the encode phase renders
   // the native frame only. Its transforms still seed the next frame's matching.
   if (s_dropInterpolationAtSeal.exchange(false, std::memory_order_acq_rel)) {

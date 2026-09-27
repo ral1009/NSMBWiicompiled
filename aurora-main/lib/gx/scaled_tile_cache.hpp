@@ -22,7 +22,9 @@ namespace aurora::gx::scaled_tile_cache {
 
 // GXCopyTex's strided path: a copy of logical size w x h into `dest`, whose row pitch is
 // `strideWidth` texels, produced as the (possibly scaled) GPU texture `scaled`.
-void note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GXTexFmt format,
+// Returns true when the copy landed in an atlas this cache has built: the GPU composite then carries
+// the tile, so the caller can skip the RAM write-back (a GPU->CPU sync every frame).
+bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GXTexFmt format,
                     const gfx::TextureHandle& scaled) noexcept;
 
 // Static texture binding: if tile copies land inside `obj`'s memory, the upscaled atlas to sample

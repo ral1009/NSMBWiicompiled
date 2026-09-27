@@ -1,5 +1,11 @@
 #include <aurora/aurora.h>
 #include <aurora/env.hpp>
+#include <atomic>
+#include <cstdint>
+namespace aurora::gx {
+extern std::atomic<uint64_t> g_finalizeInterpolationNanos;
+extern std::atomic<uint64_t> g_finalizeInterpolationMaxNanos;
+} // namespace aurora::gx
 
 #ifdef AURORA_ENABLE_GX
 #include "gfx/common.hpp"
@@ -865,6 +871,10 @@ std::shared_ptr<PresentationImage> acquire_presentation_image(size_t slot, uint3
   return image;
 }
 
+// Presenter-thread only: completion of the most recent Present's GPU work (see its use).
+wgpu::Future s_presentWorkFuture{};
+bool s_hasPresentWorkFuture = false;
+
 bool present_presentation_job(const PresentationJob& job) {
   ZoneScoped;
   const auto submissionStarted = PresentClock::now();
@@ -913,6 +923,16 @@ bool present_presentation_job(const PresentationJob& job) {
     }
     if (!surfaceSizeChanged && window::is_presentable()) {
       const auto acquireStarted = PresentClock::now();
+      // Wait for the previous presentation's GPU work *before* acquiring. GetCurrentTexture blocks
+      // until the next swapchain buffer is free, and it blocks inside Dawn's device lock, which every
+      // Dawn call on the frame worker also needs. At 180 FPS interpolation the acquire averaged
+      // 6.6-8.6 ms and peaked at 59 ms per present, stalling the worker's seal, then the game's
+      // FIFO drain, so ~17 % of game frames missed their retrace (AURORA_LOG_WORKER_TIMING,
+      // 2026-09-27). WaitAny waits on the queue fence without that lock.
+      if (s_hasPresentWorkFuture) {
+        g_instance.WaitAny(s_presentWorkFuture, 50'000'000);
+        s_hasPresentWorkFuture = false;
+      }
       auto acquired = acquire_surface_texture();
       acquireDuration =
           std::chrono::duration_cast<std::chrono::nanoseconds>(PresentClock::now() - acquireStarted);
@@ -984,6 +1004,35 @@ bool present_presentation_job(const PresentationJob& job) {
               PresentClock::now() - presentStarted);
           if (presentStatus == wgpu::Status::Success) {
             presented = true;
+            s_presentWorkFuture = g_queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
+                                                              [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {});
+            s_hasPresentWorkFuture = true;
+            // AURORA_LOG_WORKER_TIMING: how long the presenter blocks per present, by step.
+            static const bool logPresent = AURORA_ENV("AURORA_LOG_WORKER_TIMING") != nullptr;
+            if (logPresent) {
+              static double sums[5]{}, maxes[5]{};
+              static uint32_t count = 0;
+              const double values[5] = {
+                  std::chrono::duration<double, std::milli>(surfaceLockDuration).count(),
+                  std::chrono::duration<double, std::milli>(acquireDuration).count(),
+                  std::chrono::duration<double, std::milli>(submitDuration).count(),
+                  std::chrono::duration<double, std::milli>(scheduleWaitDuration).count(),
+                  std::chrono::duration<double, std::milli>(presentDuration).count(),
+              };
+              for (int i = 0; i < 5; ++i) {
+                sums[i] += values[i];
+                maxes[i] = (std::max)(maxes[i], values[i]);
+              }
+              if (++count == 360) {
+                std::fprintf(stderr,
+                             "[aurora][present] per present avg/max ms: surface lock %.2f/%.2f, acquire %.2f/%.2f, "
+                             "submit %.2f/%.2f, schedule wait %.2f/%.2f, Present %.2f/%.2f\n",
+                             sums[0] / count, maxes[0], sums[1] / count, maxes[1], sums[2] / count, maxes[2],
+                             sums[3] / count, maxes[3], sums[4] / count, maxes[4]);
+                for (int i = 0; i < 5; ++i) sums[i] = maxes[i] = 0;
+                count = 0;
+              }
+            }
             record_successful_present(
                 job.interpolated, job.logicalFrame, acquireDuration, encodeDuration,
                 finishDuration, submitDuration, presentDuration,
@@ -1358,8 +1407,20 @@ struct SealedFrameContext {
 
 // Phase 1: everything that touches producer-shared renderer state. Needs g_rendererGpuMutex and
 // a FIFO already drained into the recorded pass list.
+// AURORA_LOG_WORKER_TIMING: seal_frame_locked's parts, summed and maxed over the logging window.
+double s_sealPart[4]{};
+double s_sealPartMax[4]{};
+
 void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ZoneScopedN("Seal frame");
+  auto partStart = std::chrono::steady_clock::now();
+  const auto notePart = [&](int i) {
+    const auto now = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(now - partStart).count();
+    s_sealPart[i] += ms;
+    s_sealPartMax[i] = (std::max)(s_sealPartMax[i], ms);
+    partStart = now;
+  };
   const auto encoderDescriptor = wgpu::CommandEncoderDescriptor{
       .label = "Redraw encoder",
   };
@@ -1367,8 +1428,10 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   // Probe-sized CPU-consumed copies read back asynchronously. Their downscale blits push uniforms,
   // so prepare them while the producer's staging buffers are still mapped.
   gfx::efb_ram::seal_async_downloads();
+  notePart(0);
   nsmbw_diag_log("seal_frame_locked", "before gfx::end_frame()");
   gfx::end_frame(ctx.encoder);
+  notePart(1);
   nsmbw_diag_log("seal_frame_locked", "after gfx::end_frame()");
   gfx::g_stats.presentedFrameCount = 0;
   gfx::g_stats.interpolatedFrameCount = 0;
@@ -1391,6 +1454,7 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   // ImGui draw lists are built once per frame and replayed by each slot's ImGui pass, which is why
   // the next ImGui frame cannot start until the encode phase is done.
   imgui::render_frame_data();
+  notePart(2);
   // Drop the sealed frame's lazy RAM-readback requests while the producer is still excluded; it
   // starts registering the next frame's as soon as SEALED is published.
   gfx::efb_ram::cancel();
@@ -1398,6 +1462,7 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   // encode phase reads only worker-private state.
   gfx::seal_frame(sealedFrame);
   gfx::expire_bind_group_cache();
+  notePart(3);
 }
 
 // Phase 2: encode every presentation slot. Reads only `ctx` and the sealed passes, so it runs
@@ -1596,14 +1661,36 @@ void record_frame_telemetry() {
 
 // One complete frame-worker cycle. The scene encode only leaves the renderer mutex when
 // interpolation actually inserts slots; otherwise both phases publish together.
+// AURORA_LOG_WORKER_TIMING: where a worker cycle spends the time between the producer's end_frame
+// and the next frame being prepared (which is what the producer's FIFO drain waits on).
+struct WorkerCycleTiming {
+  double lockWait = 0, seal = 0, permitWait = 0, prepare = 0, encode = 0;
+  double lockMax = 0, sealMax = 0, permitMax = 0, prepareMax = 0, encodeMax = 0;
+  uint32_t cycles = 0;
+};
+WorkerCycleTiming s_workerTiming;
+const bool s_logWorkerTiming = AURORA_ENV("AURORA_LOG_WORKER_TIMING") != nullptr;
+double ms_since(std::chrono::steady_clock::time_point t) noexcept {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
+void note_worker_phase(double& sum, double& max, double ms) noexcept {
+  sum += ms;
+  max = (std::max)(max, ms);
+}
+
 bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   ZoneScopedN("Frame worker cycle");
   webgpu::fail_if_device_lost();
   SealedFrameContext ctx;
   std::vector<PresentationJob> presentationJobs;
   bool overlapEncode = false;
+  auto phaseStart = std::chrono::steady_clock::now();
   {
     std::lock_guard gpuLock(g_rendererGpuMutex);
+    if (s_logWorkerTiming) {
+      note_worker_phase(s_workerTiming.lockWait, s_workerTiming.lockMax, ms_since(phaseStart));
+      phaseStart = std::chrono::steady_clock::now();
+    }
     seal_frame_locked(sealedFrame, ctx);
     overlapEncode = ctx.interpolationActive;
     if (!overlapEncode) {
@@ -1612,6 +1699,10 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   }
   if (!overlapEncode) {
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
+  }
+  if (s_logWorkerTiming) {
+    note_worker_phase(s_workerTiming.seal, s_workerTiming.sealMax, ms_since(phaseStart));
+    phaseStart = std::chrono::steady_clock::now();
   }
 
   {
@@ -1626,9 +1717,17 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   // Preparing the next frame belongs to the SEALED phase: without a fresh pass 0 and mapped
   // staging buffers the producer's drain has nowhere to put its commands.
   bool imguiNewFrameOwed = false;
+  if (s_logWorkerTiming) {
+    note_worker_phase(s_workerTiming.permitWait, s_workerTiming.permitMax, ms_since(phaseStart));
+    phaseStart = std::chrono::steady_clock::now();
+  }
   const bool prepared = begin_frame_impl(
       false, overlapEncode ? ImGuiFramePolicy::Deferred : ImGuiFramePolicy::Immediate,
       &imguiNewFrameOwed);
+  if (s_logWorkerTiming) {
+    note_worker_phase(s_workerTiming.prepare, s_workerTiming.prepareMax, ms_since(phaseStart));
+    phaseStart = std::chrono::steady_clock::now();
+  }
 
   {
     std::lock_guard lock(g_frameWorker.mutex);
@@ -1657,6 +1756,25 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     g_frameWorker.cv.notify_all();
   }
 
+  if (s_logWorkerTiming) {
+    note_worker_phase(s_workerTiming.encode, s_workerTiming.encodeMax, ms_since(phaseStart));
+    if (++s_workerTiming.cycles == 120) {
+      const auto& t = s_workerTiming;
+      std::fprintf(stderr,
+                   "[aurora][worker] per cycle avg/max ms: renderer-lock wait %.2f/%.2f, seal %.2f/%.2f, "
+                   "wait for producer %.2f/%.2f, prepare next %.2f/%.2f, overlapped encode %.2f/%.2f\n",
+                   t.lockWait / 120, t.lockMax, t.seal / 120, t.sealMax, t.permitWait / 120, t.permitMax,
+                   t.prepare / 120, t.prepareMax, t.encode / 120, t.encodeMax);
+      std::fprintf(stderr, "[aurora][worker]   of which interpolation matching (finalize) avg %.2f max %.2f ms\n",
+                   ::aurora::gx::g_finalizeInterpolationNanos.exchange(0) / 1e6 / 120,
+                   ::aurora::gx::g_finalizeInterpolationMaxNanos.exchange(0) / 1e6);
+      std::fprintf(stderr, "[aurora][worker]   seal parts avg/max ms: efb downloads %.2f/%.2f, gfx::end_frame %.2f/%.2f, imgui %.2f/%.2f, seal+expire %.2f/%.2f\n",
+                   s_sealPart[0] / 120, s_sealPartMax[0], s_sealPart[1] / 120, s_sealPartMax[1], s_sealPart[2] / 120,
+                   s_sealPartMax[2], s_sealPart[3] / 120, s_sealPartMax[3]);
+      for (int i = 0; i < 4; ++i) s_sealPart[i] = s_sealPartMax[i] = 0;
+      s_workerTiming = {};
+    }
+  }
   record_frame_telemetry();
   return true;
 }
@@ -1950,6 +2068,16 @@ void aurora_set_texture_replacements_enabled(bool enabled) {
 }
 bool aurora_get_texture_replacements_enabled() { return aurora::gfx::texture_replacement::enabled(); }
 bool aurora_texture_replacements_available() { return aurora::g_config.allowTextureReplacements; }
+namespace aurora::gx::fifo {
+extern std::atomic<uint64_t> g_fifoDrainWaitNanos;
+extern std::atomic<uint64_t> g_fifoDrainWaitMaxNanos;
+}
+void aurora_consume_fifo_drain_wait(uint64_t* totalNanos, uint64_t* maxNanos) {
+  const uint64_t total = aurora::gx::fifo::g_fifoDrainWaitNanos.exchange(0, std::memory_order_relaxed);
+  const uint64_t max = aurora::gx::fifo::g_fifoDrainWaitMaxNanos.exchange(0, std::memory_order_relaxed);
+  if (totalNanos) *totalNanos = total;
+  if (maxNanos) *maxNanos = max;
+}
 void aurora_set_texture_patches(uint64_t textureHash, uint32_t width, uint32_t height, uint32_t format,
                                 const AuroraTexturePatch* patches, size_t count) {
   aurora::gfx::texture_replacement::set_patches(textureHash, width, height, format, patches, count);

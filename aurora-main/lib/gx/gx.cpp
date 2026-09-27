@@ -611,9 +611,15 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
   if (canCacheUpload) {
     store_cached_texture(obj, handle);
     if (canUseSourceCache) {
-      if (s_staticTextureSourceCache.size() >= 512) {
+      // Amortized sweep: the next one waits until the map doubles past what survived. With a fixed
+      // 512 threshold, a scene whose 512+ textures are all still referenced elsewhere (the NSMBW
+      // world map) swept the whole map on every insert, freeing nothing - 17.7 % of the game thread
+      // on the map at 180 FPS (profile, 2026-09-27).
+      static size_t s_sourceCacheSweepAt = 512;
+      if (s_staticTextureSourceCache.size() >= s_sourceCacheSweepAt) {
         absl::erase_if(s_staticTextureSourceCache, [](const auto& item) { return item.second.handle.use_count() <= 1; });
         clear_static_source_front_cache();
+        s_sourceCacheSweepAt = std::max<size_t>(512, s_staticTextureSourceCache.size() * 2);
       }
       s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle);
       store_static_source_front_cache(sourceKey, sourceHash, handle);
@@ -679,8 +685,10 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
   if (!obj.no_cache() && !tlut.no_cache()) {
     store_cached_texture(obj, handle, tlut.tlutObjId, tlut.tlutDataVersion);
     if (canUseSourceCache) {
-      if (s_staticPaletteTextureSourceCache.size() >= 256) {
+      static size_t s_paletteCacheSweepAt = 256; // amortized like s_sourceCacheSweepAt above
+      if (s_staticPaletteTextureSourceCache.size() >= s_paletteCacheSweepAt) {
         absl::erase_if(s_staticPaletteTextureSourceCache, [](const auto& item) { return item.second.handle.use_count() <= 1; });
+        s_paletteCacheSweepAt = std::max<size_t>(256, s_staticPaletteTextureSourceCache.size() * 2);
       }
       s_staticPaletteTextureSourceCache[sourceKey] = make_static_palette_texture_source_entry(sourceKey, handle);
       if (obj.texObjId != 0) {

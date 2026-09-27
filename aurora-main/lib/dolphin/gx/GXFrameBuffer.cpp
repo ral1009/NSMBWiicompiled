@@ -594,10 +594,16 @@ void GXCopyTex(void* dest, GXBool clear) {
   }
   if (stridedSubRect) {
     // Keep the scaled result for an upscaled atlas too; the RAM write-back below is native size.
-    aurora::gx::scaled_tile_cache::note_tile_copy(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
-                                                  texCopyFmt, handle.handle);
-    aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
-                                           texCopyFmt, handle.handle);
+    // Once the tile cache's GPU composite carries the tile, the native RAM write-back is a GPU->CPU
+    // sync per copy per frame that nothing reads (the atlas's RAM slots are excluded from its change
+    // hash). At 180 FPS interpolation those downloads stalled the frame seal for up to 36 ms
+    // (AURORA_LOG_WORKER_TIMING, 2026-09-27). Copies the cache does not own still write back.
+    const bool gpuOwned = aurora::gx::scaled_tile_cache::note_tile_copy(
+        dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth, texCopyFmt, handle.handle);
+    if (!gpuOwned) {
+      aurora::gfx::efb_ram::schedule_strided(dest, logicalDstWidth, logicalDstHeight, g_gxState.texCopyDstWidth,
+                                             texCopyFmt, handle.handle);
+    }
   } else if (AURORA_ENV("NSMBW_DEBUG_READBACK_SMALL_COPIES") != nullptr && logicalDstWidth <= 64 &&
              logicalDstHeight <= 64) {
     // DEBUG: land small copies in guest RAM too (contiguous: stride == width), so their pixels can

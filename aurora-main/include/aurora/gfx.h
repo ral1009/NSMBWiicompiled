@@ -66,6 +66,9 @@ typedef struct {
 } AuroraFrameInterpolationDiagnostics;
 
 void aurora_get_frame_interpolation_diagnostics(AuroraFrameInterpolationDiagnostics* diagnostics);
+// Total and longest time the producer spent blocked in FIFO drains waiting for the frame worker
+// to prepare the next frame, since the last call (both reset).
+void aurora_consume_fifo_drain_wait(uint64_t* totalNanos, uint64_t* maxNanos);
 
 // Generates transform-interpolated perspective frames between consecutive 60 Hz logical frames.
 // Supported targets are 0 (off), 120, 180 and 240. Guest simulation and VI timing are unchanged.

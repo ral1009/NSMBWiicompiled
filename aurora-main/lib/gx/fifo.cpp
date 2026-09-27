@@ -67,8 +67,15 @@ uint32_t end_display_list() {
 bool in_display_list() { return detail::sInDisplayList; }
 
 // How much of the producer's frame is spent blocked before it may decode the next batch of GX commands.
+std::atomic<uint64_t> g_fifoDrainWaitNanos{0};
+std::atomic<uint64_t> g_fifoDrainWaitMaxNanos{0};
+
 static void note_drain_wait(uint64_t nanos) noexcept {
   ZoneScopedN("FIFO drain wait");
+  g_fifoDrainWaitNanos.fetch_add(nanos, std::memory_order_relaxed);
+  if (nanos > g_fifoDrainWaitMaxNanos.load(std::memory_order_relaxed)) {
+    g_fifoDrainWaitMaxNanos.store(nanos, std::memory_order_relaxed);
+  }
   TracyPlot("aurora: fifoDrainWaitUs", static_cast<int64_t>(nanos / 1000));
 }
 

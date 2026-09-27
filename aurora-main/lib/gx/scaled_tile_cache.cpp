@@ -192,10 +192,10 @@ u64 masked_hash(uintptr_t base, const Atlas& atlas, const u8* data) noexcept {
 
 } // namespace
 
-void note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GXTexFmt format,
+bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GXTexFmt format,
                     const gfx::TextureHandle& scaled) noexcept {
   if (s_disabled || dest == nullptr || !scaled || width == 0 || height == 0) {
-    return;
+    return false;
   }
   // Scale 1 included: even at native resolution, keeping the atlas on the GPU and pasting tile
   // copies into it is what lets lookup_unchanged skip the per-frame RAM re-decode.
@@ -210,7 +210,7 @@ void note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
     }
   }
   if (scale == 0 || scaled->size.width != width * scale || scaled->size.height != height * scale) {
-    return;
+    return false;
   }
   const auto key = reinterpret_cast<uintptr_t>(dest);
   auto& slot = s_slots[key];
@@ -228,13 +228,15 @@ void note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
     if (key < base || key >= base + atlas.bytes || !atlas.composite) {
       continue;
     }
+    const bool wasBuilt = atlas.built;
     if (atlas.needsBuild) {
       queue_build(base, atlas); // pastes this slot too
     } else {
       queue_paste(base, atlas, key, slot);
     }
-    break;
+    return wasBuilt && slot_position(base, atlas, key, slot).has_value() && slot_belongs(atlas, slot);
   }
+  return false;
 }
 
 std::optional<gfx::TextureHandle> lookup(const GXTexObj_& obj, const gfx::TextureHandle& base) noexcept {

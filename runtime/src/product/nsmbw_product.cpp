@@ -52,6 +52,8 @@
 
 // Read by StartProfileSampler.
 extern std::atomic<uint64_t> g_viPresentedXfbFrames; // runtime/src/hle/vi.cpp
+extern std::atomic<uint64_t> g_viRetracesPerFrame[4]; // runtime/src/hle/vi.cpp
+extern std::atomic<uint64_t> g_viFrameTiming[2][5];   // runtime/src/hle/vi.cpp
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 
@@ -824,6 +826,62 @@ int main() {
     settings_overlay::SetProductEventHook(+[](const AuroraEvent* events) noexcept {
         nsmbw_controls::HandleEvents(events);
         nsmbw_button_glyphs::HandleEvents(events);
+        // NSMBW_LOG_INTERP: every 2 s, why presented FPS is below the interpolation target - frames
+        // sealed without slots because the game frame ran late (lateSealDrops), too few draws
+        // matched (framesLowMatch) or the command stream could not be replayed (framesReplayUnsafe).
+        static const bool logInterp = AURORA_ENV("NSMBW_LOG_INTERP") != nullptr;
+        if (logInterp) {
+            static auto last = std::chrono::steady_clock::now();
+            static AuroraFrameInterpolationDiagnostics prev{};
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last >= std::chrono::seconds(2)) {
+                last = now;
+                AuroraFrameInterpolationDiagnostics d{};
+                aurora_get_frame_interpolation_diagnostics(&d);
+                AuroraPresentTiming t{};
+                aurora_get_present_timing(&t);
+                static uint64_t prevGameFrames = 0;
+                static uint64_t prevHist[4]{};
+                const uint64_t gameFrames = g_viPresentedXfbFrames.load(std::memory_order_relaxed);
+                uint64_t hist[4];
+                for (int i = 0; i < 4; ++i) hist[i] = g_viRetracesPerFrame[i].load(std::memory_order_relaxed);
+                std::fprintf(stderr, "[nsmbw][interp] game frames/s=%.1f retraces per frame 0:%llu 1:%llu 2:%llu 3+:%llu\n",
+                             static_cast<double>(gameFrames - prevGameFrames) / 2.0,
+                             static_cast<unsigned long long>(hist[0] - prevHist[0]),
+                             static_cast<unsigned long long>(hist[1] - prevHist[1]),
+                             static_cast<unsigned long long>(hist[2] - prevHist[2]),
+                             static_cast<unsigned long long>(hist[3] - prevHist[3]));
+                prevGameFrames = gameFrames;
+                for (int i = 0; i < 4; ++i) prevHist[i] = hist[i];
+                {
+                    uint64_t drainTotal = 0, drainMax = 0;
+                    aurora_consume_fifo_drain_wait(&drainTotal, &drainMax);
+                    std::fprintf(stderr, "[nsmbw][interp]   fifo drain wait for worker: %.1f ms per 2 s, longest %.2f ms\n",
+                                 drainTotal / 1e6, drainMax / 1e6);
+                }
+                for (int k = 0; k < 2; ++k) {
+                    uint64_t v[5];
+                    for (int i = 0; i < 5; ++i) v[i] = g_viFrameTiming[k][i].exchange(0, std::memory_order_relaxed);
+                    if (v[0] == 0) continue;
+                    std::fprintf(stderr,
+                                 "[nsmbw][interp]   %s frames: %llu, production avg %.2f ms max %.2f ms, end_frame avg %.2f ms max %.2f ms\n",
+                                 k == 0 ? "kept-up" : "late", static_cast<unsigned long long>(v[0]),
+                                 v[1] / 1000.0 / v[0], v[3] / 1000.0, v[2] / 1000.0 / v[0], v[4] / 1000.0);
+                }
+                std::fprintf(stderr,
+                             "[nsmbw][interp] scene=%u target=%u slots=%u/%u fps=%.1f effective=%.1f p95=%.2fms | "
+                             "sealed+%llu late+%llu lowmatch+%llu unsafe+%llu reductions+%llu | last: match %u/%u eligible=%u replaySafe=%u\n",
+                             g_nsmbwCurrentSceneProfile, d.targetFps, d.activeSamples, d.targetSamples, t.framesPerSecond,
+                             t.effectiveFramesPerSecond, t.p95FrameTimeMs,
+                             static_cast<unsigned long long>(d.framesSealed - prev.framesSealed),
+                             static_cast<unsigned long long>(d.lateSealDrops - prev.lateSealDrops),
+                             static_cast<unsigned long long>(d.framesLowMatch - prev.framesLowMatch),
+                             static_cast<unsigned long long>(d.framesReplayUnsafe - prev.framesReplayUnsafe),
+                             static_cast<unsigned long long>(d.slotReductions - prev.slotReductions), d.matches,
+                             d.candidates, d.eligible, d.replaySafe);
+                prev = d;
+            }
+        }
     });
     settings_overlay::SetProductControllerMenuHook(+[]() noexcept {
         nsmbw_controls::DrawMenu();
@@ -851,6 +909,12 @@ int main() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
+        // Apply the saved F10 settings, as MKW's main.cpp does: frame interpolation target, audio
+        // volume/mute, display mode, skip-unready-pipelines. NSMBW never called this, so a saved
+        // "180 FPS" stayed off until re-selected in the menu (developer report, 2026-09-27; a
+        // NSMBW_LOG_INTERP run logged target=0 with Config.toml saying 180) and the saved volume
+        // was ignored. After the frames above, so aurora has discovered the controllers.
+        settings_overlay::InitializeRuntimeSettings();
     } else {
         std::fprintf(stderr, "[nsmbw] aurora_initialize did not produce a window; continuing without one.\n");
     }
