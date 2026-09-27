@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cerrno>
 #include <exception>
@@ -748,8 +749,27 @@ int main() {
     // Unbuffered so log order is trustworthy across an abnormal termination (abort() from an
     // uncaught exception does not flush buffered stdio) - needed to tell whether a crash happens
     // before or after other printf-based milestones instead of guessing from apparent line order.
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    // Unbuffered made every fprintf one or more WriteFile calls, ~4 % of the game thread's samples
+    // in 1-1 (profile 2026-09-27) and a visible hitch at every scene change that logs. So: 64 KB
+    // buffers, flushed every 250 ms by a background thread (test scripts kill the process, which
+    // would otherwise lose the tail of the log), on SIGABRT (where uncaught exceptions end) and in
+    // the access-violation handler. NSMBW_UNBUFFERED_LOG=1 restores unbuffered output.
+    if (AURORA_ENV("NSMBW_UNBUFFERED_LOG") != nullptr) {
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+        std::setvbuf(stderr, nullptr, _IONBF, 0);
+    } else {
+        static char outBuffer[1 << 16], errBuffer[1 << 16];
+        std::setvbuf(stdout, outBuffer, _IOFBF, sizeof(outBuffer));
+        std::setvbuf(stderr, errBuffer, _IOFBF, sizeof(errBuffer));
+        std::signal(SIGABRT, +[](int) { std::fflush(nullptr); });
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                std::fflush(stdout);
+                std::fflush(stderr);
+            }
+        }).detach();
+    }
     {
         std::error_code ec;
         const auto cacheDir = std::filesystem::current_path() / "nsmbw_data" / "Cache";
@@ -770,6 +790,17 @@ int main() {
     // together with a static-constructor loop hardcoded to MKW's own .ctors range - not reused
     // here for that reason (see RunGuestConstructors below for NSMBW's own version instead).
     Memory::Init(Memory::Config::WiiDefaults());
+
+    // Publish the translated-function registry, as MKW's main.cpp does. Until this runs, every
+    // indirect call's lookup skips its memo and takes the registry mutex, and the raw-dispatch fast
+    // path for indirect branches (FindRawByAddressPtr) is off entirely. All registrations come from
+    // static initializers, so everything is registered by now.
+    try {
+        TranslatedFunctionRegistry::Finalize();
+        std::printf("[nsmbw] Translated-function registry finalized.\n");
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[nsmbw] registry Finalize failed, continuing with slow lookups: %s\n", e.what());
+    }
 
     std::printf("[nsmbw] Initializing embedded data sections...\n");
     InitializeDataSections();

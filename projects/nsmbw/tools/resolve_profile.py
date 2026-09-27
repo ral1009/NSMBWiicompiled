@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--windows", default=None, help="inclusive range A-B, summed")
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--thread", default=None)
+    ap.add_argument("--children", default=None,
+                    help="substring of a function name: also print its immediate callees (inclusive)")
     args = ap.parse_args()
 
     text = open(args.profile, encoding="utf-8", errors="replace").read()
@@ -101,6 +103,7 @@ def main():
     self_ = collections.defaultdict(collections.Counter)
     incl = collections.defaultdict(collections.Counter)
     callers = collections.defaultdict(collections.Counter)
+    children = collections.defaultdict(collections.Counter)
     for w in chosen:
         for line in w.splitlines()[1:]:
             m = re.match(r'thread (\d+) "(.*)" samples=(\d+)', line)
@@ -127,6 +130,12 @@ def main():
                 if s not in seen:
                     seen.add(s)
                     incl[tid][s] += n
+            if args.children:
+                resolved = [sym(*f) for f in frames]
+                for i, s in enumerate(resolved):
+                    if args.children in s:
+                        children[tid][resolved[i - 1] if i > 0 else "(self)"] += n
+                        break
             if frames[0][0].lower() != exe_name:
                 caller = next((sym(*f) for f in frames[1:] if f[0].lower() == exe_name), "(no exe frame)")
                 callers[tid]["%s  <-  %s" % (leaf, caller)] += n
@@ -136,7 +145,10 @@ def main():
         print("  tid %-6s busy=%-6d wait=%-6d %s" % (tid, busy[tid], wait[tid], names.get(tid, "")))
     tid = args.thread or max(busy, key=busy.get)
     total = busy[tid] or 1
-    for title, table in (("self", self_), ("inclusive", incl), ("callers of non-exe leaves", callers)):
+    tables_out = [("self", self_), ("inclusive", incl), ("callers of non-exe leaves", callers)]
+    if args.children:
+        tables_out = [("callees of *%s*" % args.children, children)]
+    for title, table in tables_out:
         print("\n%s, tid %s (%s busy samples):" % (title, tid, busy[tid]))
         for s, n in table[tid].most_common(args.top):
             print("  %6d %5.1f%%  %s" % (n, 100.0 * n / total, s))

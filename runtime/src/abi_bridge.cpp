@@ -183,7 +183,11 @@ void RebuildIndicesLocked() {
         if (!entry.rawCpuInvoker || !entry.mustRemainDynamicallyDispatchable) {
             continue;
         }
-        if (translatedWinnersAreGenerated && entry.kind != FunctionKind::Native) {
+        // Translated winners the generated table lists are served from it. One it omits (a shared-
+        // runtime HLE registered at another product's address, e.g. MKW's PPCMfhid2 at 0x8012E630
+        // in an NSMBW build) goes here instead, so every winner stays reachable by raw dispatch.
+        if (translatedWinnersAreGenerated && entry.kind != FunctionKind::Native &&
+            FindStaticIndirectDispatchEntry(GeneratedIndirectDispatchTable(), address) != nullptr) {
             continue;
         }
         rawDispatchEntries.push_back(RawDispatchRecord{
@@ -239,15 +243,25 @@ std::string ValidateGeneratedIndirectDispatchLocked() {
         }
     }
 
+    // Winners the table omits are not an error: RebuildIndicesLocked puts them in the dynamic raw
+    // dispatch list. Until 2026-09-27 this returned an error, which for NSMBW (whose table cannot
+    // list MKW-address HLEs from the shared runtime) meant Finalize never published the registry
+    // and every indirect call took the registry mutex.
+    size_t omitted = 0;
+    uint32_t firstOmitted = 0;
     for (const auto& [address, index] : AddressIndex()) {
         const auto& info = Registry()[index];
         if ((info.kind == FunctionKind::BaseTranslated || info.kind == FunctionKind::ModTranslated) &&
             info.rawCpuInvoker && !FindStaticIndirectDispatchEntry(table, address)) {
-            std::ostringstream message;
-            message << "Generated indirect dispatch profile '" << table->profileName
-                    << "' omits translated winner 0x" << std::hex << address;
-            return message.str();
+            if (omitted++ == 0) {
+                firstOmitted = address;
+            }
         }
+    }
+    if (omitted != 0) {
+        RT_LOG(RT_TAG_RUNTIME) << "Generated indirect dispatch profile '" << table->profileName << "' omits "
+                               << omitted << " translated winner(s) (first 0x" << std::hex << firstOmitted
+                               << std::dec << "); dispatching them dynamically" << std::endl;
     }
     return {};
 }

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +23,23 @@
 namespace OsHleInternal {
 std::mutex gSleepTimerMutex;
 std::vector<SleepTimerEntry> gSleepTimers;
+// Earliest pending deadline (steady_clock ticks; max when none), maintained under gSleepTimerMutex.
+// ProcessSleepTimers runs about once per millisecond from the scheduler's idle loop while a timer
+// comes due a few times a second; checking this first lets it skip the mutex, the scan and a heap
+// allocation on every pass (it was ~9 % of the game thread's samples in 1-1, 2026-09-27).
+std::atomic<std::chrono::steady_clock::rep> gSleepTimerEarliest{
+    std::numeric_limits<std::chrono::steady_clock::rep>::max()};
+
+namespace {
+void RecomputeEarliestLocked()
+{
+    auto earliest = std::numeric_limits<std::chrono::steady_clock::rep>::max();
+    for (const SleepTimerEntry& entry : gSleepTimers) {
+        earliest = std::min(earliest, entry.deadline.time_since_epoch().count());
+    }
+    gSleepTimerEarliest.store(earliest, std::memory_order_release);
+}
+} // namespace
 
 void CancelSleepTimer(uint32_t threadPtr)
 {
@@ -29,6 +47,7 @@ void CancelSleepTimer(uint32_t threadPtr)
     std::erase_if(gSleepTimers, [threadPtr](const SleepTimerEntry& entry) {
         return entry.threadPtr == threadPtr;
     });
+    RecomputeEarliestLocked();
 }
 
 bool SleepTimerIsPending(uint32_t threadPtr)
@@ -72,6 +91,7 @@ void ScheduleSleepTimer(uint32_t threadPtr, uint64_t ticks)
         return entry.threadPtr == threadPtr;
     });
     gSleepTimers.push_back({threadPtr, deadline});
+    RecomputeEarliestLocked();
 }
 
 bool ProcessSleepTimers(CpuContext* cpu)
@@ -80,7 +100,7 @@ bool ProcessSleepTimers(CpuContext* cpu)
 
     std::vector<SleepTimerEntry> dueTimers;
     const auto now = Clock::now();
-    {
+    if (now.time_since_epoch().count() >= gSleepTimerEarliest.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(gSleepTimerMutex);
         auto it = gSleepTimers.begin();
         while (it != gSleepTimers.end()) {
@@ -91,6 +111,7 @@ bool ProcessSleepTimers(CpuContext* cpu)
             dueTimers.push_back(*it);
             it = gSleepTimers.erase(it);
         }
+        RecomputeEarliestLocked();
     }
 
     for (const SleepTimerEntry& timer : dueTimers) {
@@ -118,6 +139,7 @@ bool ProcessSleepTimers(CpuContext* cpu)
             }
             if (!present) {
                 gSleepTimers.push_back({threadPtr, now + std::chrono::milliseconds(2)});
+                RecomputeEarliestLocked();
             }
             continue;
         }

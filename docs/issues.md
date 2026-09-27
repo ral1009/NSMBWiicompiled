@@ -490,6 +490,18 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** default window 4000 (`projects/nsmbw/native/nsmbw_tick_read_pump.cpp`). A default run then reached 1-1 in ~30 s.
 - **Scope:** NSMBW-specific (test tooling only; no effect on real play).
 
+### NSMBW never published the translated-function registry
+- **Symptom:** every indirect call (virtual calls, function pointers) resolved through `FindByAddressPtrSlow` under the registry mutex (2.4 % self plus lock time in a 1-1 profile), and the raw-dispatch fast path was never enabled.
+- **Root cause:** only MKW's `main.cpp` calls `TranslatedFunctionRegistry::Finalize()`. Calling it for NSMBW failed validation, because the shared runtime registers `PPCMfhid2_HLE_8012e630` (an MKW-address HLE, `runtime/src/hle/os/os_init.cpp`) that NSMBW's generated dispatch table correctly does not list, and the validator treated any unlisted translated winner as fatal.
+- **Fix:** `nsmbw_product.cpp` calls Finalize (guarded). `abi_bridge.cpp` puts unlisted translated winners in the dynamic raw-dispatch list and logs a count instead of failing. Log: "registry finalized", "omits 1 translated winner(s) (first 0x8012e630)". The game ran boot -> 1-1 -> map repeatedly afterwards.
+- **Scope:** General (any product whose generated table does not cover every shared-runtime registration); the stray MKW-address HLE registration itself is the recurring cross-product class and is still registered.
+
+### Tileset atlas decoded, hashed and uploaded every frame
+- **Symptom:** RGB5A3 decode was the top self-time function in 1-1 (10.7 %), plus XXH hashing and a 4 MB upload per frame.
+- **Root cause:** animated-tile copies write the atlas's RAM every frame, so the texture cache saw new bytes and re-decoded the whole 1024x1024 atlas. The scaled tile cache then replaced the result with its GPU composite anyway. At 1x the cache was off entirely.
+- **Fix:** `scaled_tile_cache::lookup_unchanged` returns the composite while the bytes outside the tile slots are unchanged, and `gx.cpp` tries it before decoding; the cache now also runs at scale 1. Verified at 4x and 1x: tiles animate, and the decode is gone from the profile.
+- **Scope:** General (any title that EFB-copies into a texture it also samples); the atlas layout itself is NSMBW's.
+
 ---
 
 ## Open / unconfirmed items

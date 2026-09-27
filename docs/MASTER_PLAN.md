@@ -629,3 +629,29 @@ What's next:
 - The GameCube pad glyph set (Kenney has one; SDL's GameCube positions need checking first).
 - Glyphs for the 80×76 "shake" prompt textures, which are still Wii art.
 - A file-select FPS dip (one capture showed 15.6 FPS there; not reproduced and not investigated).
+
+## 2026-09-27 (evening) — Phase 8 (performance pass 1)
+Developer report: "chugging a bit in some levels". Measured first with the sampling profiler (`NSMBW_PROFILE_SAMPLER=1`) on a self-test run into 1-1 at the developer's settings (4x, 120 FPS interpolation, HD pack on). The game thread was busy 62 % of wall time in 1-1; 1-1 held ~59 FPS but with little headroom, and file select ran at 47.5 FPS. `resolve_profile.py` gained `--children FUNC` (a function's immediate callees) for this.
+
+What I did (each measured, same scene):
+- **Tileset atlas re-decoded every frame.** NSMBW's 1024x1024 RGB5A3 tileset atlas receives six animated-tile copies per frame. Their RAM write-back changes the atlas bytes, so gx re-decoded it (`DecodeTiled<RGB5A3>` 10.7 % self), hashed it and uploaded 4 MB every frame, only for the scaled tile cache to swap in its GPU composite. New `scaled_tile_cache::lookup_unchanged`: while the RAM *outside* the tile slots is unchanged (masked hash, once per frame), it returns the composite without decoding. The cache now also runs at 1x (it used to bail at `scale <= 1`), so weak machines get the saving.
+- **Texture-pack key hashing.** The pack index is now always built, so every new texture got a full XXH64 before looking up the pack. A (width, height, format) prefilter skips the hash unless the pack or a glyph patch has that shape (dumping disables the filter).
+- **Sleep timers.** `ProcessSleepTimers` runs ~1000x a second from the scheduler's idle loop and took the mutex, scanned and heap-allocated each time (9.4 % inclusive). An atomic earliest-deadline now skips all of that when nothing is due.
+- **Translated-function registry never published for NSMBW.** Only MKW's `main.cpp` called `TranslatedFunctionRegistry::Finalize()`, so every indirect call's lookup took the registry mutex, and the raw-dispatch fast path was off. Calling it from NSMBW's `main` failed validation: *"Generated indirect dispatch profile 'nsmbw' omits translated winner 0x8012e630"* - `PPCMfhid2_HLE_8012e630`, an MKW-address HLE registered by the shared runtime into every product (the known bug class). Omitted winners now go to the dynamic raw-dispatch list with a one-line warning instead of failing; NSMBW logs "omits 1". MKW's table is complete, so it is unaffected.
+- **Unbuffered stdio.** `main` set stdout/stderr unbuffered, so every log line cost several `WriteFile` calls (4.3 % in 1-1, and hitches at scene changes that log). Now 64 KB buffers, flushed every 250 ms by a background thread, on SIGABRT and in the access-violation handler; `NSMBW_UNBUFFERED_LOG=1` restores the old mode.
+
+Results: 1-1 game thread 62 % -> 50 % busy (real work excluding the timer-arm syscall ~58 % -> 44 %); file select 47.5 -> 54.6 FPS; the world map was already at 60. Whole process during play: 0.64 cores on average, 927 MB working set (1.2 GB private). Correctness: the ? blocks, bricks and coins animate at 4x and at 1x (screenshots; `NSMBW_RES_SCALE=1`).
+
+What broke / what I didn't expect:
+- I briefly thought the fast path had broken the ? blocks (a 4x capture showed them blank). A per-copy log showed all tile copies arrive at 4x, and more captures showed the "?" at every rotation angle. The blank frame was the spinning "?" edge-on, not a bug.
+- Every audio block runs the SDK's AX library as translated code: `Audio_HLE_Tick` is now ~36 % of the game thread's busy samples. The float-heavy part (func_801A39C0 and neighbours, 0x801A0000-0x801A4000) is most likely AXFX reverb/aux processing, which runs on the CPU on real hardware too.
+
+What I learned:
+- Profile "busy" includes waiting-shaped work (arming a wait timer, the idle loop's per-millisecond service pass); compare real work, not just busy.
+- A data structure that "changes every frame" may only change in known places: hash around those places and the per-frame cost disappears.
+
+What's next:
+- Native (SIMD) replacements for the hot AX routines, after identifying them precisely (AXFX reverb is the prime suspect).
+- Memory: 927 MB working set, mostly GPU-side textures (4096^2 atlas at 4x, 2048^2 pack textures) and driver mappings - measure and trim.
+- GPU side is unmeasured: at 4x with 120 FPS interpolation a weak GPU is the likelier bottleneck in heavy levels; add GPU timing.
+- The build targets x86-64-v3 (AVX2), so CPUs without AVX2 cannot run it at all. "Runs on anything" needs a v2 build or runtime dispatch - a decision for the developer.

@@ -32,6 +32,13 @@ using aurora::webgpu::g_device;
 namespace aurora::gfx::texture_replacement {
 Module Log("aurora::gfx::texture_replacement");
 
+// A texture's (width, height, format): the only part of a pack key known without hashing.
+constexpr uint64_t texture_shape(uint32_t width, uint32_t height, uint32_t format) noexcept {
+  return (static_cast<uint64_t>(width) << 40) | (static_cast<uint64_t>(height) << 16) | format;
+}
+// Shapes present in the pack index. Built once at init (before any lookup), read-only afterwards.
+absl::flat_hash_set<uint64_t> s_indexShapes;
+
 // Written by the settings UI thread, read by the GX thread on every lookup.
 std::atomic<bool> s_enabled{true};
 std::atomic<uint32_t> s_revision{0};
@@ -560,6 +567,7 @@ void build_index() noexcept {
     }
 
     s_replacementIndex.try_emplace(*parsed, path);
+    s_indexShapes.insert(texture_shape(parsed->width, parsed->height, parsed->format));
   }
 
   Log.info("Indexed {} texture replacements", s_replacementIndex.size());
@@ -690,6 +698,7 @@ void initialize() noexcept { build_index(); }
 
 void shutdown() noexcept {
   s_replacementIndex.clear();
+  s_indexShapes.clear();
   s_replacementCache.clear();
   s_failedKeys.clear();
   s_reportedMisses.clear();
@@ -794,6 +803,7 @@ struct PatchedTexture {
 // Patch sets are written by the event thread and read by the GX thread.
 std::mutex s_patchMutex;
 absl::flat_hash_map<RuntimeTextureKey, std::vector<TexturePatch>> s_patches;
+absl::flat_hash_set<uint64_t> s_patchShapes; // under s_patchMutex, like s_patches
 std::atomic<bool> s_hasPatches{false};
 std::atomic<uint32_t> s_patchGeneration{0};
 // Decoded images keyed by the caller's PNG buffer, which must stay alive (embedded data).
@@ -836,6 +846,10 @@ void set_patches(uint64_t hash, uint32_t width, uint32_t height, uint32_t format
     s_patches.erase(key);
   } else {
     s_patches[key] = std::move(list);
+  }
+  s_patchShapes.clear();
+  for (const auto& [k, v] : s_patches) {
+    s_patchShapes.insert(texture_shape(k.width, k.height, k.format));
   }
   s_hasPatches.store(!s_patches.empty(), std::memory_order_relaxed);
   s_patchGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -976,13 +990,27 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
     return std::nullopt;
   }
 
-  const RuntimeTextureKey key = build_runtime_key(obj);
+  // Hashing the whole texture (build_runtime_key) is the expensive part, and almost no texture
+  // can match: skip it unless the pack or a patch has a key of this shape. Dumping needs every
+  // texture's key, so it disables the filter.
+  const uint64_t shape = texture_shape(obj.width(), obj.height(), obj.format());
+  const bool packCandidate = packOn && (g_config.allowTextureDumps || s_indexShapes.contains(shape));
+  bool patchCandidate = false;
   if (hasPatches) {
+    std::lock_guard lock(s_patchMutex);
+    patchCandidate = s_patchShapes.contains(shape);
+  }
+  if (!packCandidate && !patchCandidate) {
+    return std::nullopt;
+  }
+
+  const RuntimeTextureKey key = build_runtime_key(obj);
+  if (patchCandidate) {
     if (auto patched = find_patched(key, obj, packOn); patched.has_value()) {
       return patched;
     }
   }
-  if (!packOn) {
+  if (!packCandidate) {
     return std::nullopt;
   }
   const auto* path = find_replacement_path(key);

@@ -1413,10 +1413,15 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
     } else if (copyRef != nullptr) {
       handle = copyRef->handle;
     } else if (obj.data != nullptr) {
-      handle = resolve_static_texture(obj);
-      // A texture that scaled tile copies land in (NSMBW's tileset atlas) samples its upscaled build.
-      if (auto scaled = scaled_tile_cache::lookup(obj, handle)) {
-        handle = std::move(*scaled);
+      // A texture that tile copies land in (NSMBW's tileset atlas) samples its GPU-side build;
+      // while nothing outside the tile slots changed, skip decoding it from RAM at all.
+      if (auto unchanged = scaled_tile_cache::lookup_unchanged(obj)) {
+        handle = std::move(*unchanged);
+      } else {
+        handle = resolve_static_texture(obj);
+        if (auto scaled = scaled_tile_cache::lookup(obj, handle)) {
+          handle = std::move(*scaled);
+        }
       }
     }
 

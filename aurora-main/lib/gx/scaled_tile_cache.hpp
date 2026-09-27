@@ -29,5 +29,11 @@ void note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
 // instead of `base` (the texture decoded from RAM). nullopt while not built yet or not applicable.
 std::optional<gfx::TextureHandle> lookup(const GXTexObj_& obj, const gfx::TextureHandle& base) noexcept;
 
+// Fast path, tried before decoding `obj` from RAM: the built composite when the atlas's RAM outside
+// its tile slots is unchanged (masked hash, computed at most once per frame). The tiles' own
+// write-back changes the RAM every frame, so without this the whole atlas was re-decoded, hashed
+// and uploaded every frame only to be replaced by the composite. nullopt means "decode as usual".
+std::optional<gfx::TextureHandle> lookup_unchanged(const GXTexObj_& obj) noexcept;
+
 
 } // namespace aurora::gx::scaled_tile_cache

@@ -51,6 +51,9 @@ struct Atlas {
   // native write-back); a change means a new tileset, so the upscaled base must be rebuilt.
   u64 contentHash = 0;
   u32 lastUsedFrame = 0;
+  // lookup_unchanged's once-per-frame verdict.
+  u32 checkedFrame = ~0u;
+  bool unchangedThisFrame = false;
 };
 
 std::map<uintptr_t, Slot> s_slots;
@@ -194,8 +197,19 @@ void note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
   if (s_disabled || dest == nullptr || !scaled || width == 0 || height == 0) {
     return;
   }
+  // Scale 1 included: even at native resolution, keeping the atlas on the GPU and pasting tile
+  // copies into it is what lets lookup_unchanged skip the per-frame RAM re-decode.
   const u32 scale = scaled->size.width / width;
-  if (scale <= 1 || scaled->size.width != width * scale || scaled->size.height != height * scale) {
+  if (s_log) {
+    static std::map<uintptr_t, u32> s_seen; // one line per destination and scale
+    const auto k = reinterpret_cast<uintptr_t>(dest);
+    if (s_seen[k] != scaled->size.width + 1) {
+      s_seen[k] = scaled->size.width + 1;
+      std::fprintf(stderr, "[scaled_tile_cache] copy dest=%p %ux%u stride=%u fmt=%u gpu=%ux%u scale=%u\n", dest, width,
+                   height, strideWidth, static_cast<unsigned>(format), scaled->size.width, scaled->size.height, scale);
+    }
+  }
+  if (scale == 0 || scaled->size.width != width * scale || scaled->size.height != height * scale) {
     return;
   }
   const auto key = reinterpret_cast<uintptr_t>(dest);
@@ -281,6 +295,31 @@ std::optional<gfx::TextureHandle> lookup(const GXTexObj_& obj, const gfx::Textur
   if (!atlas.built) {
     return std::nullopt;
   }
+  return atlas.composite;
+}
+
+std::optional<gfx::TextureHandle> lookup_unchanged(const GXTexObj_& obj) noexcept {
+  if (s_disabled || obj.data == nullptr || obj.has_mips()) {
+    return std::nullopt;
+  }
+  const auto it = s_atlases.find(reinterpret_cast<uintptr_t>(obj.data));
+  if (it == s_atlases.end()) {
+    return std::nullopt;
+  }
+  auto& atlas = it->second;
+  if (!atlas.built || atlas.needsBuild || !atlas.composite || atlas.width != obj.width() ||
+      atlas.height != obj.height() || atlas.format != static_cast<GXTexFmt>(obj.raw_format())) {
+    return std::nullopt;
+  }
+  const u32 now = gfx::current_frame();
+  if (atlas.checkedFrame != now) {
+    atlas.checkedFrame = now;
+    atlas.unchangedThisFrame = masked_hash(it->first, atlas, static_cast<const u8*>(obj.data)) == atlas.contentHash;
+  }
+  if (!atlas.unchangedThisFrame) {
+    return std::nullopt; // a new tileset: decode, and lookup() rebuilds from it
+  }
+  atlas.lastUsedFrame = now;
   return atlas.composite;
 }
 
