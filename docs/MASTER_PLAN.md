@@ -722,3 +722,24 @@ What I learned:
 What's next:
 - Fix the four setup problems now listed under "Open / unconfirmed items" in issues.md: MKW wording in the DVD error and config template, TOML parse errors shown as "no DVD root", the `nand_root` example trap, and the window/video reset on every launch. They're documented in `PLAYING.txt` for now.
 - Before any public release: the license check in Phase 11. The exe contains translated game code, so how a release is distributed is still an open decision.
+
+## 2026-09-28 — Phase 8 (180 FPS interpolation at 4x)
+All measurements from portable copies (own UserData; the developer's Config.toml and save are no longer edited for tests) at 4x, 180 FPS target, RTX 4060, 180 Hz monitor.
+
+What I did (each step measured):
+1. **Proved the cause.** `AURORA_DEBUG_SKIP_SLOT_PRESENT=1` drops interpolated slots before any presenter Dawn call. With it the game held 60.0-60.5 real frames/s with 0 late frames, worst seal 1.4 ms, worst FIFO-drain wait 2 ms. Without it: 44-46 frames/s, 16-30 late per 2 s. So the presenter's Dawn calls alone caused the stalls. aurora requests Dawn's `ImplicitDeviceSynchronization` (one mutex for every Dawn call), so any presenter call that blocks inside Dawn stalls the worker and then the game.
+2. **Found which call.** Timing `GetCurrentTexture` separately showed it at 0.02 ms once preceded by a wait. The yesterday's `Instance::WaitAny` wait itself (4 ms average, 14 ms max) also blocks inside the device lock.
+3. **Poll instead of blocking.** The presenter registers `OnSubmittedWorkDone` in `AllowProcessEvents` mode, then polls `ProcessEvents()` (holds the lock for microseconds) and sleeps 200 us between polls. Result: game 60.5 frames/s, 0 late, drain wait under 1.6 ms. Presented only 120-147, because it waited for the previous present's GPU work.
+4. **Wait for present N-2, not N-1** (a ring of two completion flags): 127-137. At 2x this already locked 180.0.
+5. **Replay slots skip resolve-only passes.** A render-to-texture / EFB-copy source pass whose next pass clears colour and depth is not re-drawn on interpolated slots; its texture came from the native render and its resolve is not re-run. Result: 145-159 at 4x. GPU load 63-68 %, so not GPU-bound.
+6. **Mailbox present mode on D3D12.** Three presents in flight made `GetCurrentTexture` block in-lock again (3 ms average), so D3D12's Immediate swapchain has only 2 buffers. `AURORA_PRESENT_MODE=mailbox` (new override) gave 177-180. Mailbox is now the default on D3D12 as on Vulkan: it does not tear, at a cost of up to one refresh of latency.
+
+Results on a copy of the developer's save, 4x / 180, no overrides: 1-1 holds 180.0 in steady play (dips at level start and death); World 1 map mostly 162-180 with 1-7 late frames per 2 s (was 15-30); game 60 real frames/s.
+
+What I learned:
+- With a single device-wide lock, "wait for the GPU" must never happen inside the API. Poll with a non-blocking check and sleep outside it.
+- A double-buffered swapchain puts a hard floor on presentation latency: each present waits for the one two back. That is invisible at 60 Hz and decisive at 180.
+
+What's next:
+- The residual map lates (1-7 per 2 s) come from the game side (EFB-probe downloads in the seal).
+- Watch for Mailbox side effects on other setups (window capture, VRR displays); `AURORA_PRESENT_MODE=immediate` restores the old mode.

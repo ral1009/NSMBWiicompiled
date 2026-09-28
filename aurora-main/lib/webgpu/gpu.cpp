@@ -126,9 +126,26 @@ wgpu::PresentMode best_present_mode() {
     }
     return false;
   };
-  // Vulkan prefers Mailbox, every other backend Immediate. Under window capture the Vulkan driver
-  // cannot flip and Immediate leaks about a megabyte per present until the device is lost.
-  const bool preferMailbox = g_backendType == wgpu::BackendType::Vulkan;
+  // AURORA_PRESENT_MODE=mailbox|immediate|fifo forces a mode when the surface offers it (testing).
+  if (const char* forced = AURORA_ENV("AURORA_PRESENT_MODE")) {
+    const std::string_view mode{forced};
+    const auto want = mode == "mailbox" ? wgpu::PresentMode::Mailbox
+                      : mode == "fifo"  ? wgpu::PresentMode::Fifo
+                                        : wgpu::PresentMode::Immediate;
+    if (supports(want)) {
+      return want;
+    }
+    Log.warn("AURORA_PRESENT_MODE={} not supported by this surface", forced);
+  }
+  // Vulkan and D3D12 prefer Mailbox, other backends Immediate. Under window capture the Vulkan
+  // driver cannot flip and Immediate leaks about a megabyte per present until the device is lost.
+  // D3D12's Immediate swapchain is double-buffered, so with frame interpolation every present had
+  // to wait for the GPU to finish the one two presents back (~5.2 ms of queue latency against a
+  // 5.5 ms budget at 180 Hz): 4x/180 reached only 145-159 FPS on an RTX 4060 at 65 % load. Mailbox
+  // has spare buffers: 177-180 FPS with the game at 60 and no late frames (2026-09-27). It also
+  // never tears; the cost is up to one refresh of extra latency.
+  const bool preferMailbox =
+      g_backendType == wgpu::BackendType::Vulkan || g_backendType == wgpu::BackendType::D3D12;
   if (preferMailbox && supports(wgpu::PresentMode::Mailbox)) {
     return wgpu::PresentMode::Mailbox;
   }

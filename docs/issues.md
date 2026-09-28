@@ -527,6 +527,12 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** `runtime/cmake/NsmbwProduct.cmake` now copies both next to the exe after every link (MKW's `initial_pipeline_cache.db` is left out on purpose: it holds Mario Kart shader recipes, and aurora only warns when it's missing). New `projects/nsmbw/tools/package_nsmbw.ps1` builds `dist\NSMBWCompiled-<commit>.zip` from an explicit required-file list and fails if any file is missing, with `PLAYING.txt` (setup steps for players) included. Verified by unzipping the package into a folder outside the repo, so the fallback can't reach `runtime/assets/`. It ran 40 s through boot, title and the opening movie (profiles 0 → 6 → 7 → 5 → 8), past NAND init and `AIInit`. The same folder with `dsp_coef.bin` deleted reproduced the friend's exact exception after 7 s. The NAND *seeding* path wasn't exercised, because this machine's NAND already exists and seeding only copies missing files. The friend's successful run covers it.
 - **Scope:** NSMBW-specific build config. The class is general: the NSMBW product skipping a step MKW's product setup does, like `InitializeRuntimeSettings` above. Any test run inside the checkout hides the gap.
 
+### 180 FPS interpolation below target at 4x (presenter blocking inside Dawn's device lock)
+- **Symptom:** 4x / 180 target: ~130-160 FPS presented, the game itself below 60 on the map (follow-up to the 2026-09-27 entry).
+- **Root cause:** aurora runs Dawn with `ImplicitDeviceSynchronization`, so every Dawn call shares one mutex. The presenter waited for GPU completion inside it (`WaitAny`, and before that `GetCurrentTexture`), which stalled the frame worker and the game. Separately, D3D12's Immediate swapchain has only 2 buffers, so each present had to wait for the GPU to finish the present two back (~5 ms of queue latency against a 5.5 ms budget).
+- **Fix:** poll GPU completion with `ProcessEvents` + sleep outside the lock, for present N-2; interpolated replay slots skip resolve-only passes; Mailbox present mode on D3D12 (`aurora.cpp`, `gfx/common.cpp`, `webgpu/gpu.cpp`). Evidence: `AURORA_DEBUG_SKIP_SLOT_PRESENT` A/B, `GetCurrentTexture` timing, 2-vs-3 in-flight test (see the progress log). After: 1-1 at 180.0, map mostly 162-180.
+- **Scope:** General (aurora presentation).
+
 ---
 
 ## Open / unconfirmed items
@@ -548,7 +554,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - aurora viewport offset 340 vs hardware 342.
 - Leftover `[debug]` print for target 0x60 in `Program.cs` discovery loop.
 - `*_diag.cpp` overrides whose areas are now stable (each removal needs the shard manifest regenerated).
-- 180 FPS interpolation still misses frames: EFB-probe downloads and `gfx::end_frame` contend for Dawn's device lock with the presenter (2026-09-27 night).
+- 180 FPS at 4x: fixed 2026-09-28 except 1-7 late frames per 2 s on the world map (EFB-probe downloads in the seal).
 - aurora `command_processor.cpp` BP 0x65 (LOADTLUT1) uses the TMEM-address bits as a TLUT slot index; display-list palette loads would be dropped. Not hit by NSMBW so far (2026-09-27).
 - First-run setup problems a tester hit (2026-09-27), not yet fixed:
   - The DVD-root error (`runtime/src/hle/storage/dvd.cpp:146,153`) and the Config.toml template (`runtime/include/runtime_config.h:265,298`) say "Mario Kart Wii".

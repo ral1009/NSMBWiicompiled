@@ -1,4 +1,4 @@
-#include <aurora/aurora.h>
+﻿#include <aurora/aurora.h>
 #include <aurora/env.hpp>
 #include <atomic>
 #include <cstdint>
@@ -872,11 +872,22 @@ std::shared_ptr<PresentationImage> acquire_presentation_image(size_t slot, uint3
 }
 
 // Presenter-thread only: completion of the most recent Present's GPU work (see its use).
-wgpu::Future s_presentWorkFuture{};
-bool s_hasPresentWorkFuture = false;
+// GPU completion of recent Presents' work, as a ring indexed by present count. Present N reuses the
+// swapchain buffer of present N - kPresentsInFlight, so it only has to wait for that one; waiting
+// for N - 1 serialized the GPU and the presenter (acquire ~6-7 ms, 120-147 FPS at 180).
+constexpr uint32_t kPresentsInFlight = 2;
+std::array<std::atomic_bool, kPresentsInFlight> s_presentWorkDone{true, true};
+uint32_t s_presentIndex = 0;
+PresentClock::duration s_lastGetCurrentTextureDuration{};
 
 bool present_presentation_job(const PresentationJob& job) {
   ZoneScoped;
+  // DIAGNOSTIC (AURORA_DEBUG_SKIP_SLOT_PRESENT): drop interpolated slots before any Dawn call, to
+  // test whether the presenter's Dawn calls are what stall the frame worker.
+  static const bool skipSlots = AURORA_ENV("AURORA_DEBUG_SKIP_SLOT_PRESENT") != nullptr;
+  if (skipSlots && job.interpolated) {
+    return false;
+  }
   const auto submissionStarted = PresentClock::now();
   // Keep the threshold far above compositor and scheduling jitter. The timings below separate a
   // real surface stall from a bad deadline, and only the former needs a rebuild.
@@ -923,17 +934,29 @@ bool present_presentation_job(const PresentationJob& job) {
     }
     if (!surfaceSizeChanged && window::is_presentable()) {
       const auto acquireStarted = PresentClock::now();
-      // Wait for the previous presentation's GPU work *before* acquiring. GetCurrentTexture blocks
-      // until the next swapchain buffer is free, and it blocks inside Dawn's device lock, which every
-      // Dawn call on the frame worker also needs. At 180 FPS interpolation the acquire averaged
-      // 6.6-8.6 ms and peaked at 59 ms per present, stalling the worker's seal, then the game's
-      // FIFO drain, so ~17 % of game frames missed their retrace (AURORA_LOG_WORKER_TIMING,
-      // 2026-09-27). WaitAny waits on the queue fence without that lock.
-      if (s_hasPresentWorkFuture) {
-        g_instance.WaitAny(s_presentWorkFuture, 50'000'000);
-        s_hasPresentWorkFuture = false;
+      // Wait for the previous presentation's GPU work *before* acquiring, without holding Dawn's
+      // device lock (ImplicitDeviceSynchronization: one mutex for every Dawn call). GetCurrentTexture
+      // blocks inside that lock until a swapchain buffer is free, and Instance::WaitAny waits on the
+      // fence inside it too; either way every Dawn call on the frame worker queued behind the wait,
+      // then the game's FIFO drain behind the worker. At 180 FPS interpolation that dropped the game
+      // to ~45 real frames/s; with slot presents skipped (AURORA_DEBUG_SKIP_SLOT_PRESENT) it held 60
+      // with no late frames (2026-09-27). So: poll. ProcessEvents only checks the fence (the lock is
+      // held for microseconds) and the presenter sleeps between checks. GetCurrentTexture then finds
+      // the buffer free (measured 0.02 ms).
+      {
+        const auto waitDeadline = PresentClock::now() + std::chrono::milliseconds(50);
+        auto& slotDone = s_presentWorkDone[s_presentIndex % kPresentsInFlight];
+        while (!slotDone.load(std::memory_order_acquire) && PresentClock::now() < waitDeadline) {
+          g_instance.ProcessEvents();
+          if (slotDone.load(std::memory_order_acquire)) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
       }
+      const auto getCurrentStarted = PresentClock::now();
       auto acquired = acquire_surface_texture();
+      s_lastGetCurrentTextureDuration = PresentClock::now() - getCurrentStarted;
       acquireDuration =
           std::chrono::duration_cast<std::chrono::nanoseconds>(PresentClock::now() - acquireStarted);
       if (acquired) {
@@ -1004,32 +1027,39 @@ bool present_presentation_job(const PresentationJob& job) {
               PresentClock::now() - presentStarted);
           if (presentStatus == wgpu::Status::Success) {
             presented = true;
-            s_presentWorkFuture = g_queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
-                                                              [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {});
-            s_hasPresentWorkFuture = true;
+            {
+              const uint32_t slot = s_presentIndex % kPresentsInFlight;
+              ++s_presentIndex;
+              s_presentWorkDone[slot].store(false, std::memory_order_release);
+              g_queue.OnSubmittedWorkDone(wgpu::CallbackMode::AllowProcessEvents,
+                                          [slot](wgpu::QueueWorkDoneStatus, wgpu::StringView) {
+                                            s_presentWorkDone[slot].store(true, std::memory_order_release);
+                                          });
+            }
             // AURORA_LOG_WORKER_TIMING: how long the presenter blocks per present, by step.
             static const bool logPresent = AURORA_ENV("AURORA_LOG_WORKER_TIMING") != nullptr;
             if (logPresent) {
-              static double sums[5]{}, maxes[5]{};
+              static double sums[6]{}, maxes[6]{};
               static uint32_t count = 0;
-              const double values[5] = {
+              const double values[6] = {
                   std::chrono::duration<double, std::milli>(surfaceLockDuration).count(),
                   std::chrono::duration<double, std::milli>(acquireDuration).count(),
                   std::chrono::duration<double, std::milli>(submitDuration).count(),
                   std::chrono::duration<double, std::milli>(scheduleWaitDuration).count(),
                   std::chrono::duration<double, std::milli>(presentDuration).count(),
+                  std::chrono::duration<double, std::milli>(s_lastGetCurrentTextureDuration).count(),
               };
-              for (int i = 0; i < 5; ++i) {
+              for (int i = 0; i < 6; ++i) {
                 sums[i] += values[i];
                 maxes[i] = (std::max)(maxes[i], values[i]);
               }
               if (++count == 360) {
                 std::fprintf(stderr,
                              "[aurora][present] per present avg/max ms: surface lock %.2f/%.2f, acquire %.2f/%.2f, "
-                             "submit %.2f/%.2f, schedule wait %.2f/%.2f, Present %.2f/%.2f\n",
+                             "submit %.2f/%.2f, schedule wait %.2f/%.2f, Present %.2f/%.2f, GetCurrentTexture alone %.2f/%.2f\n",
                              sums[0] / count, maxes[0], sums[1] / count, maxes[1], sums[2] / count, maxes[2],
-                             sums[3] / count, maxes[3], sums[4] / count, maxes[4]);
-                for (int i = 0; i < 5; ++i) sums[i] = maxes[i] = 0;
+                             sums[3] / count, maxes[3], sums[4] / count, maxes[4], sums[5] / count, maxes[5]);
+                for (int i = 0; i < 6; ++i) sums[i] = maxes[i] = 0;
                 count = 0;
               }
             }

@@ -1309,6 +1309,13 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
       // Skip only empty intermediate passes: offscreen and scratch passes with resolves still have to
       // run for later samplers, and on a replay slot a resolve-only pass has nothing to encode.
       continue;
+    } else if (!encodeTextureBakes && passInfo.resolveTarget && i + 1 < renderPasses.size() &&
+               renderPasses[i + 1].clearColor && renderPasses[i + 1].clearDepth) {
+      // Replay slot: a pass that exists to be resolved into a texture (render-to-texture, EFB copy
+      // source) produced that texture on the native render, and its resolve is not re-run here, so
+      // re-drawing it only burns GPU time - twice per frame at 180 FPS, at 4x. Safe to drop when the
+      // next pass clears colour and depth, so none of its pixels reach the final image.
+      continue;
     }
 
     const std::array attachments{
