@@ -96,6 +96,23 @@ Run it with the helper, which captures the stderr log and periodic window screen
 
 Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 3 world map, 5 title *and* levels, 6/7 course-in, 8 cutscene, 10 file select). The NAND save (`%LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav`) is kept between runs so a started file resumes at the world map; `NSMBW_RESET_SAVE=1` deletes it at launch, and the window config is still reset unless `NSMBW_KEEP_STATE=1`. With the self-test presses on, a resumed save gets from boot to 1-1 in about 30 seconds.
 
+### Running a build on another PC
+
+```powershell
+.\projects\nsmbw\tools\package_nsmbw.ps1
+```
+
+This writes `dist\NSMBWCompiled-<commit>.zip`, which contains everything the exe loads from its own folder:
+- `NSMBWCompiled.exe`
+- the 8 DLLs it imports that Windows doesn't ship: SDL3, Dawn, the two DirectX shader compiler DLLs, libc++, libunwind, libpng and zlib
+- `dsp_coef.bin`, the audio mixer's resampling table
+- `wii_bootstrap\`, the files a fresh emulated NAND is seeded with
+- `PLAYING.txt`, setup instructions for the player
+
+The player still needs their own PAL disc (SMNP01, revision 1) extracted with Dolphin, with `dvd_root` in `%LOCALAPPDATA%\WiiCompiled\Config.toml` pointing at it. They also need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU.
+
+Test a package from a folder **outside** this repo. When a file is missing next to the exe, the runtime looks for it in `runtime/assets/` by walking up from the working directory, so inside the checkout a missing file goes unnoticed.
+
 ## HD textures (Dolphin texture packs)
 
 Dolphin custom-texture packs work unchanged. Copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`, then tick **Graphics → HD texture pack** in the F10 menu (or set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`). The checkbox switches the pack on and off while the game runs. Tested with the full *NSMBW HD v2.81 (DDS)* pack and with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642**. Packs contain Nintendo-derived art, so none are included in this repository; download them from their authors.

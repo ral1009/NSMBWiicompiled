@@ -206,8 +206,8 @@ if(MKW_BUILD_NSMBW)
     # linked in statically, so without this the exe fails immediately with STATUS_DLL_NOT_FOUND
     # (confirmed the hard way - it printed nothing and exited 0xC0000135) before ever reaching
     # main(). NSMBWCompiled doesn't call mkw_configure_product() (that function also wires up
-    # MKW's wii_bootstrap/DSP-coefficient/pipeline-cache asset copying, none of which NSMBW has or
-    # needs yet), so this piece is pulled in on its own instead.
+    # MKW-specific pieces), so the parts NSMBW needs are pulled in on their own instead - the
+    # DLLs here, and the runtime data files below.
     if(EXISTS "${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         include("${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         aurora_copy_runtime_dlls(NSMBWCompiled)
@@ -230,6 +230,28 @@ if(MKW_BUILD_NSMBW)
                     "${nsmbw_runtime_dll_path}" $<TARGET_FILE_DIR:NSMBWCompiled>)
         endforeach()
     endif()
+
+    # Runtime data files the exe loads from its own directory. Both lookups fall back to walking
+    # up from the working directory to runtime/assets/, which is why a run inside this checkout
+    # never noticed they weren't copied: the first run on a machine without the source tree
+    # (2026-09-27) failed at NAND init ("Unable to initialize managed NAND",
+    # runtime/include/nand_path.h:145) and then at AIInit (uncaught "Missing bundled Wii DSP
+    # coefficient ROM (dsp_coef.bin)", runtime/src/hle/audio/ax_mix.cpp:54).
+    # MKW's initial_pipeline_cache.db is deliberately not copied: it holds pipeline recipes for
+    # Mario Kart's shaders, and aurora treats a missing seed as a warning.
+    set(NSMBW_WII_BOOTSTRAP_SOURCE_DIR "${MKW_RUNTIME_SOURCE_DIR}/assets/wii")
+    if(NOT EXISTS "${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}/shared2/wc24")
+        message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}")
+    endif()
+    add_custom_command(TARGET NSMBWCompiled POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:NSMBWCompiled>/wii_bootstrap")
+
+    set(NSMBW_DSP_COEFFICIENT_ROM "${MKW_RUNTIME_SOURCE_DIR}/assets/dsp/dsp_coef.bin")
+    if(NOT EXISTS "${NSMBW_DSP_COEFFICIENT_ROM}")
+        message(FATAL_ERROR "Missing Wii DSP coefficient ROM: ${NSMBW_DSP_COEFFICIENT_ROM}")
+    endif()
+    add_custom_command(TARGET NSMBWCompiled POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${NSMBW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:NSMBWCompiled>/dsp_coef.bin")
 
     message(STATUS "NSMBWCompiled executable target ready.")
 endif()

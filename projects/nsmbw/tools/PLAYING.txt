@@ -1,0 +1,69 @@
+NSMBWCompiled - how to run it
+=============================
+
+This is New Super Mario Bros. Wii recompiled to run natively on PC. It contains the game's
+code but none of its levels, graphics or sound: those are read from your own copy of the disc.
+
+YOU NEED
+- Windows 10 or 11, 64-bit
+- A CPU with AVX2 (Intel 2013 "Haswell" or newer, any AMD Ryzen)
+- A GPU with Direct3D 12 or Vulkan
+- Your own dump of the PAL disc: game ID SMNP01, revision 1. The US disc (SMNE01) will NOT work.
+  An .rvz, .iso or .wbfs file is fine.
+
+SETUP (once)
+1. Keep everything in this folder together. The .exe needs the .dll files, dsp_coef.bin and
+   the wii_bootstrap folder next to it.
+
+2. Extract the disc with Dolphin:
+   - Add the folder with your disc image to Dolphin's game list.
+   - Right-click the game > Properties > Filesystem tab.
+     (The Info tab there shows the game ID and revision - check SMNP01 / revision 1.)
+   - Right-click "Data Partition" > Extract Entire Partition... and pick an empty folder.
+   - That folder should now contain "sys" and "files" folders. That folder is your disc folder.
+
+3. Run NSMBWCompiled.exe once. It stops with "DVD data is unavailable" - that is expected.
+   It has now created its settings file:
+       %LOCALAPPDATA%\WiiCompiled\Config.toml
+   (paste that into Explorer's address bar to find it)
+
+4. Open Config.toml in a text editor. Near the bottom, under [paths], change the dvd_root line
+   to your disc folder and remove the # in front of it. Use SINGLE quotes:
+
+       dvd_root = 'C:\Games\NSMBW-Disc'
+
+   - Single quotes matter: inside double quotes a backslash is an escape character, the file
+     fails to load, and the game says "No DVD root is configured" even though you set it.
+     (Double quotes work only with doubled backslashes: "C:\\Games\\NSMBW-Disc".)
+   - Use the full path, starting with the drive letter.
+   - Leave the other lines under [paths] (nand_root, retro_rewind_root, overlay_roots) with
+     their # in front. They are examples; activating nand_root makes the game look for a
+     D:\WiiNand folder that does not exist.
+   - The comments in this file mention Mario Kart Wii. That is left over from the project this
+     is built on; ignore it.
+
+5. Save the file and run NSMBWCompiled.exe again. The first launch takes a while to build
+   its shader cache.
+
+HD TEXTURES (optional)
+   The game runs fine without these. Dolphin texture packs for NSMBW work unchanged; none are
+   included here because they are made from Nintendo's art - download them from their authors.
+   Tested: "NSMBW HD v2.81 (DDS)", and nymo642's HD HUD Tweaks (gamebanana.com/mods/480785).
+   1. Find the pack's "SMN" folder (the one Dolphin wants in Load\Textures\).
+   2. Copy it to  nsmbw_data\texture_replacements\SMN  in this folder
+      (create texture_replacements if it isn't there; nsmbw_data appears after the first run).
+   3. In the game press F10 > Graphics > tick "HD texture pack". It switches live, and the
+      setting is saved.
+
+CONTROLS (keyboard defaults; any SDL gamepad also works)
+   Jump / confirm ..... Z, Space / Enter        Run, fireball / back ... X / Backspace
+   Spin jump .......... C                       Pause .................. = or Esc
+   Move ............... arrow keys
+   F10 opens the settings menu, including rebinding (Controller settings > NSMBW controls).
+
+SAVE DATA
+   %LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav
+
+IF IT FAILS
+   The console window shows why. Send its full contents (scroll to the top), plus your CPU
+   and GPU model. The zip's name says which build you have.

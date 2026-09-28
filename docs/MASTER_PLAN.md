@@ -698,3 +698,27 @@ What broke / what I didn't expect:
 What I learned:
 - Forcing an input to a known value (white) answers "does this input matter?" in one run. It is the output-side test the previous day's advice asked for, and it found in 20 minutes what input-by-input verification missed in an hour.
 - *CI / palette texture*: pixels store indices into a separate colour table (TLUT) loaded into texture memory; if the table never arrives, every index maps to nothing.
+
+## 2026-09-27 (night, latest) — Phase 11 (first run on another PC; release package)
+What I did:
+- A friend ran the build on their own PC: `NSMBWCompiled.exe` plus the 8 DLLs it imports that aren't part of Windows (listed with `llvm-objdump -p`), and their own PAL disc extracted with Dolphin. Getting it to boot took five launches, each stopping on a different problem:
+  1. "No DVD root is configured": `dvd_root` was still commented out in Config.toml.
+  2. The same error again: the path was written as `"C:\Users\..."`. In TOML's double-quoted strings a backslash starts an escape, so the whole file failed to parse, and the runtime fell back to defaults without surfacing that to the player. Fixed with single quotes.
+  3. "Unable to initialize managed NAND": no `wii_bootstrap` folder next to the exe.
+  4. "Configured NAND root is not an existing directory: D:\WiiNand": the template's example `nand_root` line had been uncommented along with `dvd_root`.
+  5. Crash after `AIInit`: missing `dsp_coef.bin`.
+  After that it ran.
+- Problems 3 and 5 were real gaps in the build (issues.md, same date). Both files are looked up next to the exe, then in the source tree, and only MKW's CMake setup copied them next to the exe. `NsmbwProduct.cmake` now copies them too.
+- Added `projects/nsmbw/tools/package_nsmbw.ps1`. It builds `dist\NSMBWCompiled-<commit>[-dirty].zip` (70 MB, 23 files) from an explicit required-file list and fails loudly if a file is missing. It includes `projects/nsmbw/tools/PLAYING.txt` (requirements, Dolphin extraction, the Config.toml pitfalls above, controls).
+- Verified the package from a folder outside the repo: 40 s through boot → title → opening movie, with no crash. Control: the same folder without `dsp_coef.bin` gave the friend's exact exception after 7 s.
+
+What broke / what I didn't expect:
+- Every run on the development machine starts inside the checkout, and the runtime's source-tree fallback silently supplied the missing files there. A clean build folder had never been tested, and couldn't be from inside the repo.
+
+What I learned:
+- A package has to be tested from outside the source tree. Otherwise the same fallback that makes development convenient hides whatever the package is missing.
+- *Import table*: the list of DLLs an exe needs Windows to load before `main` runs. `llvm-objdump -p <exe>` prints it, and any entry Windows doesn't ship has to travel with the exe.
+
+What's next:
+- Fix the four setup problems now listed under "Open / unconfirmed items" in issues.md: MKW wording in the DVD error and config template, TOML parse errors shown as "no DVD root", the `nand_root` example trap, and the window/video reset on every launch. They're documented in `PLAYING.txt` for now.
+- Before any public release: the license check in Phase 11. The exe contains translated game code, so how a release is distributed is still an open decision.
