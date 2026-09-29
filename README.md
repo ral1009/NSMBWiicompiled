@@ -130,6 +130,7 @@ Buttons are bound to **actions, separately for courses, the world map and menus*
 | Spin jump | Shoulders | C |
 | Pause | Start | = or Esc |
 | Move | D-pad, left stick | Arrows |
+| Tilt remote (tilt lifts, remote wire; courses only) | Right stick left / right (proportional) | A / D |
 
 ## Controller button glyphs
 

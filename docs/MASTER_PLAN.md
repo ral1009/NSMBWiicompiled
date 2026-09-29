@@ -743,3 +743,31 @@ What I learned:
 What's next:
 - The residual map lates (1-7 per 2 s) come from the game side (EFB-probe downloads in the seal).
 - Watch for Mailbox side effects on other setups (window capture, VRR displays); `AURORA_PRESENT_MODE=immediate` restores the old mode.
+
+## 2026-09-28 — Phase 7/12 (Wii Remote tilt; save and character investigations)
+What I did:
+- **Tilt.** Added "Tilt remote left/right" to the in-course bindings (F10 → Controller settings → NSMBW controls; defaults A / D and right stick left / right, sticks proportional). Tracing how the game reads tilt:
+  - The tilt actors call `getAccVerticalAngleX` (0x800B5CA0), which returns an angle the controller update (`func_800B61F0`) writes each frame.
+  - With no extension that angle is `0x4000 × KPADStatus.acc_vertical.y`, a field KPAD derives from the accelerometer (0x801EB170).
+  - Our KPAD override replaced the whole read and left the field zero, which is bug class 3 again. It now writes `acc_vertical` as a tilted real remote would.
+  - Log evidence in 1-1 (portable copy, `NSMBW_LOG_TILT`): D → game angle −0x4000, A → +0x4000, back to 0 on release.
+- **Where tilt is used:** mapped the game's sprite table (0x8030A340, 484 × 0x28 bytes) from sprite ID to actor profile and scanned every `Stage/*.arc` for the tilt actors. They appear in 01-05 and 01-20 (World 1), 03-20/21 (boss seesaw), 05-22, 06-03, 06-24, 07-03, 07-22, 07-24, 08-22 and 09-05.
+- **Investigation: permanent save before beating the game.** The world-map menu decides in exactly two places, both reading the permanent save slot's `mGameCompletion & FINAL_BOSS_BEATEN` (bit 0x02):
+  - 0x8077AA10 picks the button text: message 7 "Quick Save" unless beaten, then 4 "Save".
+  - 0x8092FC30 is the menu's item-selected handler. Unbeaten, it enters `dCourseSelectManager_c::StateID_InterruptSave...` (Nintendo's name for quick save: suspend and quit to title); beaten, it enters `StateID_Save...`.
+  - Other readers of that bit are the file-select stars (0x80796080 / 0x80796250 / 0x8077D9A0) and the routine that sets it after W8 (0x801028D0). None of them gates saving.
+- **Investigation: player 1 character.** Each player's character is `daPyMng_c::mPlayerType[4]` (0x80355160, u32 per player: 0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad); the Add/Drop Players screen is the `dCharacterChangeSelect*` classes in d_basesNP. Experiment: a new env switch `NSMBW_DEBUG_P1_CHARACTER=<0..3>` writes `mPlayerType[0]` while on the world map only. With `=1`, 1-1 loaded with Luigi as player 1: model, HUD head icon and his own life count (screenshot `p1luigi_lvl4_0.png`).
+
+What broke / what I didn't expect:
+- I first read `func_800B61F0`'s branch backwards and fed acc.z. That path is the extension (nunchuk) one; the log showed acc.z moving and the angle not.
+- Screenshots: `shot.ps1` copies the screen, so a run while another window was in front captured that window. `burst.ps1` (`PrintWindow`) captures the game window itself.
+- Scripted key holds only land in a narrow window: the self-test finishes the level about 10 s after it loads, and on the map tilt is 0 by design. Two of four runs pressed at the wrong time.
+- (Later the same day.) Tilt direction was reversed on a real platform (developer: A tilted right, D left). The sign had been derived from Wii Remote documentation for the raw Y axis, the one step not taken from this game's code. Flipped in `nsmbw_kpad_overrides.cpp`; the log now shows D -> +0x4000, A -> -0x4000, and the on-screen check is back with the developer. Lesson: a sign derived partly from outside documentation is a guess until tested against the actual thing it moves.
+
+What I learned:
+- "The game reads the right field" and "our override fills the right field" are separate checks. The log that prints both input and the game's derived value found the gap in one run.
+- *Sprite vs profile*: a level stores sprite numbers; a table in the game turns each into an actor type (profile). Mapping the table lets you search all levels for an actor without playing them.
+
+What's next:
+- Confirm tilt direction on screen in a level with a tilt platform (01-05 or 01-20), and that a shake still registers while tilted.
+- Character: check the parts that may assume player 1 = Mario: the course-intro card (showed x05 while the level HUD showed Luigi x04; too dark to see whose head), the world map model, cutscenes and the ending, and whether file load or the Add/Drop screen resets `mPlayerType[0]`. Then decide on UI (reuse the Add/Drop screen vs an F10 option).

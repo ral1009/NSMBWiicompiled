@@ -64,6 +64,9 @@ constexpr uint32_t kWpad1 = 1u << 9;
 constexpr uint32_t kWpadA = 1u << 11;
 constexpr uint32_t kWpadMinus = 1u << 12;
 constexpr uint32_t kHostShake = 1u << 31; // turned into an accelerometer burst by the KPAD override
+// Tilt actions produce no button bit (wpad 0): the game reads tilt from the accelerometer, and a
+// stick should tilt proportionally, so they are read as an amount by NsmbwControlsReadTilt.
+constexpr uint32_t kNoWpadBit = 0;
 
 // The remote is held sideways, so the game reads its d-pad rotated: screen-left is WPAD UP,
 // screen-right DOWN, screen-up RIGHT, screen-down LEFT.
@@ -191,6 +194,8 @@ const std::vector<ActionDef> kGameplayActions = {
     {"down", "Crouch / pipe", kScreenDown, {"dpad_down", "lstick_down"}, {"down", nullptr}},
     {"left", "Left", kScreenLeft, {"dpad_left", "lstick_left"}, {"left", nullptr}},
     {"right", "Right", kScreenRight, {"dpad_right", "lstick_right"}, {"right", nullptr}},
+    {"tilt_left", "Tilt remote left", kNoWpadBit, {"rstick_left", nullptr}, {"a", nullptr}},
+    {"tilt_right", "Tilt remote right", kNoWpadBit, {"rstick_right", nullptr}, {"d", nullptr}},
 };
 const std::vector<ActionDef> kMapActions = {
     {"enter", "Enter course (2)", kWpad2, {"south", nullptr}, {"z", "enter"}},
@@ -538,4 +543,51 @@ extern "C" uint32_t NsmbwControlsReadWpad() {
         if (down) out |= defs[i].wpad;
     }
     return out;
+}
+
+// How far the remote is tilted, -1 (fully left) .. +1 (fully right), from the course context's
+// tilt_left / tilt_right bindings; 0 outside courses (nothing on the map or in menus reads tilt).
+// A key or button tilts fully; a stick or trigger tilts in proportion past a dead zone, so half
+// a stick push is half a tilt. The KPAD override turns this into KPADStatus.acc.z.
+extern "C" float NsmbwControlsReadTilt() {
+    using namespace nsmbw_controls;
+    if (settings_overlay::InputBlocked()) return 0.0f;
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    if (g_capture.active || CurrentContext() != Context::Gameplay) return 0.0f;
+    const auto& defs = ActionsFor(Context::Gameplay);
+    const auto& binds = g_bindings[size_t(Context::Gameplay)];
+    const auto pads = ActivePads();
+    int numKeys = 0;
+    const bool* keys = SDL_GetKeyboardState(&numKeys);
+
+    constexpr float kDeadZone = 8000.0f; // about 25 % of the axis, a common stick dead zone
+    auto amount = [&](const Binding& b) {
+        float best = 0.0f;
+        for (const auto& name : b.key) {
+            const SDL_Scancode code = name.empty() ? SDL_SCANCODE_UNKNOWN : NameToKey(name);
+            if (code != SDL_SCANCODE_UNKNOWN && keys != nullptr && code < numKeys && keys[code]) best = 1.0f;
+        }
+        for (const auto& name : b.pad) {
+            const PadControl* control = name.empty() ? nullptr : FindPad(name);
+            if (control == nullptr) continue;
+            for (SDL_Gamepad* p : pads) {
+                if (control->kind == PadKind::Button) {
+                    if (SDL_GetGamepadButton(p, SDL_GamepadButton(control->id))) best = 1.0f;
+                    continue;
+                }
+                float v = float(SDL_GetGamepadAxis(p, SDL_GamepadAxis(control->id)));
+                if (control->kind == PadKind::AxisNegative) v = -v;
+                const float a = (v - kDeadZone) / (32767.0f - kDeadZone);
+                if (a > best) best = a > 1.0f ? 1.0f : a;
+            }
+        }
+        return best;
+    };
+    float left = 0.0f, right = 0.0f;
+    for (size_t i = 0; i < defs.size(); ++i) {
+        if (std::strcmp(defs[i].id, "tilt_left") == 0) left = amount(binds[i]);
+        if (std::strcmp(defs[i].id, "tilt_right") == 0) right = amount(binds[i]);
+    }
+    return right - left;
 }

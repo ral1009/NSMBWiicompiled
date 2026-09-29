@@ -38,6 +38,29 @@
 // burst cycles 1.0, 0.5, 0.0, -0.5: any two samples up to three ticks apart differ by >= 0.5,
 // so it still fires when a slow frame makes the game read only every 2nd or 3rd VI tick.
 //
+// Tilt: the tilt lifts, remote wire, remote door etc. read dGameKeyCore_c::getAccVerticalAngleX
+// (0x800B5CA0), which returns the s16 at dGameKeyCore_c+0x8E. func_800B61F0 fills that each
+// frame. For a remote with no extension (dGameKeyCore_c+8 == 0, which is what this override
+// reports) it is 0x4000 * acc_vertical.y, where acc_vertical is KPADStatus+0x54 (Vec2), copied
+// in by 0x800B5CB0 from CoreController+0x6C. (With an extension it instead eases toward
+// 0x4000 * -acc.z.) 0x4000 is the SDA2 float 16384.0 at 0x8042C8A0, next to the shake
+// threshold: 90 degrees in the game's angle units. The remote-tilt door (d_a_remo_door.cpp)
+// opens at >= 0x2000.
+// KPAD computes acc_vertical itself (0x801EB170): the smoothed unit vector
+// (sqrt(acc.x^2 + acc.y^2), -acc.z) / |acc|. This override replaces the whole KPAD read, so that
+// never runs here and the field was (0, 0) - the game saw a level remote. For a remote lying
+// face-up (KPAD's reset rests acc at (0, -1, 0), 0x801EAB00) and tilted by theta, the vector is
+// (cos theta, -sin theta); acc.z is eased toward the target (its sign: see Sign below) and the
+// vector is written from it as (sqrt(1 - acc.z^2), -acc.z), so the raw acc and acc_vertical agree.
+// Sign: tilt right = -acc.z = a POSITIVE game angle. Set by observation, not derivation: the
+// developer tried it on a tilt platform (2026-09-28) with the opposite sign and A tilted it right,
+// D left. The first version reasoned from KPAD's converter (0x801EB2A0: acc.z = +raw Y) plus the
+// Wii Remote convention that raw Y is positive with the pointer end raised; that last step, taken
+// from documentation rather than this game's code, is the part that was wrong for this grip.
+// acc.z moves toward its target by at most kTiltStepPerTick, like a real remote turning: the shake
+// detector ignores frames where z changes more than y, so an instant 0 -> 1 jump in z could
+// swallow a shake made in the same frames.
+//
 // The keyboard is read through aurora's PAD keyboard-binding layer (dolphin/pad.h) with the
 // GC PAD bits used only as an intermediate; SDL_PumpEvents is what actually refreshes SDL's
 // key state and nothing else in the NSMBW runtime calls it after boot (see the tick pump).
@@ -48,6 +71,7 @@
 #include "memory.h"
 #include <dolphin/pad.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +80,7 @@
 extern "C" void SDL_PumpEvents();
 extern "C" void NsmbwSkipBootScreensApply();
 extern "C" uint32_t NsmbwControlsReadWpad(); // runtime/src/product/nsmbw_controls.cpp
+extern "C" float NsmbwControlsReadTilt();     // same file; -1 (left) .. +1 (right)
 extern "C" const bool* SDL_GetKeyboardState(int* numkeys);
 // Set by nsmbw_tick_read_pump.cpp's self-test (NSMBW_AUTO_PRESS_SELFTEST): a synthetic A press
 // is delivered as one frame of "held" through the same path as a real key.
@@ -100,6 +125,34 @@ uint32_t g_shakeBurstTicks = 0;
 float g_frameAccY = 0.0f;
 constexpr uint32_t kShakeBurstTicks = 8;
 constexpr float kShakeBurstPattern[4] = {1.0f, 0.5f, 0.0f, -0.5f};
+// Tilt (see the header comment): acc.z this tick, eased toward the bound tilt amount. 0.25 per
+// tick is a full tilt in 4 ticks, and below the shake burst's 0.5 steps in y.
+float g_frameAccZ = 0.0f;
+constexpr float kTiltStepPerTick = 0.25f;
+constexpr uint32_t kGameKeyInstanceAddr = 0x8042A230u; // dGameKey_c::m_instance (syms.txt)
+
+// NSMBW_LOG_TILT=1: tilt input, acc.z, and what the game made of it (remote 0's extension type
+// at dGameKeyCore_c+8 - the no-extension path needs 0 - and its angle at +0x8E), on change.
+void LogTilt(uint32_t tick, float target) {
+    static const bool log = AURORA_ENV("NSMBW_LOG_TILT") != nullptr;
+    if (!log) return;
+    uint32_t gameKey = 0, core = 0, ext = 0xFFFFFFFFu;
+    uint16_t angle = 0;
+    if (Memory::TryRead32(kGameKeyInstanceAddr, gameKey) && gameKey != 0 &&
+        Memory::TryRead32(gameKey + 4u, core) && core != 0) {
+        Memory::TryRead32(core + 8u, ext);
+        uint32_t word = 0;
+        if (Memory::TryRead32(core + 0x8Cu, word)) angle = static_cast<uint16_t>(word & 0xFFFFu);
+    }
+    static float lastTarget = 2.0f, lastAccZ = 2.0f;
+    static uint16_t lastAngle = 0xFFFFu;
+    if (target == lastTarget && g_frameAccZ == lastAccZ && angle == lastAngle) return;
+    lastTarget = target;
+    lastAccZ = g_frameAccZ;
+    lastAngle = angle;
+    std::fprintf(stderr, "[nsmbw][tilt] tick=%u input=%+.2f acc.z=%+.2f ext=%u angle=%d (0x%04X)\n", tick,
+                 target, g_frameAccZ, ext, static_cast<int16_t>(angle), angle);
+}
 
 void InitKeyboardOnce() {
     if (g_padInited) return;
@@ -183,6 +236,15 @@ void SampleKeyboardForFrame() {
         g_frameAccY = 0.0f;
     }
 
+    // acc.z target: tilt right (+input) is -acc.z - see "Sign" in the header comment.
+    const float tiltTarget = legacy ? 0.0f : -NsmbwControlsReadTilt();
+    if (g_frameAccZ < tiltTarget) {
+        g_frameAccZ = g_frameAccZ + kTiltStepPerTick > tiltTarget ? tiltTarget : g_frameAccZ + kTiltStepPerTick;
+    } else if (g_frameAccZ > tiltTarget) {
+        g_frameAccZ = g_frameAccZ - kTiltStepPerTick < tiltTarget ? tiltTarget : g_frameAccZ - kTiltStepPerTick;
+    }
+    LogTilt(tick, -tiltTarget); // log the input (+ = right), not the acc.z target
+
     g_frameHold = hold;
     g_frameTrig = hold & ~g_prevHold;
     g_frameRelease = g_prevHold & ~hold;
@@ -227,10 +289,17 @@ extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint3
         Memory::Write32(samples + 0x0u, g_frameHold);
         Memory::Write32(samples + 0x4u, g_frameTrig);
         Memory::Write32(samples + 0x8u, g_frameRelease);
-        // acc (Vec, +0xC) in g: x, y, z. Only y is driven, by the shake burst; see header.
-        uint32_t accY = 0;
-        std::memcpy(&accY, &g_frameAccY, sizeof(accY));
-        Memory::Write32(samples + 0x10u, accY);
+        // acc (Vec, +0xC) in g: x, y, z. y is the shake burst, z the tilt; x stays 0. And
+        // acc_vertical (Vec2, +0x54), which is what the game turns into the tilt angle. See header.
+        auto writeFloat = [](uint32_t addr, float v) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &v, sizeof(bits));
+            Memory::Write32(addr, bits);
+        };
+        writeFloat(samples + 0x10u, g_frameAccY);
+        writeFloat(samples + 0x14u, g_frameAccZ);
+        writeFloat(samples + 0x54u, std::sqrt(std::fmax(0.0f, 1.0f - g_frameAccZ * g_frameAccZ)));
+        writeFloat(samples + 0x58u, -g_frameAccZ);
         // dev_type 0 = core remote, no extension; dpd_valid_fg 0 = no pointer data.
         if (errPtr != 0) Memory::Write32(errPtr, 0);
         return 1;

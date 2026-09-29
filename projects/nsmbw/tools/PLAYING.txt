@@ -59,6 +59,7 @@ CONTROLS (keyboard defaults; any SDL gamepad also works)
    Jump / confirm ..... Z, Space / Enter        Run, fireball / back ... X / Backspace
    Spin jump .......... C                       Pause .................. = or Esc
    Move ............... arrow keys
+   Tilt the remote .... A / D (gamepad: right stick) - steers tilting platforms
    F10 opens the settings menu, including rebinding (Controller settings > NSMBW controls).
 
 SAVE DATA

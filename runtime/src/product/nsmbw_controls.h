@@ -31,3 +31,6 @@ void DrawMenu() noexcept;
 // Called once per VI frame by the KPAD override (nsmbw_kpad_overrides.cpp): WPAD hold bits for
 // this frame, plus bit 31 while a "shake" action is held.
 extern "C" uint32_t NsmbwControlsReadWpad();
+// Also once per VI frame: remote tilt from the tilt_left / tilt_right actions, -1 (left) .. +1
+// (right), proportional for sticks; 0 outside courses.
+extern "C" float NsmbwControlsReadTilt();

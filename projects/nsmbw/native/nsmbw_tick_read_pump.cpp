@@ -253,6 +253,22 @@ void NsmbwDiagWatch() {
         }
     }
 }
+// NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad): experiment for
+// "let player 1 pick any character". Writes daPyMng_c::mPlayerType[0] (0x80355160, a u32 enum per
+// player; syms.txt) while the world map is up, and nowhere else, so whatever the level shows was
+// carried in by the game's own scene change - not re-forced each frame.
+void NsmbwDebugP1Character() {
+    static const long want = [] {
+        const char* v = AURORA_ENV("NSMBW_DEBUG_P1_CHARACTER");
+        return v ? std::strtol(v, nullptr, 10) : -1L;
+    }();
+    if (want < 0 || want > 3 || g_nsmbwCurrentSceneProfile != 3u) return;
+    constexpr uint32_t kPlayerTypeAddr = 0x80355160u;
+    uint32_t cur = 0;
+    if (!Memory::TryRead32(kPlayerTypeAddr, cur) || cur == static_cast<uint32_t>(want)) return;
+    Memory::Write32(kPlayerTypeAddr, static_cast<uint32_t>(want));
+    std::fprintf(stderr, "[nsmbw][diag] P1 character %u -> %ld (on the world map)\n", cur, want);
+}
 } // namespace
 
 extern "C" void NsmbwDumpScnObjs();
@@ -261,6 +277,7 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
 {
     VI_HLE_PollRetrace(ctx);
     NsmbwDiagWatch();
+    NsmbwDebugP1Character();
     NsmbwDumpScnObjs();
     ctx->gpr[3] = ::Memory::Read32(0x8042AB4Cu);
     g_nsmbwCurrentViTick = ctx->gpr[3];
