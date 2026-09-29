@@ -232,6 +232,14 @@ void NsmbwDiagWatch() {
         visitedMap = visitedMap || onMap;
         const bool inLevel = visitedMap && g_nsmbwCurrentSceneProfile == 5u;
         levelTicks = inLevel ? levelTicks + 1 : 0;
+        // NSMBW_AUTO_PRESS_STOP_IN_LEVEL: no presses at all once in a level entered from the map, so
+        // a script can pause and use the menu without the walk or periodic A/2 interfering (the
+        // walk killed Mario in 1-1 and returned to the map before the pause, 2026-09-28).
+        static const bool stopInLevel = AURORA_ENV("NSMBW_AUTO_PRESS_STOP_IN_LEVEL") != nullptr;
+        if (stopInLevel && inLevel) {
+            g_nsmbwSelfTestPressBits = 0;
+            return;
+        }
         const bool walkInLevel = inLevel && levelTicks >= 120 && levelTicks < 600;
         const bool jumpHeld = walkInLevel && ((levelTicks / 30) % 2) == 0; // re-press 2 every second
         if (tapRight || walkInLevel) {
@@ -253,6 +261,34 @@ void NsmbwDiagWatch() {
         }
     }
 }
+// NSMBW_WATCH_WRITE=<hex guest address>: poll one guest word every VI tick and log each change
+// with the tick, scene and the most recent guest calls (DiagRecentCalls ring). Translated code
+// writes guest memory through host pointers, so a store cannot be trapped directly; this finds
+// the frame a word is clobbered in. Added for d_profileNP's dYesNoWindow MainMsgIDs table, whose
+// entries 12..15 (0x8076A628..0x8076A637) read back garbage although the REL file is intact.
+void NsmbwWatchWrite() {
+    static const uint32_t addr = [] {
+        const char* v = AURORA_ENV("NSMBW_WATCH_WRITE");
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0u;
+    }();
+    if (addr == 0) return;
+    static bool have = false;
+    static uint32_t last = 0;
+    uint32_t cur = 0;
+    if (!Memory::TryRead32(addr, cur)) return;
+    if (have && cur == last) return;
+    std::fprintf(stderr, "[nsmbw][watch] 0x%08X: 0x%08X -> 0x%08X at tick %u scene %u; recent guest calls (newest last):\n",
+                 addr, last, cur, g_nsmbwCurrentViTick, g_nsmbwCurrentSceneProfile);
+    const uint32_t next = DiagRecentCalls::g_next.load(std::memory_order_relaxed);
+    for (uint32_t i = 24; i > 0; --i) {
+        const uint32_t slot = (next - i) % static_cast<uint32_t>(DiagRecentCalls::kCapacity);
+        std::fprintf(stderr, "[nsmbw][watch]   0x%08X from lr 0x%08X\n", DiagRecentCalls::g_addrs[slot],
+                     DiagRecentCalls::g_lrs[slot]);
+    }
+    have = true;
+    last = cur;
+}
+
 // NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad): experiment for
 // "let player 1 pick any character". Writes daPyMng_c::mPlayerType[0] (0x80355160, a u32 enum per
 // player; syms.txt) while the world map is up, and nowhere else, so whatever the level shows was
@@ -278,6 +314,7 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
     VI_HLE_PollRetrace(ctx);
     NsmbwDiagWatch();
     NsmbwDebugP1Character();
+    NsmbwWatchWrite();
     NsmbwDumpScnObjs();
     ctx->gpr[3] = ::Memory::Read32(0x8042AB4Cu);
     g_nsmbwCurrentViTick = ctx->gpr[3];

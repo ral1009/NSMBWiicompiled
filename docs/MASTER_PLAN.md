@@ -799,3 +799,28 @@ What I learned:
 
 What's next:
 - Not checked: whether anything else behaves differently on an unbeaten file after a full save (e.g. whether a previous quick save left in the slot interacts with it). 0x8092F940 also enters the quick-save chain from a place not yet identified; it is not overridden.
+
+## 2026-09-28 (night) — Phase 12 (Exit from uncleared courses) and a REL memory overlap
+What I did:
+- **Exit from any course.** The pause menu's Exit is gated in three places, all by `dGameCom::isNowCourseClear` (0x800B4E30), which has no other caller in the DOL or any REL:
+  - `Pausewindow_c::create` greys the button (`P_shadowBlack`).
+  - The cursor move (0x800D0CF0) refuses button 1.
+  - The confirm (0x800D0DA0) rejects the press.
+
+  The body is a pure query (reads only), so `nsmbw_pause_exit.cpp` overrides it to return true. Enemy courses (mLevel1 32..34) stay locked by their own check. The developer confirmed Exit works from an uncleared 1-1; a portable run showed the Exit button no longer greyed.
+- **Blank Exit confirmation, traced.** The developer saw no text in the "return to map?" window. Steps:
+  1. `NSMBW_LOG_MSG=1` (new, `nsmbw_msg_lookup_diag.cpp`, a logged copy of `EGG::MsgRes::getMsg`) showed the main message lookup failing: group 0, index `0x46520000`, no entry. The Yes/No button labels resolved fine.
+  2. The window's type is correct (`mType` = 12, RETURN_TO_MAP, set by 0x800D1010). But the MainMsgIDs table it indexes (`d_profileNP`, guest 0x8076A5F8) reads `... 61 62 | 0x46520000 0x004FCFA0 0 0 | 67 ...` in memory against `... 61 62 | 63 64 65 66 | 67 ...` in the REL file.
+  3. `NSMBW_WATCH_WRITE=8076A628` (new, a per-tick poll in the tick pump) found the change at tick 4 in the boot scene, right after NW4R sound and AX mixer calls. So it isn't caused by the Exit change: the plain Exit from a cleared course reads the same entry.
+- New test switch `NSMBW_AUTO_PRESS_STOP_IN_LEVEL=1`: the self-test stops pressing once in a level, so a script can use the pause menu. Its in-level walk had killed Mario and returned to the map before the pause.
+
+What broke / what I didn't expect:
+- Two scripted runs didn't test anything: the developer closed one window (the old build, correctly showing Exit locked), and in another the walk killed Mario first. Both are test-harness issues, not game ones.
+- I first labelled getMsg's arguments wrong (it is `getMsg(group, index)` in r4/r5, not one packed id in r4).
+
+What I learned:
+- A value that is neither a valid index nor in the file is a strong hint of memory corruption rather than a logic error. Comparing the table in memory with the table in the REL file located it in one step.
+- *Arena / heap*: the arena is the free RAM the game carves its heaps out of at boot, and every later allocation comes from those heaps. Data placed in the arena without a heap allocation is invisible to the allocator, which will hand the same bytes to someone else.
+
+What's next:
+- Fix the REL overlap properly: find which heap block owns 0x8076A628 at tick 4, then either reserve the four REL ranges from the arena or restore the images at the point the game would load them. Until then any REL data may be silently overwritten. Tracked under "Open / unconfirmed items" in issues.md.
