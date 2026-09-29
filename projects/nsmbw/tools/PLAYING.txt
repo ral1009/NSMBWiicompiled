@@ -63,6 +63,8 @@ CONTROLS (keyboard defaults; any SDL gamepad also works)
    F10 opens the settings menu, including rebinding (Controller settings > NSMBW controls).
 
 SAVE DATA
+   Menu (=) > Save on the world map always saves fully and keeps playing - no Quick Save,
+   even before the game is beaten.
    %LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav
 
 IF IT FAILS

@@ -132,6 +132,10 @@ Buttons are bound to **actions, separately for courses, the world map and menus*
 | Move | D-pad, left stick | Arrows |
 | Tilt remote (tilt lifts, remote wire; courses only) | Right stick left / right (proportional) | A / D |
 
+## Changes to the game
+
+- **Save** on the world-map menu is always a full save. The original offers only Quick Save (save and quit to the title) until the final boss is beaten. The saved "final boss beaten" flag itself is untouched. `projects/nsmbw/native/nsmbw_wm_full_save.cpp`.
+
 ## Controller button glyphs
 
 Button prompts ("Press (2) to Start", the (2) on the controller screen, Erase/Copy on file select, the map's Menu/Items hints) show the button you actually press, for the device you last used (Xbox, PlayStation, Switch or keyboard) and for the current context's bindings. **F10 → Controller settings → Button icons** pins one set or keeps the original Wii icons. The icons are [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0), built into the executable, and work with or without a texture pack. `NSMBW_GLYPH_TEST=xbox|playstation|switch|keyboard` pins a set for testing; `NSMBW_LOG_GLYPHS=1` logs each change.

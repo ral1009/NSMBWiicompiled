@@ -771,3 +771,31 @@ What I learned:
 What's next:
 - Confirm tilt direction on screen in a level with a tilt platform (01-05 or 01-20), and that a shake still registers while tilted.
 - Character: check the parts that may assume player 1 = Mario: the course-intro card (showed x05 while the level HUD showed Luigi x04; too dark to see whose head), the world map model, cutscenes and the ending, and whether file load or the Add/Drop screen resets `mPlayerType[0]`. Then decide on UI (reuse the Add/Drop screen vs an F10 option).
+
+## 2026-09-28 (later) — Phase 12 (full save from the world map before the game is beaten)
+What I did:
+- Replaced the two functions that choose Quick Save with native overrides (`projects/nsmbw/native/nsmbw_wm_full_save.cpp`):
+  - 0x8077AA10 sets the button text.
+  - 0x8092FC30 runs the selected item.
+- Each is a structural copy of its translated body (the approach `nsmbw_exi_imm_wait.cpp` already used), with one line changed: the `mGameCompletion & FINAL_BOSS_BEATEN` test reads as "beaten". So the menu takes the branch the game itself takes after the final boss, and every other store the functions make is kept.
+- The saved flag is untouched. It still means "final boss beaten" for the file-select stars and anything else that reads it.
+- These are the first overrides at REL addresses. Regenerating the shard manifest dropped the unique-function count from 41,043 to 41,041, i.e. the REL translation excluded exactly these two.
+- Evidence (portable copy of a World 1 save; `NSMBW_LOG_STATE_CHANGES=all`):
+
+  | | before (`dist\` build from `70304b2`) | after |
+  |---|---|---|
+  | Button | "Quick Save" | "Save" |
+  | States | `InterruptSaveButtonSelect → InterruptNowSave → InterruptSaveEndAnimeWait → TitleSceneChangeWait` (saves, quits to title) | `SaveWindowOpen → SaveButtonSelect → NowSave → SaveEndAnimeWait → KeyWait` (saves, stays on the map) |
+
+  `wiimj2d.sav` was rewritten during the save, and relaunching that copy resumed on the World 1 map.
+
+What broke / what I didn't expect:
+- In chat I first described 0x8092FC30's branch the wrong way round ("bit clear -> +608"). Re-reading it: bit clear jumps to +992. Forcing "beaten" instead of picking a state ID by offset made the question irrelevant, and the state log confirmed the result.
+- The scripted run: after the save returned to the map, the self-test resumed presses once the scene changed and entered 1-1, and the capture then showed a 2560x1440 level. That was the test harness, not the save. Only the scratchpad copy was running (checked with `Get-Process`).
+
+What I learned:
+- To change one decision inside game code, a copy of the translated body with a single marked edit is safer than a hand-written reimplementation: it keeps every store (bug class 3) and is easy to review, because the diff against `build/.../func_<addr>.cpp` is one line.
+- *Quick save vs save* in NSMBW: a quick save ("interrupt save") writes the slot and quits to the title; a full save writes it and stays on the map.
+
+What's next:
+- Not checked: whether anything else behaves differently on an unbeaten file after a full save (e.g. whether a previous quick save left in the slot interacts with it). 0x8092F940 also enters the quick-save chain from a place not yet identified; it is not overridden.
