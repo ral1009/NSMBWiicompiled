@@ -134,7 +134,7 @@ Buttons are bound to **actions, separately for courses, the world map and menus*
 
 ## Changes to the game
 
-- **Exit** in the pause menu works in every course, cleared or not (enemy courses excepted, as in the original). `projects/nsmbw/native/nsmbw_pause_exit.cpp`. Known issue: its "return to the map?" confirmation has no text - a separate memory-overlap bug that also affects the same window after a cleared course (see `docs/issues.md`).
+- **Exit** in the pause menu works in every course, cleared or not (enemy courses excepted, as in the original). `projects/nsmbw/native/nsmbw_pause_exit.cpp`.
 - **Save** on the world-map menu is always a full save. The original offers only Quick Save (save and quit to the title) until the final boss is beaten. The saved "final boss beaten" flag itself is untouched. `projects/nsmbw/native/nsmbw_wm_full_save.cpp`.
 
 ## Controller button glyphs

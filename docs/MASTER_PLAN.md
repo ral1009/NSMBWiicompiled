@@ -824,3 +824,21 @@ What I learned:
 
 What's next:
 - Fix the REL overlap properly: find which heap block owns 0x8076A628 at tick 4, then either reserve the four REL ranges from the arena or restore the images at the point the game would load them. Until then any REL data may be silently overwritten. Tracked under "Open / unconfirmed items" in issues.md.
+
+## 2026-09-28 (late night) — Phase 6/12 (REL memory overlap fixed)
+What I did:
+- Measured where the game's dylink heap lives (`NSMBW_LOG_REL_HEAP=1`, new): [0x80767660, 0x80C675D8), with all four pre-placed REL images inside it. The garbage in `d_profileNP` turned out to be an ExpHeap free-block header (`'FR'`, size = the rest of the heap).
+- First fix: allocate each REL's block when the game would have loaded it (at `load_async`/`link`). `d_profileNP` landed exactly on its image, but the header still appeared, in the same tick. A dump of the heap's block lists showed the heap itself was consistent: the header was a **leftover** from a temporary ~8 KB allocation that the game made and freed before the link. The other three RELs didn't land on their addresses either.
+- Final fix: reserve all four ranges inside `createDylinkHeap` (0x8016EC60), while the heap is empty, using padding blocks to place each one exactly (`nsmbw_dylink_heap_reserve.cpp`). Result: 4 of 4 reserved at their addresses; the table word stays intact; no failed text lookups.
+
+What broke / what I didn't expect:
+- Scripted menu navigation kept failing. Fixed-delay presses landed mid-animation, and arrow keys sent with `keybd_event` without the extended-key flag arrive as numpad keys, which nothing is bound to. That also explains the earlier "down, down" presses that never moved a cursor. Even with the extended flag the Down press did not register, so the on-screen check is with the developer.
+
+What I learned:
+- Freeing a heap block does not erase its header bytes. A stale header in memory the heap no longer uses is harmless on a console, because the next owner overwrites it. It only did damage here because the REL's contents had been placed there before the heap's transient use, which is the opposite of the console's order.
+- A heap dump before and after an allocation separates "the heap's bookkeeping is wrong" from "someone wrote stale bytes"; the two look identical from the corrupted memory alone.
+
+What's next:
+- Developer: confirm the Exit confirmation now shows its text.
+- First release.
+

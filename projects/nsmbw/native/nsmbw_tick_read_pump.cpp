@@ -277,8 +277,14 @@ void NsmbwWatchWrite() {
     uint32_t cur = 0;
     if (!Memory::TryRead32(addr, cur)) return;
     if (have && cur == last) return;
-    std::fprintf(stderr, "[nsmbw][watch] 0x%08X: 0x%08X -> 0x%08X at tick %u scene %u; recent guest calls (newest last):\n",
-                 addr, last, cur, g_nsmbwCurrentViTick, g_nsmbwCurrentSceneProfile);
+    uint32_t w1 = 0, w2 = 0, w3 = 0;
+    Memory::TryRead32(addr + 4u, w1);
+    Memory::TryRead32(addr + 8u, w2);
+    Memory::TryRead32(addr + 12u, w3);
+    std::fprintf(stderr,
+                 "[nsmbw][watch] 0x%08X: 0x%08X -> 0x%08X (next words 0x%08X 0x%08X 0x%08X) at tick %u scene %u; "
+                 "recent guest calls (newest last):\n",
+                 addr, last, cur, w1, w2, w3, g_nsmbwCurrentViTick, g_nsmbwCurrentSceneProfile);
     const uint32_t next = DiagRecentCalls::g_next.load(std::memory_order_relaxed);
     for (uint32_t i = 24; i > 0; --i) {
         const uint32_t slot = (next - i) % static_cast<uint32_t>(DiagRecentCalls::kCapacity);

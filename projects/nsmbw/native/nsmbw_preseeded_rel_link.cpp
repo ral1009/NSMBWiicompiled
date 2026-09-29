@@ -81,12 +81,14 @@
 //   lwz r12,0xc(r3); lwz r12,0x20(r12); mtctr r12; bctr ; tail-call do_load_async() [vtable+0x20]
 //   return_true: li r3,1; blr
 #include "hle_stubs.h"
+#include <aurora/env.hpp>
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
 #include "memory.h"
 
 #include <cstdio>
 #include <string>
+
 
 namespace {
 constexpr uint32_t kUsageCountOffset = 0x0u;
@@ -126,6 +128,60 @@ bool IsPreSeededModule(const std::string& name)
     return name == "d_bases" || name == "d_enemies" || name == "d_en_boss" || name == "d_profile";
 }
 
+// Dumps the dylink heap's block lists: MEMiExpHeapHead follows the 0x3C-byte MEMiHeapHead, with
+// the free list head at +0x3C and the used list head at +0x44; each MEMiExpHeapMBlock header is
+// state ('FR'/'UD') u16, attribute u16, size u32 (payload bytes after the 0x10 header), prev, next
+// (NSMBW-Decomp mem_expHeap.h). Diagnostic for the REL reservations (nsmbw_dylink_heap_reserve.cpp).
+void DumpDylinkHeap(const char* label)
+{
+    uint32_t heap = 0, head = 0;
+    if (!Memory::TryRead32(0x8042A734u, heap) || heap == 0 || !Memory::TryRead32(heap + 0x10u, head) || head == 0) return;
+    for (const uint32_t listOff : {0x3Cu, 0x44u}) {
+        std::fprintf(stderr, "[nsmbw][rel] %s: %s blocks:", label, listOff == 0x3Cu ? "free" : "used");
+        uint32_t blk = 0;
+        Memory::TryRead32(head + listOff, blk);
+        for (int n = 0; blk != 0 && n < 24; ++n) {
+            uint32_t word0 = 0, size = 0, next = 0;
+            Memory::TryRead32(blk, word0);
+            Memory::TryRead32(blk + 4u, size);
+            Memory::TryRead32(blk + 12u, next);
+            std::fprintf(stderr, " [%c%c hdr 0x%08X data 0x%08X size 0x%X]", char(word0 >> 24), char(word0 >> 16), blk,
+                         blk + 0x10u, size);
+            blk = next;
+        }
+        std::fprintf(stderr, "\n");
+    }
+}
+
+// NSMBW_LOG_REL_HEAP=1: one-time report (first pre-seeded link) of where the game's dylink heap
+// lives - the 5 MB
+// ExpHeap (HEAP_SIZE_DYLINK) that holds the RELs on a console - against where RestoreRelImages()
+// parked them. mHeap::g_dylinkHeap is stored by createDylinkHeap (0x8016EC60) at r13-21068 =
+// 0x8042A734; EGG::Heap::mHeapHandle is at +0x10 (after Disposer's vtable/mHeap/mLink), and
+// MEMiHeapHead::start/end are at +0x18/+0x1C (NSMBW-Decomp mem_heapCommon.h).
+void ReportDylinkHeapOnce()
+{
+    static bool done = false;
+    if (done || AURORA_ENV("NSMBW_LOG_REL_HEAP") == nullptr) return;
+    done = true;
+    uint32_t heap = 0, head = 0, start = 0, end = 0;
+    Memory::TryRead32(0x8042A734u, heap);
+    if (heap != 0 && Memory::TryRead32(heap + 0x10u, head) && head != 0) {
+        Memory::TryRead32(head + 0x18u, start);
+        Memory::TryRead32(head + 0x1Cu, end);
+    }
+    std::fprintf(stderr, "[nsmbw][rel] dylink heap 0x%08X: [0x%08X, 0x%08X)\n", heap, start, end);
+    struct { const char* name; uint32_t base, size; } images[] = {
+        {"d_profileNP", 0x807684C0u, 14992u}, {"d_basesNP", 0x8076D680u, 2313500u},
+        {"d_enemiesNP", 0x809A2CA0u, 1546520u}, {"d_en_bossNP", 0x80B1C920u, 463140u}};
+    for (const auto& im : images) {
+        const bool inside = im.base >= start && im.base + im.size <= end;
+        std::fprintf(stderr, "[nsmbw][rel]   %-12s image [0x%08X, 0x%08X) %s\n", im.name, im.base, im.base + im.size,
+                     inside ? "inside the dylink heap" : "NOT inside the dylink heap");
+    }
+    DumpDylinkHeap("at first REL link");
+}
+
 void BumpU16(uint32_t addr)
 {
     const uint16_t value = Memory::Read16(addr);
@@ -142,6 +198,7 @@ extern "C" uint32_t DynamicModuleControlBaseLink_80160080(uint32_t thisPtr)
     if (usageCount == 0) {
         const std::string name = ReadModuleNameIfAny(thisPtr);
         if (IsPreSeededModule(name)) {
+            ReportDylinkHeapOnce();
             std::fprintf(stderr,
                 "[nsmbw] DynamicModuleControlBase::link(this=0x%08X, name=\"%s\"): pre-seeded by "
                 "RestoreRelImages() at boot - skipping do_load()/do_link() (the real path re-requests "

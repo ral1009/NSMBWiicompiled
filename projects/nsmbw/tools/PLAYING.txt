@@ -63,8 +63,7 @@ CONTROLS (keyboard defaults; any SDL gamepad also works)
    F10 opens the settings menu, including rebinding (Controller settings > NSMBW controls).
 
 PAUSE MENU
-   Exit works in any course, even one you haven't cleared. Its confirmation window currently
-   shows no text (known bug); it still asks whether to return to the world map.
+   Exit works in any course, even one you haven't cleared.
 
 SAVE DATA
    Menu (=) > Save on the world map always saves fully and keeps playing - no Quick Save,
