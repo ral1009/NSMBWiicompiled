@@ -575,6 +575,6 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
   - The DVD-root error (`runtime/src/hle/storage/dvd.cpp:146,153`) and the Config.toml template (`runtime/include/runtime_config.h:265,298`) say "Mario Kart Wii".
   - A Config.toml TOML parse error, e.g. `dvd_root = "C:\Users\..."` (a backslash inside double quotes is an escape), makes the runtime silently fall back to defaults (`runtime_config.h:459`). The player then sees "No DVD root is configured", not the parse error.
   - The template's example `nand_root = "D:\\WiiNand"` fails if its `#` is removed.
-  - `ResetPersistentStateForCleanRun` resets the window/video keys to 640x480 windowed on every launch unless `NSMBW_KEEP_STATE=1`, which a player won't know to set.
+  - (Fixed 2026-09-29, `bb9c79b`) `ResetPersistentStateForCleanRun` reset the window/video keys to 640x480 windowed on every launch; now only for test runs (`NSMBW_AUTO_PRESS_SELFTEST` or `NSMBW_RESET_WINDOW=1`).
   - `PLAYING.txt` documents all four; each should be fixed in code before a release.
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.
