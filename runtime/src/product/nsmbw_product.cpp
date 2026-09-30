@@ -309,9 +309,18 @@ void RunAuroraLogCallback(AuroraLogLevel level, const char* module, const char* 
                  static_cast<int>(messageView.size()), messageView.data());
 }
 
+// nsmbw_data (texture packs, shader cache) lives next to the exe, so a shortcut or a launch from
+// another working directory still finds the HD pack; the working directory is only the fallback
+// when the exe's own path is unknown. (It used current_path(), which a release folder started
+// from a shortcut with a different "Start in" would get wrong.)
+std::filesystem::path NsmbwDataDir() {
+    if (const auto exeDir = RuntimeConfigFile::ExecutableDirectory()) return *exeDir / "nsmbw_data";
+    return std::filesystem::current_path() / "nsmbw_data";
+}
+
 bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     std::error_code ec;
-    const auto dataDir = std::filesystem::current_path() / "nsmbw_data";
+    const auto dataDir = NsmbwDataDir();
     const auto cacheDir = dataDir / "Cache";
     std::filesystem::create_directories(cacheDir, ec);
     static const std::string userPath = dataDir.string();
@@ -722,13 +731,22 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
     // InitializeAuroraWindow); only scales above 4x are pulled back, since the crash that motivated
     // this reset ended at 8x. Forcing 1x here made every launch render at native 640x456 no matter
     // what the menu said.
+    // Only for test runs (the self-test, or NSMBW_RESET_WINDOW=1), which want consistent 640x480
+    // windowed captures. A player's window/fullscreen choice is otherwise kept: resetting it on
+    // every launch was an open release blocker (issues.md, 2026-09-27).
+    const bool resetWindow =
+        AURORA_ENV("NSMBW_AUTO_PRESS_SELFTEST") != nullptr || AURORA_ENV("NSMBW_RESET_WINDOW") != nullptr;
     constexpr float kMaxStartupResolutionScale = 4.0f;
-    bool wroteVideo = RuntimeConfigFile::SetDisplayMode("windowed") && RuntimeConfigFile::SetWindowSize(640u, 480u);
-    if (RuntimeConfigFile::ResolutionMultiplier(1.0f) > kMaxStartupResolutionScale) {
-        wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(kMaxStartupResolutionScale) && wroteVideo;
+    if (resetWindow) {
+        bool wroteVideo = RuntimeConfigFile::SetDisplayMode("windowed") && RuntimeConfigFile::SetWindowSize(640u, 480u);
+        if (RuntimeConfigFile::ResolutionMultiplier(1.0f) > kMaxStartupResolutionScale) {
+            wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(kMaxStartupResolutionScale) && wroteVideo;
+        }
+        std::printf("[nsmbw] Reset: Config.toml video/window keys -> windowed 640x480, render scale kept (%s)\n",
+                    wroteVideo ? "ok" : "FAILED");
+    } else if (RuntimeConfigFile::ResolutionMultiplier(1.0f) > kMaxStartupResolutionScale) {
+        RuntimeConfigFile::SetResolutionMultiplier(kMaxStartupResolutionScale);
     }
-    std::printf("[nsmbw] Reset: Config.toml video/window keys -> windowed 640x480, render scale kept (%s)\n",
-                wroteVideo ? "ok" : "FAILED");
 
     const auto marker = cacheDir / kCrashMarkerName;
     if (std::filesystem::exists(marker, ec)) {
@@ -782,7 +800,7 @@ int main() {
     }
     {
         std::error_code ec;
-        const auto cacheDir = std::filesystem::current_path() / "nsmbw_data" / "Cache";
+        const auto cacheDir = NsmbwDataDir() / "Cache";
         std::filesystem::create_directories(cacheDir, ec);
         ResetPersistentStateForCleanRun(cacheDir);
         static const std::string markerPath = (cacheDir / kCrashMarkerName).string();
