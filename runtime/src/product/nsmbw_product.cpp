@@ -748,6 +748,14 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
 } // namespace
 
 int main() {
+#ifdef _WIN32
+    // Window/taskbar icon: SDL3 only takes an icon from the exe's resources when these hints name
+    // one (they can be given as environment variables; set before aurora initializes SDL). Resource
+    // 1 is the icon runtime/cmake/NsmbwProduct.cmake embeds when branding/nsmbw.ico exists; without
+    // it SDL falls back to the default icon as before.
+    _putenv("SDL_WINDOWS_INTRESOURCE_ICON=1");
+    _putenv("SDL_WINDOWS_INTRESOURCE_ICON_SMALL=1");
+#endif
     // Unbuffered so log order is trustworthy across an abnormal termination (abort() from an
     // uncaught exception does not flush buffered stdio) - needed to tell whether a crash happens
     // before or after other printf-based milestones instead of guessing from apparent line order.

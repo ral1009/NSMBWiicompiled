@@ -253,5 +253,40 @@ if(MKW_BUILD_NSMBW)
     add_custom_command(TARGET NSMBWCompiled POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${NSMBW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:NSMBWCompiled>/dsp_coef.bin")
 
+    # Exe icon and version info (Windows resource). The icon is Nintendo artwork, so it lives in
+    # the gitignored projects/nsmbw/branding/ and is only embedded when present locally - a clean
+    # checkout still builds, just with the default icon.
+    set(NSMBW_ICON "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/branding/nsmbw.ico")
+    if(WIN32 AND EXISTS "${NSMBW_ICON}")
+        enable_language(RC)
+        set(NSMBW_VERSION_COMMA "0,1,0,0")
+        set(NSMBW_VERSION_DOT "0.1.0")
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_resources.rc"
+"1 ICON \"${NSMBW_ICON}\"
+1 VERSIONINFO
+FILEVERSION ${NSMBW_VERSION_COMMA}
+PRODUCTVERSION ${NSMBW_VERSION_COMMA}
+BEGIN
+  BLOCK \"StringFileInfo\"
+  BEGIN
+    BLOCK \"040904B0\"
+    BEGIN
+      VALUE \"ProductName\", \"NSMBWCompiled\"
+      VALUE \"FileDescription\", \"NSMBWCompiled - native PC recompilation\"
+      VALUE \"FileVersion\", \"${NSMBW_VERSION_DOT}\"
+      VALUE \"ProductVersion\", \"${NSMBW_VERSION_DOT}\"
+      VALUE \"OriginalFilename\", \"NSMBWCompiled.exe\"
+    END
+  END
+  BLOCK \"VarFileInfo\"
+  BEGIN
+    VALUE \"Translation\", 0x409, 1200
+  END
+END
+")
+        target_sources(NSMBWCompiled PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_resources.rc")
+        message(STATUS "NSMBWCompiled: embedding icon ${NSMBW_ICON}")
+    endif()
+
     message(STATUS "NSMBWCompiled executable target ready.")
 endif()

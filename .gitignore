@@ -84,3 +84,6 @@ output.txt
 /.claude/
 /MKWiicompiled/
 __pycache__/
+
+# Exe icon: Nintendo artwork, kept out of the public repo (embedded at build time if present)
+/projects/nsmbw/branding/
