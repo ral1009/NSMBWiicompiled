@@ -6,7 +6,9 @@ This is a student side project, built with AI assistance, and doubles as a from-
 
 **You need your own legally dumped PAL NSMBW disc.** Nothing here works without it, and no Nintendo assets, code or data are bundled — translation runs locally against your own disc image.
 
-## Status: Phase 6/7/8 — playable into World 1 (2026-09-21)
+## Status: v0.1.0 released — playable, no-setup first launch (2026-10-12)
+
+Release builds ask for your disc image on first launch, extract it with the bundled DolphinTool, and optionally install a Dolphin HD texture pack. The table below is the per-stage evidence from the earlier bring-up; later work (controls, glyphs, interpolation, HD packs, release packaging) is in the sections further down and in the progress log.
 
 Verified with screenshots (the evidence for each row is in the progress log):
 
@@ -16,7 +18,7 @@ Verified with screenshots (the evidence for each row is in the progress log):
 | Title screen (logo, hills, ground tiles, circle-wipe transition) | renders; sky colour not yet confirmed, Mario / "PRESS 2" not yet checked |
 | File Selection (cards, Erase/Copy, Free Mode / Coin Battle, background) | renders correctly |
 | Intro cutscene | plays to the end, including the item-rain section, without crashing |
-| Input | keyboard as one sideways Wii Remote (channel 0): **Z** = 2 (jump), **X** = 1 (run), **Enter** = A, **arrow keys** = d-pad, with held / pressed / released state delivered through `KPADRead`. B, +, −, HOME and the pointer are not bound yet |
+| Input | keyboard and SDL gamepads, bound per context (see Controls). One Wii Remote per connected gamepad, up to 4 players (2026-10-11); single player verified, a second controller joining **not yet verified** |
 | Audio | AX/DSP frames now run, so sound-driven game logic advances; audible output not yet verified |
 | World map | renders and runs; enter a level with **2** (A opens the map's free-look mode) |
 | Levels (1-1, 1-2, 1-Tower, 1-Castle) | sky, tiles, Mario, enemies, bosses and background all render; playable with keyboard input; tilesets swap correctly between levels (2026-09-21) |
@@ -109,19 +111,19 @@ This writes `dist\NSMBWCompiled-<commit>.zip`, which contains everything the exe
 - `wii_bootstrap\`, the files a fresh emulated NAND is seeded with
 - `PLAYING.txt`, setup instructions for the player
 
-The player still needs their own PAL disc (SMNP01, revision 1) extracted with Dolphin, with `dvd_root` in `%LOCALAPPDATA%\WiiCompiled\Config.toml` pointing at it. They also need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU.
+The player still needs their own PAL disc (SMNP01, revision 1). Release builds (`build_release\`, configured with `-DNSMBW_RELEASE=ON`; zip `dist\NSMBWCompiled-v0.1.0-<commit>.zip`) also ship `DolphinTool.exe`, ask for the disc image on first launch, then offer to install an HD texture pack; dev builds still need `dvd_root` in `%LOCALAPPDATA%\WiiCompiled\Config.toml` pointing at an extracted disc. Release builds have no console window and log to `nsmbw_data\NSMBWCompiled.log`. They also need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU.
 
 Test a package from a folder **outside** this repo. When a file is missing next to the exe, the runtime looks for it in `runtime/assets/` by walking up from the working directory, so inside the checkout a missing file goes unnoticed.
 
 ## HD textures (Dolphin texture packs)
 
-Dolphin custom-texture packs work unchanged. Copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`, then tick **Graphics → HD texture pack** in the F10 menu (or set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`). The checkbox switches the pack on and off while the game runs. Tested with the full *NSMBW HD v2.81 (DDS)* pack and with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642**. Packs contain Nintendo-derived art, so none are included in this repository; download them from their authors.
+Dolphin custom-texture packs work unchanged. A release build's first launch offers to install one (pick the pack folder; it finds `SMN` inside, copies it and turns the option on; `NSMBW_SETUP_TEXTURES=<dir>` is the test hook). By hand: copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`, then tick **Graphics → HD texture pack** in the F10 menu (or set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`). The checkbox switches the pack on and off while the game runs. Tested with the full *NSMBW HD v2.81 (DDS)* pack and with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642**. Packs contain Nintendo-derived art, so none are included in this repository; download them from their authors.
 
 ## Controls
 
 NSMBW is played with a keyboard or any SDL gamepad; there is no Wii Remote support, so the boot goes straight to the title screen (the strap warning and "Hold the Wii Remote sideways" screens are skipped; `NSMBW_SHOW_BOOT_SCREENS=1` keeps them).
 
-Buttons are bound to **actions, separately for courses, the world map and menus** (F10 → Controller settings → NSMBW controls): Jump and Confirm are both the Wii Remote's 2 button to the game, but they can sit on different buttons. Click a slot and press the button or key to bind it; right-click clears it. Bindings are saved in `%LOCALAPPDATA%\WiiCompiled\nsmbw_controls.ini`. Defaults:
+Buttons are bound to **actions, separately for courses, the world map and menus** (F10 → Controller settings → NSMBW controls): Jump and Confirm are both the Wii Remote's 2 button to the game, but they can sit on different buttons. Click a slot and press the button or key to bind it; right-click clears it. Bindings are saved in `%LOCALAPPDATA%\WiiCompiled\nsmbw_controls.ini`. Each connected gamepad is its own Wii Remote (player N = Nth pad, up to 4); the keyboard is player 1's. Multiplayer with two pads is not yet tested. Defaults:
 
 | | Gamepad | Keyboard |
 |---|---|---|
@@ -139,7 +141,7 @@ Buttons are bound to **actions, separately for courses, the world map and menus*
 
 ## Controller button glyphs
 
-Button prompts ("Press (2) to Start", the (2) on the controller screen, Erase/Copy on file select, the map's Menu/Items hints) show the button you actually press, for the device you last used (Xbox, PlayStation, Switch or keyboard) and for the current context's bindings. **F10 → Controller settings → Button icons** pins one set or keeps the original Wii icons. The icons are [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0), built into the executable, and work with or without a texture pack. `NSMBW_GLYPH_TEST=xbox|playstation|switch|keyboard` pins a set for testing; `NSMBW_LOG_GLYPHS=1` logs each change.
+Button prompts ("Press (2) to Start", the (2) on the controller screen, Erase/Copy on file select, the map's Menu/Items hints) show the button you actually press, for the device you last used (Xbox, PlayStation, Switch or keyboard) and for the current context's bindings. **F10 → Controller settings → Button icons** pins one set or keeps the original Wii icons. The icons are [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0), built into the executable, and work with or without a texture pack. Keyboard keys with long names (Backspace, Enter, Shift, Space, Tab) are drawn as symbol keycaps (`projects/nsmbw/tools/draw_key_icons.py`), and without a pack the glyphs are downscaled with multi-sample averaging so thin outlines stay smooth (not yet re-checked on screen). `NSMBW_GLYPH_TEST=xbox|playstation|switch|keyboard` pins a set for testing; `NSMBW_LOG_GLYPHS=1` logs each change.
 
 ## Debugging notes worth knowing before touching this code
 

@@ -562,6 +562,14 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** player N = the Nth connected gamepad (the overlay's port-0 pad first), and the keyboard belongs to player 0 (`NsmbwControlsReadWpad/ReadTilt(chan)`, `NsmbwControlsPlayerCount`). `KPADRead` keeps per-channel state (`nsmbw_kpad_overrides.cpp`). `NsmbwWpadSetConnectedCount` marks channels below the player count connected and the rest disconnected each frame, and `WPADGetInfoAsync` answers those channels with LED = 1<<chan (`nsmbw_wpad_overrides.cpp`). Verified so far: single player still boots to a level (`connected remotes: 0 -> 1`). Not yet verified: a second controller joining.
 - **Scope:** Unconfirmed (needs a two-controller test). The class is general: per-channel SDK state faked for channel 0 only.
 
+## 2026-10-12 — button glyphs
+
+### Keyboard glyphs spelled key names; glyphs jagged without a texture pack
+- **Symptom:** Kenney's keyboard glyphs for Backspace/Enter/Shift/Space/Tab are words, unreadable at prompt size. Without an HD pack, every glyph's thin outline broke into jaggies.
+- **Root cause:** without a pack the patched base is the native picture font (32 px cells), and a 128 px glyph was point-sampled into it: one source sample per destination pixel, so most of the glyph's pixels were dropped.
+- **Fix:** `projects/nsmbw/tools/draw_key_icons.py` redraws those five as symbol keycaps (called by `import_kenney_glyphs.py`). `aurora-main/lib/gfx/texture_replacement.cpp` bilinearly upscales the base before patching and averages an n×n sample grid when shrinking a glyph. Commit `812ad7d`. Compiles; not re-checked on screen.
+- **Scope:** Unconfirmed (no on-screen check). The class is general: point-sampled downscaling of replacement art.
+
 ---
 
 ## Open / unconfirmed items
@@ -591,4 +599,6 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
   - The template's example `nand_root = "D:\\WiiNand"` fails if its `#` is removed.
   - (Fixed 2026-09-29, `bb9c79b`) `ResetPersistentStateForCleanRun` reset the window/video keys to 640x480 windowed on every launch; now only for test runs (`NSMBW_AUTO_PRESS_SELFTEST` or `NSMBW_RESET_WINDOW=1`).
   - `PLAYING.txt` documents all four; each should be fixed in code before a release.
+- Multiplayer (2026-10-11, `7dc53c3`): a second controller joining is untested.
+- Glyph downscaling and keycap icons (2026-10-12, `812ad7d`): not re-checked on screen.
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.

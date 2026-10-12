@@ -866,3 +866,21 @@ What I did:
 - The first-launch dialog and a new "disc is set up" box tell the player that F10 opens the settings menu.
 
 Verified: the packaged zip, run outside the repo with `NSMBW_SETUP_IMAGE`, had no conhost child process, its window was titled NSMBWCompiled, and the log (183 KB) shows the scene sequence BOOT -> 6 -> 7 -> 5 -> 10 -> 8.
+
+
+## 2026-10-12 — v0.1.0 follow-ups (multiplayer input, HD pack setup, glyphs)
+What I did:
+- **Multiplayer input** (`7dc53c3`): the input HLE only ever presented Wii Remote channel 0, so a second pad moved Mario instead of joining. Player N is now the Nth connected gamepad (keyboard = player 1); `KPADRead` keeps per-channel state and the WPAD control blocks mark channels below the player count connected each frame. Details in `docs/issues.md`.
+- **HD pack in first-launch setup** (`07e3863`): after the disc step, the release asks for an optional Dolphin texture pack folder, finds `SMN` in it, copies it to `nsmbw_data\texture_replacements\SMN` and sets `texture_replacements = true`. Test hook `NSMBW_SETUP_TEXTURES=<dir>`.
+- **Glyphs** (`812ad7d`): symbol keycaps for Backspace/Enter/Shift/Space/Tab, and smoother glyph downscaling when no pack is installed (bilinear base upscale + n×n averaging; previously one sample per pixel, *point sampling*, which drops thin lines).
+
+What broke / what I didn't expect:
+- `mPad`'s 0x8042A758, which the old code set to 1 as if it were a player count, is a polling interval in `beginPad` (0x8016F360).
+
+What I learned:
+- Faking per-channel SDK state for channel 0 only is invisible in single player and only shows up when a second device appears.
+
+Verified: single player still boots to a level (`connected remotes: 0 -> 1`); the packaged zip installed a full pack (312/312 files, "Indexed 306 texture replacements"). Not verified: two controllers, glyph appearance on screen.
+
+What's next:
+- Test with two controllers; look at the keyboard glyphs without a pack.
