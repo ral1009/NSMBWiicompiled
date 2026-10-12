@@ -24,22 +24,6 @@ Verified with screenshots (the evidence for each row is in the progress log):
 | Levels (1-1, 1-2, 1-Tower, 1-Castle) | sky, tiles, Mario, enemies, bosses and background all render; playable with keyboard input; tilesets swap correctly between levels (2026-09-21) |
 | Save data | `wiimj2d.sav` is kept between runs and loaded at boot, so a started file resumes at the map without replaying the intro (`NSMBW_RESET_SAVE=1` wipes it) |
 
-What changed on 2026-09-20, evening (details and evidence in the progress log):
-
-1. **Invisible level geometry** (black sky, invisible ground/Mario/enemies while the HUD and far hills drew): every tile/model draw ran with a 0×0 viewport and an all-zero scissor. The native `GXSetViewport`/`GXSetScissor` never wrote the `__GXData` fields the game's translated `GXGetViewportv`/`GXGetScissor`/`__GXSetViewport` read back, so each save/restore around a render-to-texture pass restored zeros. Mirroring the SDK's six float stores and two BP words fixed the whole level.
-2. **Save never resumed**: the boot scene types the save file with `ISFS_ReadDir` and expects `EINVAL` ("this is a file"); the HLE answered `ENOENT` for any non-directory, so the game re-created the save on every launch.
-3. Also fixed: the world-map crashes (REL `.bss` was initialised from file bytes instead of zeros; 77 cross-module and 21 vtable call targets the recursive translator couldn't see) and the item-rain crash in the cutscene (a fixed 4 KB raw-FIFO staging buffer dropped the tail of large draws).
-
-What changed on 2026-09-20, earlier (three root causes, all the same bug class — see below):
-
-1. **Cutscene crash** (`[aurora] unmapped vtx attr 9`): `GXBeginDisplayList` / `GXEndDisplayList` were never bound for NSMBW, so the host executed display-list *recordings* as live draws and later replayed stale memory. Bound both; guest memory-error lines per run went 98 → 0.
-2. **Stuck after choosing the number of players**: the scene waits in `VoiceEndWait` for a voice clip to finish, and audio never ticked because only `AIInit` was bound. Bound the AI DMA family, translated the AX task callbacks the recursive translator couldn't see, and stopped the scheduler's idle loop from starving VI once audio was live.
-3. **Every 2D screen drawn as smeared gradients** (file select, strap, title elements): the native `GXLoadTexObj` didn't cache the texture size where the guest's `__GXSetSUTexRegs` reads it, so every layout draw sampled a one-texel sliver magnified across the pane. Two guest-memory stores fixed all of it.
-
-Earlier milestones, in order: guest game thread running (2026-09-01) → GX render-state + startup-overlay fixes (2026-09-04) → input (WPAD), scene creation, and the first 3D frame (2026-09-19) → cutscene, file select and the audio path (2026-09-20) → world map and a playable 1-1 (2026-09-20, evening).
-
-**Not yet started:** audible audio output verification (Phase 8), a correctness-validation harness (Phase 9), and any compatibility pass across the 8 worlds (Phase 10).
-
 ## How this differs from decompilation
 
 - **Recompilation is the deliverable.** WiiCompiled's translator pipeline (PowerPC decode → IR/SSA lift → C++ emit → native compile) produces the actual playable build.
