@@ -17,7 +17,12 @@
 # runtime\assets\ for wii_bootstrap and dsp_coef.bin, so a missing file never shows up here. The
 # first run on another PC (2026-09-27) failed on both, one launch at a time. Test a package from
 # a folder OUTSIDE the repo, or that same fallback hides the gap again.
+#
+# The public package is built from build_release\ (configured with -DNSMBW_RELEASE=ON: first-launch
+# disc picker, nsmbw_disc_setup.cpp) and ships DolphinTool.exe from dolphin_tool\ (gitignored; copy
+# it out of an official Dolphin x64 release together with Dolphin's license) to extract the disc.
 param(
+    [string]$Version = "0.1.0",
     [string]$OutDir = "",
     [switch]$Private,
     [string]$DiscDir = "",        # -Private: extracted disc (sys\ + files\); default NSMBW-Files
@@ -26,7 +31,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $tools = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Resolve-Path (Join-Path $tools "..\..\..")
-$B = Join-Path $root "build_nsmbw"
+$B = Join-Path $root $(if ($Private) { "build_nsmbw" } else { "build_release" })
+$dolphin = Join-Path $root "dolphin_tool"
+if (-not $Private -and -not (Test-Path (Join-Path $dolphin 'DolphinTool.exe'))) {
+    throw "dolphin_tool\DolphinTool.exe is missing - the release needs it to extract the player's disc."
+}
 if ($OutDir -eq "") { $OutDir = Join-Path $root "dist" }
 
 # Everything the exe needs next to it. The DLLs are the ones it imports that Windows doesn't
@@ -90,9 +99,13 @@ if ($Private) {
 
 # Name the zip after the commit, marked -dirty when the exe was built from uncommitted changes,
 # so a bug report can be matched to source.
+Copy-Item (Join-Path $dolphin 'DolphinTool.exe') $pkg
+New-Item -ItemType Directory (Join-Path $pkg 'licenses') | Out-Null
+Copy-Item (Join-Path $root 'LICENSE') (Join-Path $pkg 'licenses\NSMBWCompiled-LICENSE.txt')
+Get-ChildItem $dolphin -Filter 'COPYING*' | ForEach-Object { Copy-Item $_.FullName (Join-Path $pkg "licenses\Dolphin-$($_.Name).txt") }
 $commit = (git -C $root rev-parse --short HEAD).Trim()
 if (git -C $root status --porcelain --untracked-files=no) { $commit += '-dirty' }
-$zip = Join-Path $OutDir "NSMBWCompiled-$commit.zip"
+$zip = Join-Path $OutDir "NSMBWCompiled-v$Version-$commit.zip"
 if (Test-Path $zip) { Remove-Item $zip -Confirm:$false }
 Compress-Archive -Path $pkg -DestinationPath $zip
 $files = (Get-ChildItem -Recurse $pkg -File).Count

@@ -548,6 +548,14 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** `createDylinkHeap` (0x8016EC60) is overridden with a structural copy that, right after creating the heap, reserves each REL's range while the heap is still empty (`projects/nsmbw/native/nsmbw_dylink_heap_reserve.cpp`). Each block is placed exactly with a padding block that is freed afterwards. Block size is fixSize + bssSize from the .rel header, the size the console's loader shrinks each REL to; the retail addresses fit that exactly. A gap too small to pad (0x10 bytes before `d_en_bossNP`) is absorbed by the previous block. A first attempt reserved at link time instead: too late for the transient allocation, and the later RELs missed their addresses. Evidence (portable copy, boot to 1-1): `4 of 4 REL ranges reserved`, each at its image address; the watched word stays 63 from tick 0 onward; no failed text lookups. The text on screen has not been confirmed yet (a scripted run never reached the window: arrow keys sent by `keybd_event` without the extended flag arrive as numpad keys).
 - **Scope:** General class (any port that pre-places code or data inside memory a guest allocator manages must reserve it through that allocator); the addresses and sizes are NSMBW's.
 
+## 2026-10-11 — v0.1.0 release setup
+
+### First-run setup needed hand-editing Config.toml, and its text said "Mario Kart Wii"
+- **Symptom:** testers had to extract the disc in Dolphin and type `dvd_root` into Config.toml (see the 2026-09-27 open items). The template and the DVD error popup pointed at a "Mario Kart Wii DATA directory".
+- **Root cause:** no setup UI; the runtime only reads an extracted disc folder, and the strings come from the shared MKW runtime.
+- **Fix:** release builds (`-DNSMBW_RELEASE=ON`, `build_release\`) run `NsmbwEnsureDiscFolder()` before DVDInit (`runtime/src/product/nsmbw_disc_setup.cpp`). If `dvd_root` is not a valid extracted disc, it asks for a disc image, extracts it with the bundled `DolphinTool.exe extract -g` (Dolphin 2609a) into `disc\` next to the exe, checks `sys\boot.bin` for SMNP01 rev 1, and writes `dvd_root` with TOML escaping, so the backslash parse error can't happen. The Config template and DVD error text say NSMBW under `MKW_RUNTIME_PRODUCT_NSMBW` (`runtime_config.h`, `dvd.cpp`). Verified from the packaged zip, extracted outside the repo in portable mode with `NSMBW_SETUP_IMAGE=<rvz>`: 1217 files (342 MB, SMNP01) extracted, `dvd_root` saved, and the scenes ran BOOT → 6 → 7 → 5 → 10 → 8. The dialogs themselves were not clicked through by a script.
+- **Scope:** NSMBW-specific (release packaging). The DolphinTool approach would work for any title.
+
 ---
 
 ## Open / unconfirmed items
@@ -572,7 +580,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - 180 FPS at 4x: fixed 2026-09-28 except 1-7 late frames per 2 s on the world map (EFB-probe downloads in the seal).
 - aurora `command_processor.cpp` BP 0x65 (LOADTLUT1) uses the TMEM-address bits as a TLUT slot index; display-list palette loads would be dropped. Not hit by NSMBW so far (2026-09-27).
 - First-run setup problems a tester hit (2026-09-27), not yet fixed:
-  - The DVD-root error (`runtime/src/hle/storage/dvd.cpp:146,153`) and the Config.toml template (`runtime/include/runtime_config.h:265,298`) say "Mario Kart Wii".
+  - (Fixed 2026-10-11) The DVD-root error and the Config.toml template said "Mario Kart Wii"; release builds also no longer need dvd_root typed by hand (disc picker).
   - A Config.toml TOML parse error, e.g. `dvd_root = "C:\Users\..."` (a backslash inside double quotes is an escape), makes the runtime silently fall back to defaults (`runtime_config.h:459`). The player then sees "No DVD root is configured", not the parse error.
   - The template's example `nand_root = "D:\\WiiNand"` fails if its `#` is removed.
   - (Fixed 2026-09-29, `bb9c79b`) `ResetPersistentStateForCleanRun` reset the window/video keys to 640x480 windowed on every launch; now only for test runs (`NSMBW_AUTO_PRESS_SELFTEST` or `NSMBW_RESET_WINDOW=1`).

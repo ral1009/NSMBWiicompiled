@@ -11,39 +11,15 @@ YOU NEED
 - Your own dump of the PAL disc: game ID SMNP01, revision 1. The US disc (SMNE01) will NOT work.
   An .rvz, .iso or .wbfs file is fine.
 
-SETUP (once)
-1. Keep everything in this folder together. The .exe needs the .dll files, dsp_coef.bin and
-   the wii_bootstrap folder next to it.
-
-2. Extract the disc with Dolphin:
-   - Add the folder with your disc image to Dolphin's game list.
-   - Right-click the game > Properties > Filesystem tab.
-     (The Info tab there shows the game ID and revision - check SMNP01 / revision 1.)
-   - Right-click "Data Partition" > Extract Entire Partition... and pick an empty folder.
-   - That folder should now contain "sys" and "files" folders. That folder is your disc folder.
-
-3. Run NSMBWCompiled.exe once. It stops with "DVD data is unavailable" - that is expected.
-   It has now created its settings file:
-       %LOCALAPPDATA%\WiiCompiled\Config.toml
-   (paste that into Explorer's address bar to find it)
-
-4. Open Config.toml in a text editor. Near the bottom, under [paths], change the dvd_root line
-   to your disc folder and remove the # in front of it. Use SINGLE quotes:
-
-       dvd_root = 'C:\Games\NSMBW-Disc'
-
-   - Single quotes matter: inside double quotes a backslash is an escape character, the file
-     fails to load, and the game says "No DVD root is configured" even though you set it.
-     (Double quotes work only with doubled backslashes: "C:\\Games\\NSMBW-Disc".)
-   - Use the full path, starting with the drive letter.
-   - Leave the other lines under [paths] (nand_root, retro_rewind_root, overlay_roots) with
-     their # in front. They are examples; activating nand_root makes the game look for a
-     D:\WiiNand folder that does not exist.
-   - The comments in this file mention Mario Kart Wii. That is left over from the project this
-     is built on; ignore it.
-
-5. Save the file and run NSMBWCompiled.exe again. The first launch takes a while to build
-   its shader cache.
+SETUP
+1. Extract this whole zip to a folder (keep every file together) with ~1 GB free space.
+2. Run NSMBWCompiled.exe. The first time, it asks for your disc:
+   - Yes: pick your disc image (.rvz, .iso or .wbfs). It is extracted once, into a "disc"
+     folder next to the exe (a few seconds; about 350 MB), and then the game starts.
+   - No: pick a folder you already extracted with Dolphin (it contains "sys" and "files").
+   Later launches go straight to the game. The first launch also builds the shader cache,
+   so it can stutter briefly.
+   Disc extraction uses DolphinTool.exe from the Dolphin emulator (GPL; see licenses\).
 
 HD TEXTURES (optional)
    The game runs fine without these. Dolphin texture packs for NSMBW work unchanged; none are

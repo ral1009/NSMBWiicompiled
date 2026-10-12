@@ -94,6 +94,7 @@ if(MKW_BUILD_NSMBW)
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/host_cpu_baseline.cpp")
     if(NOT WIN32)
         list(REMOVE_ITEM NSMBW_RUNTIME_COMMON_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/wup028_adapter.cpp")
@@ -173,8 +174,18 @@ if(MKW_BUILD_NSMBW)
     # Phase 6's actual starting point).
     add_executable(NSMBWCompiled "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp")
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp")
     mkw_configure_object_target(NSMBWCompiled)
+    # Same product define as nsmbw_runtime_common: runtime_config.h's inline functions read it, and
+    # an inline function compiled differently in two objects of one exe is an ODR violation.
+    target_compile_definitions(NSMBWCompiled PRIVATE MKW_RUNTIME_PRODUCT_NSMBW)
+    # Release builds (-DNSMBW_RELEASE=ON, made by package_nsmbw.ps1 in build_release\) ask for the
+    # disc on first launch and extract it with the bundled DolphinTool.exe. Dev builds never do.
+    option(NSMBW_RELEASE "First-launch disc picker for the public release" OFF)
+    if(NSMBW_RELEASE)
+        target_compile_definitions(NSMBWCompiled PRIVATE NSMBW_RELEASE)
+    endif()
     target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
     target_compile_options(NSMBWCompiled PRIVATE -march=x86-64-v3 -g)
     # -g alone only affects compiling; the linker strips debug sections unless told to keep them.
@@ -196,7 +207,7 @@ if(MKW_BUILD_NSMBW)
         mkw::pugixml mkw::toml11 mkw::cryptopp)
     if(WIN32)
         target_link_libraries(NSMBWCompiled PRIVATE
-            dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp setupapi winusb shell32)
+            dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp setupapi winusb shell32 ole32)
     else()
         target_link_libraries(NSMBWCompiled PRIVATE mkw::libco)
     endif()

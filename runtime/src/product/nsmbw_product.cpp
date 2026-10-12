@@ -765,6 +765,8 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
 
 } // namespace
 
+void NsmbwEnsureDiscFolder();
+
 int main() {
 #ifdef _WIN32
     // Window/taskbar icon: SDL3 only takes an icon from the exe's resources when these hints name
@@ -833,6 +835,8 @@ int main() {
     std::printf("[nsmbw] Initializing embedded data sections...\n");
     InitializeDataSections();
     SeedLowMemDefaults();
+    // Release builds only (nsmbw_disc_setup.cpp): ask for the disc if dvd_root isn't valid yet.
+    NsmbwEnsureDiscFolder();
     // Must precede the guest entry point. NSMBW's own DVDInit (0x801CAE70) inlines
     // __DVDFSInit, which latches OSBootInfo.FSTLocation once and early-returns when it reads
     // zero - so the FST has to be published before the guest starts, or every disc path lookup

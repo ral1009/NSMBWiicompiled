@@ -261,8 +261,13 @@ inline void EnsureConfigFile() {
     if (!output) {
         return;
     }
+#if defined(MKW_RUNTIME_PRODUCT_NSMBW)
+    output << "# NSMBWCompiled user configuration\n"
+              "# Set paths.dvd_root to an extracted New Super Mario Bros. Wii disc folder (sys + files).\n\n"
+#else
     output << "# WiiCompiled user configuration\n"
               "# Set paths.dvd_root to an extracted Mario Kart Wii DATA directory.\n\n"
+#endif
               "[video]\n"
               "widescreen = true\n"
               "resolution_multiplier = 1.0\n"
@@ -295,10 +300,14 @@ inline void EnsureConfigFile() {
               "[network]\n"
               "enabled = true\n\n"
               "[paths]\n"
+#if defined(MKW_RUNTIME_PRODUCT_NSMBW)
+              "# dvd_root = 'D:\\NSMBW-Disc'\n";
+#else
               "# dvd_root = \"D:\\\\MarioKartWii\\\\DATA\"\n"
               "# nand_root = \"D:\\\\WiiNand\"\n"
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
               "# overlay_roots = [\"D:\\\\RetroRewind\"]\n";
+#endif
 }
 
 template <typename T>

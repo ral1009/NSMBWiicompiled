@@ -842,3 +842,19 @@ What's next:
 - Developer: confirm the Exit confirmation now shows its text.
 - First release.
 
+## 2026-10-11 — Release v0.1.0 (no-setup first launch)
+What I did:
+- Separate release build: `build_release\`, configured with `-DNSMBW_RELEASE=ON`. Only that build compiles the first-launch disc setup (`runtime/src/product/nsmbw_disc_setup.cpp`); `build_nsmbw` is unchanged.
+- First launch with no valid `dvd_root`: a dialog asks for the disc image (.rvz/.iso/.wbfs) or an already-extracted folder. An image is extracted by the bundled `DolphinTool.exe` (from the official Dolphin 2609a x64 release, GPLv2+; licenses in `licenses\`) into `disc\` next to the exe. The disc is checked for SMNP01 rev 1, and the path is saved to Config.toml.
+- The player-visible "Mario Kart Wii" text (Config template, DVD error) now says NSMBW in this game's builds. `PLAYING.txt` setup is down to "extract, run, pick your disc". The package is `dist\NSMBWCompiled-v0.1.0-<commit>.zip`.
+
+What broke / what I didn't expect:
+- Extraction took about 2 s, not minutes: the game's data partition is only 342 MB.
+- The release configure failed until it was given ninja's and clang's full paths; neither is on the default PATH.
+
+What I learned:
+- A *GPL-compatible* tool (Dolphin is GPLv2-or-later, this repo GPLv3) can be shipped next to our exe as a separate program, so its disc-format and decryption code does not have to be ported. Shipping it only requires including its license.
+
+What's next:
+- Developer: click through the real dialogs once. The automated test used the `NSMBW_SETUP_IMAGE` hook, which skips them.
+
