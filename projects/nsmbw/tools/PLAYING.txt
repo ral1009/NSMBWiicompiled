@@ -25,6 +25,8 @@ HD TEXTURES (optional)
    The game runs fine without these. Dolphin texture packs for NSMBW work unchanged; none are
    included here because they are made from Nintendo's art - download them from their authors.
    Tested: "NSMBW HD v2.81 (DDS)", and nymo642's HD HUD Tweaks (gamebanana.com/mods/480785).
+   The first-launch setup offers to install one for you (pick the pack's folder). To add one
+   later by hand:
    1. Find the pack's "SMN" folder (the one Dolphin wants in Load\Textures\).
    2. Copy it to  nsmbw_data\texture_replacements\SMN  in this folder
       (create texture_replacements if it isn't there; nsmbw_data appears after the first run).

@@ -83,17 +83,16 @@ fs::path PickPath(bool folder) {
     return result;
 }
 
-// Runs DolphinTool with a small "please wait" window; returns its exit code (-1 if it can't start).
-int RunDolphinTool(const fs::path& tool, const fs::path& image, const fs::path& out) {
-    std::wstring cmd = L"\"" + tool.wstring() + L"\" extract -i \"" + image.wstring() + L"\" -o \"" +
-                       out.wstring() + L"\" -g -q";  // -g: DATA partition only (DolphinTool 2609a)
+// Runs a command line hidden, with a small "please wait" window; returns its exit code (-1 if it
+// can't start).
+int RunWithWaitWindow(std::wstring cmd, const wchar_t* text) {
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         return -1;
     }
     HWND wait = CreateWindowExW(WS_EX_TOPMOST, L"STATIC",
-                                L"\r\n  Extracting your disc - this takes a few seconds.\r\n  The game starts by itself when it is done.",
+                                text,
                                 WS_POPUP | WS_BORDER | WS_VISIBLE,
                                 (GetSystemMetrics(SM_CXSCREEN) - 460) / 2, (GetSystemMetrics(SM_CYSCREEN) - 80) / 2,
                                 460, 80, nullptr, nullptr, nullptr, nullptr);
@@ -107,6 +106,53 @@ int RunDolphinTool(const fs::path& tool, const fs::path& image, const fs::path& 
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     return static_cast<int>(code);
+}
+
+int RunDolphinTool(const fs::path& tool, const fs::path& image, const fs::path& out) {
+    return RunWithWaitWindow(L"\"" + tool.wstring() + L"\" extract -i \"" + image.wstring() + L"\" -o \"" +
+                                 out.wstring() + L"\" -g -q",  // -g: DATA partition only (DolphinTool 2609a)
+                             L"\r\n  Extracting your disc - this takes a few seconds.\r\n"
+                             L"  The game starts by itself when it is done.");
+}
+
+// Optional Dolphin HD texture pack: the renderer reads nsmbw_data\texture_replacements\SMN next to
+// the exe (aurora texture_replacement.cpp), so the pack's SMN folder is copied there with robocopy
+// (exit codes below 8 mean success) and texture_replacements is switched on.
+void OfferTexturePack(const fs::path& exeDir) {
+    // Test hook, like NSMBW_SETUP_IMAGE: NSMBW_SETUP_TEXTURES=<folder> answers Yes and picks it.
+    const char* scripted = std::getenv("NSMBW_SETUP_TEXTURES");
+    if (!scripted && Ask(L"Optional: do you have a Dolphin HD texture pack for New Super Mario Bros. Wii?\n\n"
+            L"Yes: pick the pack's folder (the one containing \"SMN\", or SMN itself).\n"
+            L"No: play with the original textures. You can add a pack later (see PLAYING.txt).",
+            MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return;
+    }
+    for (;;) {
+        const fs::path picked = scripted ? RuntimeConfigFile::PathFromUtf8(scripted) : PickPath(true);
+        if (picked.empty()) return;
+        if (scripted) scripted = nullptr;
+        std::error_code ec;
+        fs::path smn;
+        if (picked.filename() == "SMN") smn = picked;
+        else if (fs::is_directory(picked / "SMN", ec)) smn = picked / "SMN";
+        else if (fs::is_directory(picked / "Load" / "Textures" / "SMN", ec)) smn = picked / "Load" / "Textures" / "SMN";
+        if (smn.empty()) {
+            if (Ask(L"No SMN folder found there. Try another folder?", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+            continue;
+        }
+        const fs::path dest = exeDir / "nsmbw_data" / "texture_replacements" / "SMN";
+        const int code = RunWithWaitWindow(L"robocopy \"" + smn.wstring() + L"\" \"" + dest.wstring() +
+                                               L"\" /E /NFL /NDL /NJH /NJS /NP",
+                                           L"\r\n  Copying the texture pack - this can take a minute.\r\n"
+                                           L"  The game starts by itself when it is done.");
+        if (code < 0 || code >= 8) {
+            Ask(L"The texture pack could not be copied (is the drive full?). The game will use the "
+                L"original textures.", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        RuntimeConfigFile::SetTextureReplacements(true);
+        return;
+    }
 }
 
 bool SaveDvdRoot(const fs::path& root) {
@@ -190,6 +236,7 @@ void NsmbwEnsureDiscFolder() {
             Ask(L"Could not save the disc location to Config.toml.", MB_OK | MB_ICONERROR);
             continue;
         }
+        if (!scripted || std::getenv("NSMBW_SETUP_TEXTURES")) OfferTexturePack(exeDir);
         if (!scripted) Ask(L"Your disc is set up. The game starts now.\n\n"
             L"Once in game, press F10 for the settings menu (graphics, audio, controls).",
             MB_OK | MB_ICONINFORMATION);
