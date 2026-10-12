@@ -122,3 +122,8 @@ def draw_disc_icon(path, symbol, size=128):
 draw_disc_icon(os.path.join(OUT, 'playstation', 'start.png'), 'menu')
 draw_disc_icon(os.path.join(OUT, 'playstation', 'back.png'), 'share')
 print('playstation start/back drawn')
+
+# Enter/Shift/Tab/Backspace/Space as symbols instead of Kenney's spelled-out names.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from draw_key_icons import draw_all
+draw_all(os.path.join(OUT, 'keyboard'))

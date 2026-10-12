@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <list>
@@ -880,10 +881,41 @@ std::array<float, 4> sample_premultiplied(const PatchImage& image, float u, floa
   return out;
 }
 
+// Bilinear upscale of an 8-bit RGBA/BGRA base by an integer factor. Without a pack the base is the
+// native texture (NSMBW's picture font: 32 px cells), and drawing a 128 px glyph into it threw away
+// 15/16 of its pixels; the upscaled texture samples like the original (same UVs, bilinear), but
+// gives the patched cells room for the glyph's real resolution.
+ConvertedTexture upscale_base(const ConvertedTexture& src, uint32_t factor) noexcept {
+  ConvertedTexture out{.format = src.format, .width = src.width * factor, .height = src.height * factor, .mips = 1};
+  out.data = ByteBuffer(static_cast<size_t>(out.width) * out.height * 4);
+  const uint8_t* in = src.data.data();
+  uint8_t* dst = out.data.data();
+  for (uint32_t y = 0; y < out.height; ++y) {
+    const float fy = std::clamp((y + 0.5f) / factor - 0.5f, 0.0f, static_cast<float>(src.height - 1));
+    const uint32_t y0 = static_cast<uint32_t>(fy), y1 = std::min(y0 + 1, src.height - 1);
+    const float ty = fy - y0;
+    for (uint32_t x = 0; x < out.width; ++x) {
+      const float fx = std::clamp((x + 0.5f) / factor - 0.5f, 0.0f, static_cast<float>(src.width - 1));
+      const uint32_t x0 = static_cast<uint32_t>(fx), x1 = std::min(x0 + 1, src.width - 1);
+      const float tx = fx - x0;
+      const uint8_t* p00 = in + (static_cast<size_t>(y0) * src.width + x0) * 4;
+      const uint8_t* p10 = in + (static_cast<size_t>(y0) * src.width + x1) * 4;
+      const uint8_t* p01 = in + (static_cast<size_t>(y1) * src.width + x0) * 4;
+      const uint8_t* p11 = in + (static_cast<size_t>(y1) * src.width + x1) * 4;
+      uint8_t* d = dst + (static_cast<size_t>(y) * out.width + x) * 4;
+      for (int c = 0; c < 4; ++c) {
+        const float v = (p00[c] * (1 - tx) + p10[c] * tx) * (1 - ty) + (p01[c] * (1 - tx) + p11[c] * tx) * ty;
+        d[c] = static_cast<uint8_t>(v + 0.5f);
+      }
+    }
+  }
+  return out;
+}
+
 // Clears each patch rectangle and draws its image into it, aspect-fit and centred. The base may be
 // an upscaled pack texture, so rectangles are scaled from native texels to the base's size.
-// Minification (a 256 px glyph into a 32 px native cell) samples bilinearly with no mip, which is
-// fine for flat-colour icons but would alias fine detail.
+// When the glyph is larger than its rectangle, each texel averages an n x n grid of bilinear
+// samples (n = shrink ratio), so thin outlines don't break up into jaggies.
 void apply_patches(ConvertedTexture& base, uint32_t nativeWidth, uint32_t nativeHeight,
                    const std::vector<TexturePatch>& patches) noexcept {
   const bool bgra = base.format == wgpu::TextureFormat::BGRA8Unorm;
@@ -906,17 +938,29 @@ void apply_patches(ConvertedTexture& base, uint32_t nativeWidth, uint32_t native
     const float fit = std::min(rw / image.width, rh / image.height);
     const float dw = image.width * fit, dh = image.height * fit;
     const float ox = rx0 + (rw - dw) * 0.5f, oy = ry0 + (rh - dh) * 0.5f;
+    const int n = std::clamp(static_cast<int>(std::ceil(1.0f / fit)), 1, 8);
     for (uint32_t y = ry0; y < ry1; ++y) {
-      const float v = (y + 0.5f - oy) / dh;
-      if (v < 0.0f || v > 1.0f) {
+      if ((y + 1.0f - oy) / dh < 0.0f || (y - oy) / dh > 1.0f) {
         continue;
       }
       for (uint32_t x = rx0; x < rx1; ++x) {
-        const float u = (x + 0.5f - ox) / dw;
-        if (u < 0.0f || u > 1.0f) {
+        if ((x + 1.0f - ox) / dw < 0.0f || (x - ox) / dw > 1.0f) {
           continue;
         }
-        const auto c = sample_premultiplied(image, u, v);
+        std::array<float, 4> c{};
+        for (int sy = 0; sy < n; ++sy) {
+          const float v = (y + (sy + 0.5f) / n - oy) / dh;
+          for (int sx = 0; sx < n; ++sx) {
+            const float u = (x + (sx + 0.5f) / n - ox) / dw;
+            if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+              continue; // outside the glyph: transparent
+            }
+            const auto s = sample_premultiplied(image, u, v);
+            for (int k = 0; k < 4; ++k) {
+              c[k] += s[k] / static_cast<float>(n * n);
+            }
+          }
+        }
         uint8_t* d = pixels + (static_cast<size_t>(y) * base.width + x) * 4;
         const float a = c[3];
         const float inv = a > 0.0f ? 1.0f / a : 0.0f;
@@ -973,6 +1017,21 @@ std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GX
     return std::nullopt;
   }
 
+  if (!fromPack) {
+    // Upscale so the smallest patch rectangle gets >= 128 texels (Kenney's "Double" glyphs are
+    // 128 px), capped at 2048 px per side.
+    uint32_t minSide = UINT32_MAX;
+    for (const auto& p : patches) {
+      minSide = std::min<uint32_t>(minSide, std::min(p.width, p.height));
+    }
+    uint32_t factor = 1;
+    while (minSide * factor < 128 && std::max(base->width, base->height) * factor * 2 <= 2048) {
+      factor *= 2;
+    }
+    if (factor > 1) {
+      base = upscale_base(*base, factor);
+    }
+  }
   apply_patches(*base, key.width, key.height, patches);
   auto handle = upload_converted(fmt::format("PatchedTexture {}", format_replacement_filename(key)), &*base);
   s_patchedCache[key] = PatchedTexture{.generation = generation, .fromPack = fromPack, .handle = handle};
