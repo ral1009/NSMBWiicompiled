@@ -79,8 +79,10 @@
 
 extern "C" void SDL_PumpEvents();
 extern "C" void NsmbwSkipBootScreensApply();
-extern "C" uint32_t NsmbwControlsReadWpad(); // runtime/src/product/nsmbw_controls.cpp
-extern "C" float NsmbwControlsReadTilt();     // same file; -1 (left) .. +1 (right)
+extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan); // runtime/src/product/nsmbw_controls.cpp
+extern "C" float NsmbwControlsReadTilt(uint32_t chan);     // same file; -1 (left) .. +1 (right)
+extern "C" uint32_t NsmbwControlsPlayerCount();            // same file; 1..4
+extern "C" void NsmbwWpadSetConnectedCount(uint32_t count); // nsmbw_wpad_overrides.cpp
 extern "C" const bool* SDL_GetKeyboardState(int* numkeys);
 // Set by nsmbw_tick_read_pump.cpp's self-test (NSMBW_AUTO_PRESS_SELFTEST): a synthetic A press
 // is delivered as one frame of "held" through the same path as a real key.
@@ -117,17 +119,22 @@ constexpr uint32_t kKpadStatusSize = 0x84u;
 constexpr uint32_t kViRetraceCountAddr = 0x8042AB4Cu; // same accessor the tick pump serves
 
 bool g_padInited = false;
-uint32_t g_frameHold = 0, g_frameTrig = 0, g_frameRelease = 0;
-uint32_t g_prevHold = 0;
 uint32_t g_lastSampledTick = 0xFFFFFFFFu;
-// Synthetic accelerometer burst (see the header comment). Ticks remaining, and acc.y this tick.
-uint32_t g_shakeBurstTicks = 0;
-float g_frameAccY = 0.0f;
+// One Wii Remote per player (channel 0..3); see nsmbw_controls.cpp for which device is which.
+constexpr uint32_t kMaxRemotes = 4;
+uint32_t g_connectedRemotes = 1;
+struct RemoteState {
+    uint32_t hold = 0, trig = 0, release = 0, prevHold = 0;
+    // Synthetic accelerometer burst (see the header comment). Ticks remaining, and acc.y this tick.
+    uint32_t shakeBurstTicks = 0;
+    float accY = 0.0f;
+    // Tilt (see the header comment): acc.z this tick, eased toward the bound tilt amount.
+    float accZ = 0.0f;
+};
+RemoteState g_remotes[kMaxRemotes];
 constexpr uint32_t kShakeBurstTicks = 8;
 constexpr float kShakeBurstPattern[4] = {1.0f, 0.5f, 0.0f, -0.5f};
-// Tilt (see the header comment): acc.z this tick, eased toward the bound tilt amount. 0.25 per
-// tick is a full tilt in 4 ticks, and below the shake burst's 0.5 steps in y.
-float g_frameAccZ = 0.0f;
+// 0.25 per tick is a full tilt in 4 ticks, and below the shake burst's 0.5 steps in y.
 constexpr float kTiltStepPerTick = 0.25f;
 constexpr uint32_t kGameKeyInstanceAddr = 0x8042A230u; // dGameKey_c::m_instance (syms.txt)
 
@@ -146,12 +153,12 @@ void LogTilt(uint32_t tick, float target) {
     }
     static float lastTarget = 2.0f, lastAccZ = 2.0f;
     static uint16_t lastAngle = 0xFFFFu;
-    if (target == lastTarget && g_frameAccZ == lastAccZ && angle == lastAngle) return;
+    if (target == lastTarget && g_remotes[0].accZ == lastAccZ && angle == lastAngle) return;
     lastTarget = target;
-    lastAccZ = g_frameAccZ;
+    lastAccZ = g_remotes[0].accZ;
     lastAngle = angle;
     std::fprintf(stderr, "[nsmbw][tilt] tick=%u input=%+.2f acc.z=%+.2f ext=%u angle=%d (0x%04X)\n", tick,
-                 target, g_frameAccZ, ext, static_cast<int16_t>(angle), angle);
+                 target, g_remotes[0].accZ, ext, static_cast<int16_t>(angle), angle);
 }
 
 void InitKeyboardOnce() {
@@ -218,52 +225,60 @@ void SampleKeyboardForFrame() {
     PADStatus statuses[PAD_CHANMAX]{};
     PADRead(statuses);
 
-    // Action bindings per context (runtime/src/product/nsmbw_controls.cpp). PADRead above still
-    // runs for the PAD layer's own bookkeeping; TranslatePadToWpad is kept only as documentation
-    // of the old fixed mapping and for NSMBW_LEGACY_PAD_MAPPING=1.
+    // Action bindings per context and player (runtime/src/product/nsmbw_controls.cpp). PADRead
+    // above still runs for the PAD layer's own bookkeeping; TranslatePadToWpad is kept only as
+    // documentation of the old fixed mapping and for NSMBW_LEGACY_PAD_MAPPING=1 (player 0 only).
     static const bool legacy = AURORA_ENV("NSMBW_LEGACY_PAD_MAPPING") != nullptr;
-    uint32_t hold = legacy ? TranslatePadToWpad(statuses[0]) : NsmbwControlsReadWpad();
-    hold |= g_nsmbwSelfTestPressBits;
-    g_nsmbwSelfTestPressBits = 0;
+    g_connectedRemotes = legacy ? 1u : NsmbwControlsPlayerCount();
+    NsmbwWpadSetConnectedCount(g_connectedRemotes);
+    for (uint32_t chan = 0; chan < kMaxRemotes; ++chan) {
+        RemoteState& r = g_remotes[chan];
+        uint32_t hold = 0;
+        float tiltTarget = 0.0f;
+        if (chan < g_connectedRemotes) {
+            hold = legacy ? TranslatePadToWpad(statuses[0]) : NsmbwControlsReadWpad(chan);
+            // acc.z target: tilt right (+input) is -acc.z - see "Sign" in the header comment.
+            tiltTarget = legacy ? 0.0f : -NsmbwControlsReadTilt(chan);
+        }
+        if (chan == 0) {
+            hold |= g_nsmbwSelfTestPressBits;
+            g_nsmbwSelfTestPressBits = 0;
+        }
 
-    // A C press edge (not hold) starts one burst, so a tap is one spin like one flick of the
-    // remote; the game's cooldowns decide how soon the next one can fire.
-    if ((hold & kHostShake) && !(g_prevHold & kHostShake)) g_shakeBurstTicks = kShakeBurstTicks;
-    if (g_shakeBurstTicks != 0) {
-        g_frameAccY = kShakeBurstPattern[(kShakeBurstTicks - g_shakeBurstTicks) & 3u];
-        --g_shakeBurstTicks;
-    } else {
-        g_frameAccY = 0.0f;
-    }
+        // A shake press edge (not hold) starts one burst, so a tap is one spin like one flick of
+        // the remote; the game's cooldowns decide how soon the next one can fire.
+        if ((hold & kHostShake) && !(r.prevHold & kHostShake)) r.shakeBurstTicks = kShakeBurstTicks;
+        if (r.shakeBurstTicks != 0) {
+            r.accY = kShakeBurstPattern[(kShakeBurstTicks - r.shakeBurstTicks) & 3u];
+            --r.shakeBurstTicks;
+        } else {
+            r.accY = 0.0f;
+        }
+        if (r.accZ < tiltTarget) {
+            r.accZ = r.accZ + kTiltStepPerTick > tiltTarget ? tiltTarget : r.accZ + kTiltStepPerTick;
+        } else if (r.accZ > tiltTarget) {
+            r.accZ = r.accZ - kTiltStepPerTick < tiltTarget ? tiltTarget : r.accZ - kTiltStepPerTick;
+        }
+        if (chan == 0) LogTilt(tick, -tiltTarget); // log the input (+ = right), not the acc.z target
 
-    // acc.z target: tilt right (+input) is -acc.z - see "Sign" in the header comment.
-    const float tiltTarget = legacy ? 0.0f : -NsmbwControlsReadTilt();
-    if (g_frameAccZ < tiltTarget) {
-        g_frameAccZ = g_frameAccZ + kTiltStepPerTick > tiltTarget ? tiltTarget : g_frameAccZ + kTiltStepPerTick;
-    } else if (g_frameAccZ > tiltTarget) {
-        g_frameAccZ = g_frameAccZ - kTiltStepPerTick < tiltTarget ? tiltTarget : g_frameAccZ - kTiltStepPerTick;
-    }
-    LogTilt(tick, -tiltTarget); // log the input (+ = right), not the acc.z target
+        r.hold = hold & ~kHostShake;
+        r.trig = (hold & ~r.prevHold) & ~kHostShake;
+        r.release = (r.prevHold & ~hold) & ~kHostShake;
+        r.prevHold = hold;
 
-    g_frameHold = hold;
-    g_frameTrig = hold & ~g_prevHold;
-    g_frameRelease = g_prevHold & ~hold;
-    g_prevHold = hold;
-    g_frameHold &= ~kHostShake;
-    g_frameTrig &= ~kHostShake;
-    g_frameRelease &= ~kHostShake;
-
-    if (g_frameTrig != 0 || g_frameRelease != 0) {
-        static const bool log = AURORA_ENV("NSMBW_LOG_INPUT") != nullptr;
-        if (log) {
-            std::fprintf(stderr, "[nsmbw][kpad] tick=%u hold=0x%04X trig=0x%04X release=0x%04X\n",
-                         tick, g_frameHold, g_frameTrig, g_frameRelease);
-            int numKeys = 0;
-            const bool* kb = SDL_GetKeyboardState(&numKeys);
-            std::fprintf(stderr, "[nsmbw][kpad]   pad=0x%04X scancodes down:", statuses[0].button);
-            for (int i = 0; kb && i < numKeys; ++i) if (kb[i]) std::fprintf(stderr, " %d", i);
-            std::fprintf(stderr, "\n");
-            std::fflush(stderr);
+        if (r.trig != 0 || r.release != 0) {
+            static const bool log = AURORA_ENV("NSMBW_LOG_INPUT") != nullptr;
+            if (log) {
+                std::fprintf(stderr, "[nsmbw][kpad] tick=%u chan=%u hold=0x%04X trig=0x%04X release=0x%04X\n",
+                             tick, chan, r.hold, r.trig, r.release);
+                if (chan == 0) {
+                    int numKeys = 0;
+                    const bool* kb = SDL_GetKeyboardState(&numKeys);
+                    std::fprintf(stderr, "[nsmbw][kpad]   pad=0x%04X scancodes down:", statuses[0].button);
+                    for (int i = 0; kb && i < numKeys; ++i) if (kb[i]) std::fprintf(stderr, " %d", i);
+                    std::fprintf(stderr, "\n");
+                }
+            }
         }
     }
 }
@@ -278,17 +293,19 @@ extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint3
 {
     (void)isEx;
     try {
-        if (chan != 0 || samples == 0 || num == 0) {
-            // Only channel 0 is a connected remote (nsmbw_wpad_overrides.cpp seeds it).
+        SampleKeyboardForFrame();
+        // Channels below the player count are connected remotes (nsmbw_wpad_overrides.cpp
+        // marks the same channels connected for WPADProbe).
+        if (chan >= g_connectedRemotes || chan >= kMaxRemotes || samples == 0 || num == 0) {
             if (samples != 0 && num != 0) WriteZeroedStatus(samples, -1 /* WPAD_ERR_NO_CONTROLLER */);
             if (errPtr != 0) Memory::Write32(errPtr, static_cast<uint32_t>(-1));
             return 0;
         }
-        SampleKeyboardForFrame();
+        const RemoteState& r = g_remotes[chan];
         WriteZeroedStatus(samples, 0 /* WPAD_ERR_OK */);
-        Memory::Write32(samples + 0x0u, g_frameHold);
-        Memory::Write32(samples + 0x4u, g_frameTrig);
-        Memory::Write32(samples + 0x8u, g_frameRelease);
+        Memory::Write32(samples + 0x0u, r.hold);
+        Memory::Write32(samples + 0x4u, r.trig);
+        Memory::Write32(samples + 0x8u, r.release);
         // acc (Vec, +0xC) in g: x, y, z. y is the shake burst, z the tilt; x stays 0. And
         // acc_vertical (Vec2, +0x54), which is what the game turns into the tilt angle. See header.
         auto writeFloat = [](uint32_t addr, float v) {
@@ -296,10 +313,10 @@ extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint3
             std::memcpy(&bits, &v, sizeof(bits));
             Memory::Write32(addr, bits);
         };
-        writeFloat(samples + 0x10u, g_frameAccY);
-        writeFloat(samples + 0x14u, g_frameAccZ);
-        writeFloat(samples + 0x54u, std::sqrt(std::fmax(0.0f, 1.0f - g_frameAccZ * g_frameAccZ)));
-        writeFloat(samples + 0x58u, -g_frameAccZ);
+        writeFloat(samples + 0x10u, r.accY);
+        writeFloat(samples + 0x14u, r.accZ);
+        writeFloat(samples + 0x54u, std::sqrt(std::fmax(0.0f, 1.0f - r.accZ * r.accZ)));
+        writeFloat(samples + 0x58u, -r.accZ);
         // dev_type 0 = core remote, no extension; dpd_valid_fg 0 = no pointer data.
         if (errPtr != 0) Memory::Write32(errPtr, 0);
         return 1;

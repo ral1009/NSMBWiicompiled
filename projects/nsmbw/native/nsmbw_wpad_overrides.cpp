@@ -32,6 +32,7 @@
 #include "hle/controller_status_contract.h"
 
 #include <cstdint>
+#include <cstdio>
 
 extern "C" int32_t WPADInit_HLE();
 extern "C" int32_t WUDGetStatus_HLE();
@@ -61,17 +62,16 @@ constexpr uint32_t kWpadCbTableAddr = 0x8039E630u;
 constexpr uint32_t kWpadCbStorageAddr = 0x8039F660u;
 constexpr uint32_t kWpadCbStride = 0x9C0u;
 
-void SeedWpadCbChannel0()
+// _wpdcb[chan] = &_wpd[chan] for all four channels, as 0x801DF930's linking loop does. Which
+// channels are connected is set every frame by NsmbwWpadSetConnectedCount below.
+void SeedWpadCbTable()
 {
-    const uint32_t wpdcb0 = kWpadCbStorageAddr; // channel 0, no stride offset needed
-    Memory::Write32(kWpadCbTableAddr, wpdcb0);  // _wpdcb[0] = &_wpd[0]
-
-    Memory::Write32(wpdcb0 + 0x8BC, 0);         // status = WPAD_ERR_NONE
-    Memory::Write8(wpdcb0 + 0x8C1, 0);          // devType = 0 (Core, no extension)
-    Memory::Write32(wpdcb0 + 0x8D8, 1);         // used = TRUE
-    Memory::Write32(wpdcb0 + 0x8DC, 1);         // handshakeFinished = TRUE
-    Memory::Write8(wpdcb0 + 0x98C, 0);          // getInfoBusy = FALSE
+    for (uint32_t chan = 0; chan < 4; ++chan) {
+        Memory::Write32(kWpadCbTableAddr + chan * 4u, kWpadCbStorageAddr + chan * kWpadCbStride);
+    }
 }
+
+uint32_t g_connectedCount = 0;
 
 // mPad::beginPad (0x8016F360) only calls readOne (-> WPADGetInfoAsync) for a channel when
 // mPad's own player-count global (r13-0x5228, absolute 0x8042A758) is nonzero - confirmed
@@ -91,10 +91,30 @@ void SeedMPadPlayerCount()
 }
 } // namespace
 
+// Channels below `count` look like synced Wii Remotes to WPADProbe; the rest report no controller
+// (WPAD_ERR_NO_CONTROLLER = -1), so the game sees remotes connect and disconnect as gamepads are
+// plugged in. Called once per VI frame by the KPAD override with the controls layer's player count.
+extern "C" void NsmbwWpadSetConnectedCount(uint32_t count)
+{
+    if (count == g_connectedCount) return;
+    for (uint32_t chan = 0; chan < 4; ++chan) {
+        const uint32_t wpdcb = kWpadCbStorageAddr + chan * kWpadCbStride;
+        const bool on = chan < count;
+        Memory::Write32(wpdcb + 0x8BC, on ? 0u : 0xFFFFFFFFu); // status
+        Memory::Write8(wpdcb + 0x8C1, on ? 0 : 0xFD);          // devType: core / WPAD_DEV_NONE (253)
+        Memory::Write32(wpdcb + 0x8D8, on ? 1u : 0u);          // used
+        Memory::Write32(wpdcb + 0x8DC, on ? 1u : 0u);          // handshakeFinished
+        Memory::Write8(wpdcb + 0x98C, 0);                      // getInfoBusy
+    }
+    std::fprintf(stderr, "[nsmbw][wpad] connected remotes: %u -> %u\n",g_connectedCount, count);
+    g_connectedCount = count;
+}
+
 extern "C" int32_t WPADInit_NSMBW_HLE()
 {
     const int32_t result = WPADInit_HLE();
-    SeedWpadCbChannel0();
+    SeedWpadCbTable();
+    NsmbwWpadSetConnectedCount(1);
     SeedMPadPlayerCount();
     return result;
 }
@@ -166,7 +186,7 @@ extern "C" int32_t WPADGetInfoAsync_NSMBW_HLE(uint32_t chan, uint32_t infoPtr, u
     int32_t result;
     if (chan >= WpadContract::kChannelCount) {
         result = WpadContract::kErrorBadChannel;
-    } else if (chan == 0) {
+    } else if (chan < g_connectedCount) {
         if (infoPtr != 0) {
             Memory::Write32(infoPtr + 0x00, 0); // dpd
             Memory::Write32(infoPtr + 0x04, 0); // speaker
@@ -174,7 +194,7 @@ extern "C" int32_t WPADGetInfoAsync_NSMBW_HLE(uint32_t chan, uint32_t infoPtr, u
             Memory::Write32(infoPtr + 0x0C, 0); // lowBat
             Memory::Write32(infoPtr + 0x10, 0); // nearempty
             Memory::Write8(infoPtr + 0x14, 4);  // battery
-            Memory::Write8(infoPtr + 0x15, 1);  // led
+            Memory::Write8(infoPtr + 0x15, static_cast<uint8_t>(1u << chan)); // led: player N
             Memory::Write8(infoPtr + 0x16, 0);  // protocol
             Memory::Write8(infoPtr + 0x17, 0);  // firmware
         }

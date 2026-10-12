@@ -332,25 +332,32 @@ bool PadControlDown(SDL_Gamepad* pad, const PadControl& c) {
     return c.kind == PadKind::AxisPositive ? v >= threshold : v <= -threshold;
 }
 
-// The pad assigned to port 0 in the overlay; with none assigned, every connected pad.
-std::vector<SDL_Gamepad*> ActivePads() {
+// Connected pads in player order: the pad assigned to port 0 in the overlay first (if any), then
+// the rest in SDL's order. Player N (Wii Remote channel N) is pads[N]; the keyboard is player 0's.
+std::vector<SDL_Gamepad*> OrderedPads() {
     std::vector<SDL_Gamepad*> pads;
+    SDL_Gamepad* first = nullptr;
     const s32 index = PADGetIndexForPort(0);
-    if (index >= 0) {
-        if (SDL_Gamepad* p = PADGetSDLGamepadForIndex(static_cast<u32>(index))) {
-            pads.push_back(p);
-            return pads;
-        }
-    }
+    if (index >= 0) first = PADGetSDLGamepadForIndex(static_cast<u32>(index));
+    if (first) pads.push_back(first);
     int count = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
         for (int i = 0; i < count; ++i) {
-            if (SDL_Gamepad* p = SDL_GetGamepadFromID(ids[i])) pads.push_back(p);
+            SDL_Gamepad* p = SDL_GetGamepadFromID(ids[i]);
+            if (p && p != first) pads.push_back(p);
         }
         SDL_free(ids);
     }
     return pads;
 }
+
+// The pads that drive player `chan` (0..3): at most one.
+std::vector<SDL_Gamepad*> PadsForPlayer(uint32_t chan) {
+    const auto all = OrderedPads();
+    if (chan < all.size()) return {all[chan]};
+    return {};
+}
+
 
 std::string GlyphNameForPad(const std::string& name) {
     if (name.rfind("dpad_", 0) == 0) return "dpad";
@@ -514,7 +521,14 @@ void DrawMenu() noexcept {
 
 } // namespace nsmbw_controls
 
-extern "C" uint32_t NsmbwControlsReadWpad() {
+// Players with a controller: 1 (keyboard) or the number of connected gamepads, at most 4.
+extern "C" uint32_t NsmbwControlsPlayerCount() {
+    using namespace nsmbw_controls;
+    const size_t pads = OrderedPads().size();
+    return pads <= 1 ? 1u : (pads > 4 ? 4u : uint32_t(pads));
+}
+
+extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
     using namespace nsmbw_controls;
     if (settings_overlay::InputBlocked()) return 0;
     std::lock_guard lock(g_mutex);
@@ -523,9 +537,9 @@ extern "C" uint32_t NsmbwControlsReadWpad() {
     const Context c = CurrentContext();
     const auto& defs = ActionsFor(c);
     const auto& binds = g_bindings[size_t(c)];
-    const auto pads = ActivePads();
+    const auto pads = PadsForPlayer(chan);
     int numKeys = 0;
-    const bool* keys = SDL_GetKeyboardState(&numKeys);
+    const bool* keys = chan == 0 ? SDL_GetKeyboardState(&numKeys) : nullptr;
 
     uint32_t out = 0;
     for (size_t i = 0; i < defs.size(); ++i) {
@@ -549,7 +563,7 @@ extern "C" uint32_t NsmbwControlsReadWpad() {
 // tilt_left / tilt_right bindings; 0 outside courses (nothing on the map or in menus reads tilt).
 // A key or button tilts fully; a stick or trigger tilts in proportion past a dead zone, so half
 // a stick push is half a tilt. The KPAD override turns this into KPADStatus.acc.z.
-extern "C" float NsmbwControlsReadTilt() {
+extern "C" float NsmbwControlsReadTilt(uint32_t chan) {
     using namespace nsmbw_controls;
     if (settings_overlay::InputBlocked()) return 0.0f;
     std::lock_guard lock(g_mutex);
@@ -557,9 +571,9 @@ extern "C" float NsmbwControlsReadTilt() {
     if (g_capture.active || CurrentContext() != Context::Gameplay) return 0.0f;
     const auto& defs = ActionsFor(Context::Gameplay);
     const auto& binds = g_bindings[size_t(Context::Gameplay)];
-    const auto pads = ActivePads();
+    const auto pads = PadsForPlayer(chan);
     int numKeys = 0;
-    const bool* keys = SDL_GetKeyboardState(&numKeys);
+    const bool* keys = chan == 0 ? SDL_GetKeyboardState(&numKeys) : nullptr;
 
     constexpr float kDeadZone = 8000.0f; // about 25 % of the axis, a common stick dead zone
     auto amount = [&](const Binding& b) {

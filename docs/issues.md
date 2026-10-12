@@ -556,6 +556,12 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** release builds (`-DNSMBW_RELEASE=ON`, `build_release\`) run `NsmbwEnsureDiscFolder()` before DVDInit (`runtime/src/product/nsmbw_disc_setup.cpp`). If `dvd_root` is not a valid extracted disc, it asks for a disc image, extracts it with the bundled `DolphinTool.exe extract -g` (Dolphin 2609a) into `disc\` next to the exe, checks `sys\boot.bin` for SMNP01 rev 1, and writes `dvd_root` with TOML escaping, so the backslash parse error can't happen. The Config template and DVD error text say NSMBW under `MKW_RUNTIME_PRODUCT_NSMBW` (`runtime_config.h`, `dvd.cpp`). Verified from the packaged zip, extracted outside the repo in portable mode with `NSMBW_SETUP_IMAGE=<rvz>`: 1217 files (342 MB, SMNP01) extracted, `dvd_root` saved, and the scenes ran BOOT → 6 → 7 → 5 → 10 → 8. The dialogs themselves were not clicked through by a script.
 - **Scope:** NSMBW-specific (release packaging). The DolphinTool approach would work for any title.
 
+### Second controller never joined (multiplayer impossible)
+- **Symptom:** with two controllers, both moved Mario; no second player could join.
+- **Root cause:** the input HLE was built for one Wii Remote. `_wpdcb` was seeded for channel 0 only, so `WPADProbe` reported channels 1-3 as having no controller. `WPADGetInfoAsync` and the `KPADRead` override (0x801ED500) answered only channel 0, with one global hold/shake/tilt state. And `nsmbw_controls.cpp`'s `ActivePads()` merged every gamepad into that one remote. (`mPad`'s 0x8042A758, which the old code set to 1, is a polling interval in `beginPad` 0x8016F360, not a player count; it was left at 1.)
+- **Fix:** player N = the Nth connected gamepad (the overlay's port-0 pad first), and the keyboard belongs to player 0 (`NsmbwControlsReadWpad/ReadTilt(chan)`, `NsmbwControlsPlayerCount`). `KPADRead` keeps per-channel state (`nsmbw_kpad_overrides.cpp`). `NsmbwWpadSetConnectedCount` marks channels below the player count connected and the rest disconnected each frame, and `WPADGetInfoAsync` answers those channels with LED = 1<<chan (`nsmbw_wpad_overrides.cpp`). Verified so far: single player still boots to a level (`connected remotes: 0 -> 1`). Not yet verified: a second controller joining.
+- **Scope:** Unconfirmed (needs a two-controller test). The class is general: per-channel SDK state faked for channel 0 only.
+
 ---
 
 ## Open / unconfirmed items

@@ -29,8 +29,11 @@ void DrawMenu() noexcept;
 } // namespace nsmbw_controls
 
 // Called once per VI frame by the KPAD override (nsmbw_kpad_overrides.cpp): WPAD hold bits for
-// this frame, plus bit 31 while a "shake" action is held.
-extern "C" uint32_t NsmbwControlsReadWpad();
+// this frame, plus bit 31 while a "shake" action is held. Per player (Wii Remote channel 0..3):
+// player N is the Nth connected gamepad; the keyboard belongs to player 0.
+extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan);
+// How many players have a controller (1..4); channels below this report a connected remote.
+extern "C" uint32_t NsmbwControlsPlayerCount();
 // Also once per VI frame: remote tilt from the tilt_left / tilt_right actions, -1 (left) .. +1
 // (right), proportional for sticks; 0 outside courses.
-extern "C" float NsmbwControlsReadTilt();
+extern "C" float NsmbwControlsReadTilt(uint32_t chan);
