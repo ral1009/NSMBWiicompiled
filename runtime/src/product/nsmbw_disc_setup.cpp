@@ -132,12 +132,14 @@ void NsmbwEnsureDiscFolder() {
     // Test hook: NSMBW_SETUP_IMAGE=<image> answers "Yes" and picks that file, so a script can run
     // the extract/validate/save path without clicking the dialogs.
     const char* scriptedImage = std::getenv("NSMBW_SETUP_IMAGE");
+    const bool scripted = scriptedImage != nullptr;
     for (;;) {
         const int choice = scriptedImage ? IDYES : Ask(L"NSMBWCompiled needs your own copy of New Super Mario Bros. Wii "
                                L"(PAL, SMNP01, revision 1).\n\n"
                                L"Yes: pick a disc image (.rvz, .iso, .wbfs) - it is extracted once, next to the game.\n"
                                L"No: pick a folder you already extracted with Dolphin.\n"
-                               L"Cancel: quit.",
+                               L"Cancel: quit.\n\n"
+                               L"Once in game, press F10 for the settings menu.",
                                MB_YESNOCANCEL | MB_ICONINFORMATION);
         if (choice == IDCANCEL) std::exit(0);
         std::error_code ec;
@@ -188,6 +190,9 @@ void NsmbwEnsureDiscFolder() {
             Ask(L"Could not save the disc location to Config.toml.", MB_OK | MB_ICONERROR);
             continue;
         }
+        if (!scripted) Ask(L"Your disc is set up. The game starts now.\n\n"
+            L"Once in game, press F10 for the settings menu (graphics, audio, controls).",
+            MB_OK | MB_ICONINFORMATION);
         break;
     }
     CoUninitialize();

@@ -185,6 +185,8 @@ if(MKW_BUILD_NSMBW)
     option(NSMBW_RELEASE "First-launch disc picker for the public release" OFF)
     if(NSMBW_RELEASE)
         target_compile_definitions(NSMBWCompiled PRIVATE NSMBW_RELEASE)
+        # GUI subsystem: no console window. mingw-w64's startup still calls main().
+        target_link_options(NSMBWCompiled PRIVATE -mwindows)
     endif()
     target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
     target_compile_options(NSMBWCompiled PRIVATE -march=x86-64-v3 -g)

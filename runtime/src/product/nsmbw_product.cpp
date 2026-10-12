@@ -784,6 +784,17 @@ int main() {
     // buffers, flushed every 250 ms by a background thread (test scripts kill the process, which
     // would otherwise lose the tail of the log), on SIGABRT (where uncaught exceptions end) and in
     // the access-violation handler. NSMBW_UNBUFFERED_LOG=1 restores unbuffered output.
+#ifdef NSMBW_RELEASE
+    // Release builds link as a GUI program (no console window), so stdout/stderr would go nowhere.
+    // Send them to nsmbw_data\NSMBWCompiled.log instead; it is what a bug report should attach.
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(NsmbwDataDir(), ec);
+        const std::string logPath = (NsmbwDataDir() / "NSMBWCompiled.log").string();
+        std::freopen(logPath.c_str(), "w", stdout);
+        std::freopen(logPath.c_str(), "a", stderr);
+    }
+#endif
     if (AURORA_ENV("NSMBW_UNBUFFERED_LOG") != nullptr) {
         std::setvbuf(stdout, nullptr, _IONBF, 0);
         std::setvbuf(stderr, nullptr, _IONBF, 0);

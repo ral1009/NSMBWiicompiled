@@ -47,5 +47,6 @@ SAVE DATA
    %LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav
 
 IF IT FAILS
-   The console window shows why. Send its full contents (scroll to the top), plus your CPU
-   and GPU model. The zip's name says which build you have.
+   Send nsmbw_data\NSMBWCompiled.log (in this folder; it is rewritten on every launch, so
+   copy it before starting the game again), plus your CPU and GPU model. The zip's name
+   says which build you have.

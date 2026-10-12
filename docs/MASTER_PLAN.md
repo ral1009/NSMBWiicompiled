@@ -858,3 +858,11 @@ What I learned:
 What's next:
 - Developer: click through the real dialogs once. The automated test used the `NSMBW_SETUP_IMAGE` hook, which skips them.
 
+
+## 2026-10-11 (later): v0.1.0 follow-up (no console, F10 hint)
+What I did:
+- The developer confirmed the release works end to end, including the real dialogs.
+- Release builds now link with `-mwindows`, the *GUI subsystem*: Windows doesn't open a console for the exe. `llvm-objdump -p` reports `Subsystem 2 (Windows GUI)`. stdout/stderr go to `nsmbw_data\NSMBWCompiled.log` instead, rewritten on each launch; `PLAYING.txt` now asks for that file in bug reports.
+- The first-launch dialog and a new "disc is set up" box tell the player that F10 opens the settings menu.
+
+Verified: the packaged zip, run outside the repo with `NSMBW_SETUP_IMAGE`, had no conhost child process, its window was titled NSMBWCompiled, and the log (183 KB) shows the scene sequence BOOT -> 6 -> 7 -> 5 -> 10 -> 8.
