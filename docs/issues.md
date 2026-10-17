@@ -592,6 +592,18 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: `projects/nsmbw/assets/pipeline/initial_pipeline_cache.db` holds 398 recipes merged from every local cache with the new `projects/nsmbw/tools/merge_pipeline_cache.py`. A recipe is GX state, not compiled code, so it is GPU-independent. It is copied next to the exe (POST_BUILD) and into packages. The marker is now also removed once the pipeline queue first drains (product event hook in `nsmbw_product.cpp`). Verified: a run with an empty cache logged "Seeded pipeline cache ... (398 rows merged)" and "Pipeline prewarm finished: 398 pipelines in 2.1 s"; its worst frames in the first 50 s were 32 ms, against 150-590 ms for the unseeded cold run. A force-kill after that left no marker.
 - Scope: NSMBW-specific (seed contents, marker). The seed only covers scenes already played on this machine (title, file select, W1 map, W1 levels); re-collect after a `GXPipelineConfigVersion` bump, which invalidates every row.
 
+### Every animated-tile copy allocated a new GPU texture (~363/s in levels)
+- Symptom: inside levels aurora created ~725 GPU textures every 2 s, all "Resolved Texture 32x32", even though memory was flat after the 2026-10-16 leak fix. On the world map it was ~0 (`AURORA_LOG_TEXTURE_STATS`, which now lists creations by label).
+- Root cause: NSMBW re-renders each animated tile into a 32x32 EFB area every frame and copies it into the tileset atlas, then flushes the atlas range. The runtime correctly treats the flush as "RAM changed" and emits `GXDestroyCopyTex` (`runtime/src/hle/gx/gx_copy.cpp`). But aurora's `evict_copy_texture` also called `prune_copy_texture_pool(dest)`, which emptied the destination's pool of spare copy targets. The next copy then found nothing to reuse and created a texture (temporary debug print: `sameKey=0` on every steady-state creation). Enlarging the pool changed nothing, which ruled out a cap problem.
+- Fix: `prune_copy_texture_pool` (`aurora-main/lib/dolphin/gx/GXFrameBuffer.cpp`) keeps a destination's spares on eviction. The pool holds storage, not content, and the next copy overwrites it. Instead it frees spares that have been unused and unreferenced for 600 frames. Verified: creations in levels fell from ~725 to 1-6 per 2 s, memory stayed flat at 592 MB / 218 MB GPU for 150 s, and screenshots of 1-1 (`build_nsmbw/shots/poolfix_level_*.png`) show the ? and brick blocks drawn normally.
+- Scope: General (any game whose copy destinations are also cache-flushed).
+
+### Palette texture cache had the same version-in-the-key design as the leaking cache (preventive)
+- Symptom: none observed. NSMBW's palette tier held 0-1 entries.
+- Root cause: `s_staticPaletteTextureSourceCache` keys on texture and TLUT data versions, like the static source cache that leaked, so re-armed uploads of unchanged palette textures would add entries the same way.
+- Fix: the same retire-and-reuse pattern (`s_staticPaletteSourceLatestVersion`, `take_previous_static_palette_source_version` in `aurora-main/lib/gx/gx.cpp`), checking both the texture and TLUT digests. Verified only that the build runs and renders; NSMBW does not exercise it.
+- Scope: General; Unconfirmed as a live bug.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -622,5 +634,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Multiplayer (2026-10-11, `7dc53c3`): a second controller joining is untested.
 - Glyph downscaling and keycap icons (2026-10-12, `812ad7d`): not re-checked on screen.
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.
-- The palette source cache keys on `texDataVersion` the same way and could leak the same way for palette (CI) textures; not observed in NSMBW.
 - Seed pipeline cache coverage (2026-10-16): only W1-era scenes were collected; levels in later worlds still compile some pipelines on first visit. Merge caches from longer play sessions with `merge_pipeline_cache.py`.

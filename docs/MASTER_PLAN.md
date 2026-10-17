@@ -220,6 +220,14 @@ Each item was checked against the code on 2026-09-26. None of it starts until th
 
 ---
 
+## To-do (deferred)
+Work that has been decided on but parked. Remove an item when it is done and note it in the progress log.
+
+- **Confirm the seed shader list on the Iris Xe laptop** (2026-10-16). Put `initial_pipeline_cache.db` next to the exe, move `nsmbw_data\Cache` aside, then run `run_with_logging.bat`. Expect "Seeded pipeline cache ... 398 rows merged", "Pipeline prewarm finished", and no multi-second freeze on the first world-map visit.
+- **Measure GPU cost per render pass** (2026-10-16). Add GPU timing (Dawn timestamp queries) to find which pass dominates on integrated GPUs above 1x: EFB copies, the scaled tile cache or the presenter. Laptop evidence: 10 fps after a render-scale increase, and "Presenter fell behind" at 180 FPS. Do this before the uncapped / any-refresh interpolation work, which adds GPU load.
+- **Native AX audio routines** (2026-10-16, low priority). 96% of audio time is NSMBW's own AX library running as translated code (guest AI callback: ~31 ms/s, about 93 us per 3 ms block; host join+push ~1 ms/s). Rewriting the hot routines natively saves at most ~3% of a core on a game thread that is 74-86% idle, so it is only worth it if a slow CPU ever becomes the limit. Needs a bit-exact PCM comparison before and after.
+- **Grow the seed shader list** (2026-10-16). It only covers W1-era scenes. Merge caches from play sessions through W2-W9, towers, castles and airships with `projects/nsmbw/tools/merge_pipeline_cache.py`.
+
 ## 6. Progress log
 
 Keep entries here as work happens. Since 2026-09-19 these are written by Claude at the end of each working session (see CLAUDE.md's documentation policy); entries before that date were written by the developer. Either way the standard is the same: what was observed, what was ruled out and how, what the cause was, what was verified.
@@ -963,4 +971,24 @@ What's next:
 - Grow the seed: merge caches from play sessions through later worlds (W2-W9, towers, castles, airships).
 - GPU cost on integrated GPUs above 1x: per-pass GPU timing (Dawn timestamp queries) to find which pass dominates. Candidates are EFB copies, the scaled tile cache and the presenter.
 - Texture plan item 4 (HD-pack prefetch, texture pooling) is low priority now: neither showed up as a hitch on the laptop.
+
+
+## 2026-10-17 — Optimisation follow-ups (copy-target churn, palette cache, HD prefetch, idle loop, audio)
+What I did:
+- **EFB copy-target churn fixed** (`docs/issues.md`). In levels, ~6 GPU textures per frame were created and thrown away for the animated-tile copies, because evicting a copy also emptied its reuse pool. Creations fell from ~725 to 1-6 per 2 s, and memory stayed flat.
+- **Palette cache**: applied the same retire-old-versions fix as the 2026-10-16 leak, preventively. NSMBW barely uses palette textures.
+- **HD-pack prefetch**: a background-priority thread reads every pack file once at boot ("Prefetched 306 texture pack files (171.0 MB) into the OS file cache in 2.3 s"), so on-demand loads hit the Windows file cache instead of the disk. It holds no memory of its own. First run of it: NSMBW sets the pack on before aurora builds the index, so the prefetch never started until it was also triggered after index build. Not measured: the benefit with a cold file cache, which only exists after a reboot. With a warm cache, on-demand pack loads cost 0.4-37 ms per 2 s, only during scene loads (`AURORA_LOG_TEXTURE_STATS` now prints this).
+- **Idle-loop power: tried and dropped.** Sleeping until the next timer/alarm/audio deadline instead of polling every 1 ms changed nothing: process CPU on the world map was 34.1% vs 36.4%/34.1% of a core, wakeups ~500/s vs ~520/s. The wakeups are real work (an audio block every 3 ms wakes the sound thread), not idle polling. Only the wakeup counter was kept, in the `NSMBW_LOG_INTERP` spare-time line.
+- **Audio: measured, not changed.** The block loop splits into mix-worker join 0.4 ms, SDL push 1.5 ms and the guest callback 62 ms per 2 s. All the cost is the game's AX library running as translated code; parked in the to-do list.
+
+What broke / what I didn't expect:
+- My premise for the idle-loop change ("1000 wakeups/s for nothing") was wrong: they were ~500/s and almost all real.
+- Enlarging the copy pool did nothing. The `sameKey=0` debug print showed the pool was being emptied, not exhausted.
+
+What I learned:
+- Measure the premise before building the fix: the wakeup counter would have saved writing the deadline code.
+- "Content is stale" and "storage is reusable" are different invalidations. Tying the second to the first turned every cache flush into a GPU allocation.
+
+What's next:
+- The to-do list: confirm the seed on the laptop, GPU per-pass timing, grow the seed list.
 
