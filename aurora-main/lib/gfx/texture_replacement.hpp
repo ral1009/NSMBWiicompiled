@@ -17,6 +17,8 @@ std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept;
 void set_enabled(bool enabled) noexcept;
 bool enabled() noexcept;
 uint32_t revision() noexcept;
+uint64_t cached_bytes() noexcept;
+size_t cached_count() noexcept;
 // See aurora_set_texture_patches.
 void set_patches(uint64_t hash, uint32_t width, uint32_t height, uint32_t format, const AuroraTexturePatch* patches,
                  size_t count) noexcept;

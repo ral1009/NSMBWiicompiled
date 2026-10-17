@@ -884,3 +884,57 @@ Verified: single player still boots to a level (`connected remotes: 0 -> 1`); th
 
 What's next:
 - Test with two controllers; look at the keyboard glyphs without a pack.
+
+
+## 2026-10-16 — Texture and shader loading: cost measured, cache plan
+What I did:
+- Read how shaders and textures reach the GPU, then measured them with a cold-vs-warm A/B: two 100 s self-test runs of the same exe and save (portable copy, HD pack on, D3D12 on an RTX 4060, `NSMBW_PROFILE_SAMPLER=1` + `NSMBW_LOG_INTERP=1`). The only difference was whether `nsmbw_data/Cache/` was empty.
+- **Shaders already have a full cache in aurora**, in three layers:
+  1. in memory, a map from pipeline-config hash to compiled pipeline;
+  2. `pipeline_cache.db`, a list of every pipeline config ever used (a *recipe*, not compiled code), which is recompiled on 22 background threads at boot ("prewarm");
+  3. `dawn_cache.db`, Dawn's compiled-shader blobs. With this, the prewarm is a lookup rather than a compile.
+  When the cache is warm it works: "Pipeline prewarm finished: 233 pipelines in 0.0 s (Dawn blob cache: 923/923 hits)".
+- **What a cold shader cache costs.** The cold run compiled the same 233 pipelines on first use. Its worst frames in the first 40 s were 186, 174, 154, 452, 509 and 591 ms, and two 2-second windows fell to 28.5 and 41.5 game FPS. The warm run's worst frame in the whole run was 30 ms, and it never dropped below 57 FPS. Compilation itself runs off the game thread (about 8 compile threads were busy in the cold boot window and none in the warm one). The game thread still stalls, though, presumably where a draw has to wait for its pipeline (the persistent-pass wait in `pipeline_cache.cpp`). That last part is not proven.
+- **The cache is thrown away on almost every launch (bug, not fixed yet).** `ResetPersistentStateForCleanRun` (`nsmbw_product.cpp`) wipes both cache DBs whenever `.last_run_unclean` survives, and only an `atexit` hook removes that marker. Closing the window goes through `ExitForAuroraWindowClose` (`runtime/include/aurora_events.h`), which calls `ExitProcess(0)` on purpose and so skips every `atexit` handler. Reproduced: CloseMainWindow → the process exited → the marker was still there (timestamped at that run's start) → the next launch logged "Reset: previous run did not exit cleanly - wiped 6 pipeline/shader cache file(s)". So a player gets the cold-cache hitches on every launch. Test runs do too, because `run_nsmbw.ps1` force-kills the game: all 40 of the most recent `build_nsmbw/*.err.log` start with "Dawn cache schema changed; recreating", which is what a fresh DB logs.
+- **Textures already have a thorough in-memory cache** (`gx.cpp`). It has several tiers: per texture object, per source address+shape (validated by guest write generations and an XXH3 digest), palette, and EFB copies. It has no disk tier, but the profile says one wouldn't help:
+  - Decoding GX formats (`convert_texture`) is 4-8 samples per 10 s window, about 0.2 % of the game thread.
+  - The cost on a miss is GPU resource creation: `new_dynamic_texture_2d` (D3D12 CreateTexture/CreateView) took 61-79 samples (about 140-180 ms of game-thread time per 10 s) in scene-load windows.
+  - HD-pack textures are read from disk synchronously on the game thread. `read_binary_file` took 123 samples (about 290 ms) in the cold-OS-file-cache boot window and 37 samples in the warm one. Parsing the DDS is negligible (8 samples).
+  - None of these showed up as a hitch above 30 ms in the warm run.
+
+What broke / what I didn't expect:
+- `Test-Path` in PowerShell reported the marker missing while `Get-ChildItem -Force` listed it. The relaunch log settled it.
+- With async compilation and "skip unready pipelines" on, I expected a cold cache to show up as pop-in, not as 0.5 s stalls. The stalls are there.
+
+What I learned:
+- An exit path that skips `atexit` also skips anything else registered there. Here that includes aurora's shutdown, so the pipeline-cache writer's queued rows and the final `serialize_pipeline_caches()` are skipped on window close too.
+- *Pipeline* (concept): on a modern GPU API, every combination of shader + blend + depth + vertex-layout state is compiled into one immutable object before it can draw. GX lets the game change any of those per draw, so the port meets new combinations as the game runs and compiles them the first time. That first compile is what a pipeline cache avoids.
+- Earlier performance numbers in this log (2026-09-27/28) came from cold-cache runs, so their first ~40 s included compile stalls. The steady-state numbers are unaffected.
+
+What's next (cache plan, in order):
+1. **Window close counts as a clean exit.** Before `ExitProcess`, remove the marker (a hook the product registers) and drain aurora's pipeline-cache write queue, plus Dawn's pipeline-cache serialize. Verify: close the window, relaunch, see "Pipeline prewarm finished … hits" and no "wiped".
+2. **Narrow the crash marker to what it protects against.** The 2026-09-19 failure was an abort *inside the boot prewarm*. Arm the marker before the cache load and clear it when the prewarm queue drains, so a later kill or crash no longer costs the cache. Verify: kill mid-level, relaunch warm.
+3. **Ship an NSMBW seed `initial_pipeline_cache.db`.** It holds recipes only (about 0.9 MB after this run), so it is GPU- and driver-independent, and aurora already merges a bundled seed at boot. A first launch on a new PC then compiles every known pipeline at boot instead of mid-level. Needs: a collection run through all worlds, a regeneration step whenever `GXPipelineConfigVersion` changes, and the boot compile time measured on a cold Dawn cache.
+4. **Textures: no disk cache.** Instead: (a) prefetch the HD pack's file bytes on a background thread at boot (as Dolphin's "prefetch custom textures" does; 174 MB for the full pack), with the current synchronous read as the fallback; (b) count `new_dynamic_texture_2d` calls per scene load, and pool GPU textures by (w, h, format, mips) only if the count justifies it.
+
+
+## 2026-10-16 (later) — Window-close cache fix; texture memory leak found and fixed
+What I did:
+- **Plan item 1 done**: closing the window no longer throws away the shader cache. Details in `docs/issues.md`. Verified: close → relaunch logged "Pipeline prewarm finished: 226 pipelines in 0.0 s (Dawn blob cache: 886/886 hits)" and no wipe.
+- The developer reported an Iris Xe laptop at 1x with interpolation off: about 30 fps, falling toward 3 fps over time. A steady decline points to something that grows, so I sampled memory every 10 s over 6-minute self-test runs (map → level → map, repeated).
+  - **Memory grew the whole time**: private 700 → 2,240 MB, GPU dedicated 290 → 838 MB in 52 MB steps. Two runs gave almost the same curve, so it is deterministic.
+  - New diagnostic `AURORA_LOG_TEXTURE_STATS=1` (live GPU textures plus the size of every texture cache tier, every 2 s) pointed at one tier: the static source cache, 819,000 entries after 5 minutes. Its insert breakdown showed the same few addresses inserted every frame. Root cause and fix in `docs/issues.md` ("Texture source cache grew without bound"). After the fix, memory stays flat at 560 MB private / 218 MB GPU for the whole 6 minutes.
+- Checked audio as the other runaway candidate, with a new diagnostic `NSMBW_LOG_AUDIO_BACKLOG=1`. The AI accumulator (`audio.cpp`) has no ceiling, so a host too slow to mix in real time would build an endless backlog. On this machine the backlog stayed at about 0.002 s and the block loop cost 30-37 ms per second. Limiting the game to 2 logical cores didn't make it fall behind, so whether audio contributes on a weak CPU is untested.
+
+What broke / what I didn't expect:
+- The first long run was contaminated: the developer switched that window to 8x/180 FPS mid-run. That run is why the leak looked like it started there; the clean runs show it from the start.
+- `burst.ps1` failed with a GDI+ error when saving into the scratchpad path; `portable_shot.ps1` into `build_nsmbw/shots` worked.
+
+What I learned:
+- A cache whose key includes a "this may have changed" counter has to retire the old key when the counter moves. Otherwise every bump is a new entry, and the cache becomes a leak that only hurts machines with little memory.
+- On an integrated GPU, "GPU memory" is system RAM, so a GPU-side leak competes with everything else and ends in paging. The same leak was invisible on an 8 GB discrete card.
+
+What's next:
+- Developer: test the fixed build on the Iris Xe laptop, ideally with `NSMBW_LOG_INTERP=1` and `AURORA_LOG_TEXTURE_STATS=1`. If it still starts at 30 fps, profile there (`NSMBW_PROFILE_SAMPLER=1`); this machine can't reproduce a slow baseline.
+- Cache plan items 2-4 from the entry above are unchanged.
+

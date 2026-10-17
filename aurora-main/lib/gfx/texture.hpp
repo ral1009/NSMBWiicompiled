@@ -1,6 +1,7 @@
 #pragma once
 #include <dolphin/gx.h>
 
+#include <atomic>
 #include <utility>
 
 #include "common.hpp"
@@ -55,7 +56,26 @@ struct TextureRef {
   , size(size)
   , format(format)
   , mipCount(mipCount)
-  , gxFormat(gxFormat) {}
+  , gxFormat(gxFormat) {
+    g_liveTextureRefs.fetch_add(1, std::memory_order_relaxed);
+    g_liveTextureTexels.fetch_add(texels(), std::memory_order_relaxed);
+  }
+  ~TextureRef() {
+    g_liveTextureRefs.fetch_sub(1, std::memory_order_relaxed);
+    g_liveTextureTexels.fetch_sub(texels(), std::memory_order_relaxed);
+  }
+  TextureRef(const TextureRef&) = delete;
+  TextureRef& operator=(const TextureRef&) = delete;
+
+  // Live-object accounting for AURORA_LOG_TEXTURE_STATS (gx.cpp): finds texture leaks by count and
+  // by area without walking every cache. Texels of the base level; mips add at most a third.
+  static inline std::atomic<int64_t> g_liveTextureRefs{0};
+  static inline std::atomic<int64_t> g_liveTextureTexels{0};
+
+private:
+  int64_t texels() const noexcept {
+    return static_cast<int64_t>(size.width) * size.height * std::max(size.depthOrArrayLayers, 1u);
+  }
 };
 
 TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 gxFormat,

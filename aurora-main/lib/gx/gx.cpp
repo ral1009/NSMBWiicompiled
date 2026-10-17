@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -178,6 +179,26 @@ struct StaticTextureKey {
   }
 };
 
+// Insertions into s_staticTextureSourceCache since the last stats line, by texture shape, with the
+// most recent source address of each shape (AURORA_LOG_TEXTURE_STATS).
+struct StaticInsertStat {
+  u64 count = 0;
+  const void* lastData = nullptr;
+  u64 replacements = 0;
+};
+absl::flat_hash_map<u64, StaticInsertStat> s_staticInsertStats;
+
+void note_static_source_insert(const StaticTextureKey& key, const gfx::TextureHandle& handle) noexcept {
+  static const bool enabled = std::getenv("AURORA_LOG_TEXTURE_STATS") != nullptr;
+  if (!enabled) {
+    return;
+  }
+  auto& stat = s_staticInsertStats[(u64{key.width} << 48) | (u64{key.height} << 32) | (u64{key.format} << 8) | key.mips];
+  ++stat.count;
+  stat.lastData = key.data;
+  stat.replacements += handle && handle->isReplacement ? 1 : 0;
+}
+
 static std::array<StaticTextureKey, MaxTextures> s_lastStaticSourceResolveKey{};
 static std::array<bool, MaxTextures> s_lastStaticSourceResolveKeyValid{};
 static std::array<u64, MaxTextures> s_lastStaticSourceNoCopyRevision{};
@@ -233,6 +254,15 @@ struct TlutObjectCache {
 absl::flat_hash_map<u32, CachedTextureEntry> s_textureObjectCaches;
 absl::flat_hash_map<u32, TlutObjectCache> s_tlutObjectCaches;
 absl::flat_hash_map<StaticTextureKey, StaticTextureSourceEntry> s_staticTextureSourceCache;
+// Latest texDataVersion inserted into s_staticTextureSourceCache per source identity (the key with
+// texDataVersion zeroed). texDataVersion is part of the key because GXInitTexObjData is the guest's
+// signal that the bytes may have changed within one invalidate revision, but a new version must
+// retire the previous entry rather than add beside it: NSMBW re-arms the upload whenever it flushes
+// a texture's range, which for some textures is every frame (1024x32 IA4 x36, 64x4 I8 x20,
+// 64x1024 IA4 x8 per frame on the world map). Without this the cache grew by ~2,000 entries a second
+// (819k after 5 min), re-created a GPU texture on every bind, and held the old ones until a sweep
+// (77k live textures); GPU memory grew 290 -> 838 MB in 6 min (AURORA_LOG_TEXTURE_STATS, 2026-10-16).
+absl::flat_hash_map<StaticTextureKey, u32> s_staticSourceLatestVersion;
 absl::flat_hash_map<StaticPaletteTextureKey, StaticPaletteTextureSourceEntry> s_staticPaletteTextureSourceCache;
 absl::flat_hash_map<u32, StaticTextureKey> s_texObjSourceKeys;
 absl::flat_hash_map<u32, StaticPaletteTextureKey> s_texObjPaletteSourceKeys;
@@ -553,6 +583,37 @@ gfx::TextureHandle get_tlut_texture(const GXTlutObj_& tlut) {
   return handle;
 }
 
+static StaticTextureKey static_source_identity(StaticTextureKey key) noexcept {
+  key.texDataVersion = 0;
+  return key;
+}
+
+// On a miss for `key`, removes the entry that the same source identity holds under an older
+// texDataVersion. Returns its texture if the source bytes still match that entry's digest (the
+// caller re-keys it), or an empty handle if they changed or there was none.
+static gfx::TextureHandle take_previous_static_source_version(const StaticTextureKey& key) noexcept {
+  const auto versionIt = s_staticSourceLatestVersion.find(static_source_identity(key));
+  if (versionIt == s_staticSourceLatestVersion.end() || versionIt->second == key.texDataVersion) {
+    return {};
+  }
+  StaticTextureKey previousKey = key;
+  previousKey.texDataVersion = versionIt->second;
+  s_staticSourceLatestVersion.erase(versionIt);
+  const auto it = s_staticTextureSourceCache.find(previousKey);
+  if (it == s_staticTextureSourceCache.end()) {
+    return {};
+  }
+  gfx::TextureHandle handle = std::move(it->second.handle);
+  const u64 digest = it->second.digest;
+  const u32 size = it->second.sourceSize;
+  s_staticTextureSourceCache.erase(it);
+  clear_static_source_front_cache();
+  if (!source_matches_digest(key.data, static_texture_data_size(key), digest, size)) {
+    return {};
+  }
+  return handle;
+}
+
 gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
   ZoneScoped;
   const bool canCacheUpload = !obj.no_cache() && can_cache_static_texture_upload(obj);
@@ -593,7 +654,12 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
   }
 
   gfx::TextureHandle handle;
-  if (const auto replacement = gfx::texture_replacement::find_replacement(obj); replacement.has_value()) {
+  if (canUseSourceCache) {
+    handle = take_previous_static_source_version(sourceKey);
+  }
+  if (handle) {
+    // Same bytes under a new texDataVersion: re-keyed below without a decode, upload or pack lookup.
+  } else if (const auto replacement = gfx::texture_replacement::find_replacement(obj); replacement.has_value()) {
     handle = *replacement;
   } else {
 #if DEBUG
@@ -618,10 +684,17 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
       static size_t s_sourceCacheSweepAt = 512;
       if (s_staticTextureSourceCache.size() >= s_sourceCacheSweepAt) {
         absl::erase_if(s_staticTextureSourceCache, [](const auto& item) { return item.second.handle.use_count() <= 1; });
+        absl::erase_if(s_staticSourceLatestVersion, [](const auto& item) {
+          StaticTextureKey key = item.first;
+          key.texDataVersion = item.second;
+          return !s_staticTextureSourceCache.contains(key);
+        });
         clear_static_source_front_cache();
         s_sourceCacheSweepAt = std::max<size_t>(512, s_staticTextureSourceCache.size() * 2);
       }
+      note_static_source_insert(sourceKey, handle);
       s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle);
+      s_staticSourceLatestVersion[static_source_identity(sourceKey)] = sourceKey.texDataVersion;
       store_static_source_front_cache(sourceKey, sourceHash, handle);
       if (obj.texObjId != 0) {
         record_tex_obj_source_key(obj.texObjId, sourceKey);
@@ -1111,6 +1184,7 @@ static void drop_all_static_textures() noexcept {
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_staticTextureSourceCache.clear();
+  s_staticSourceLatestVersion.clear();
   s_staticPaletteTextureSourceCache.clear();
   s_texObjSourceKeys.clear();
   s_texObjPaletteSourceKeys.clear();
@@ -1128,7 +1202,45 @@ static void drop_all_static_textures() noexcept {
   g_gxState.stateDirty = true;
 }
 
+// AURORA_LOG_TEXTURE_STATS=1: every 2 s, live GPU textures (count and base-level megatexels) and the
+// size of every texture cache tier, to find which one grows without bound. Runs from the BP 0x66
+// invalidate (several times a frame), so it costs one cached flag check when off.
+static void log_texture_stats() noexcept {
+  static const bool enabled = std::getenv("AURORA_LOG_TEXTURE_STATS") != nullptr;
+  if (!enabled) {
+    return;
+  }
+  static auto last = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last < std::chrono::seconds(2)) {
+    return;
+  }
+  last = now;
+  std::fprintf(stderr,
+               "[aurora][texstats] live=%lld (%.1f Mtexel) staticSrc=%zu paletteSrc=%zu texObj=%zu tlutObj=%zu "
+               "texObjKeys=%zu copyTex=%zu copyTexCache=%zu replacements=%zu (%.1f MB)\n",
+               static_cast<long long>(gfx::TextureRef::g_liveTextureRefs.load(std::memory_order_relaxed)),
+               static_cast<double>(gfx::TextureRef::g_liveTextureTexels.load(std::memory_order_relaxed)) / 1e6,
+               s_staticTextureSourceCache.size(), s_staticPaletteTextureSourceCache.size(),
+               s_textureObjectCaches.size(), s_tlutObjectCaches.size(), s_texObjSourceKeys.size(),
+               g_gxState.copyTextures.size(), g_gxState.copyTextureCache.size(),
+               gfx::texture_replacement::cached_count(),
+               static_cast<double>(gfx::texture_replacement::cached_bytes()) / (1024.0 * 1024.0));
+  std::vector<std::pair<u64, StaticInsertStat>> top(s_staticInsertStats.begin(), s_staticInsertStats.end());
+  std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+  for (size_t i = 0; i < top.size() && i < 4; ++i) {
+    const u64 shape = top[i].first;
+    std::fprintf(stderr, "[aurora][texstats]   inserts %llu x %ux%u fmt=0x%x mips=%u (replacement %llu) last data=%p\n",
+                 static_cast<unsigned long long>(top[i].second.count), static_cast<unsigned>(shape >> 48),
+                 static_cast<unsigned>((shape >> 32) & 0xFFFF), static_cast<unsigned>((shape >> 8) & 0xFFFFFF),
+                 static_cast<unsigned>(shape & 0xFF), static_cast<unsigned long long>(top[i].second.replacements),
+                 top[i].second.lastData);
+  }
+  s_staticInsertStats.clear();
+}
+
 void invalidate_static_texture_cache() noexcept {
+  log_texture_stats();
   // Nothing has been marked reusable since the last bump, so every entry in every tier is already stale at the current revision.
   if (s_textureCacheStamps == 0) {
     return;
@@ -1142,6 +1254,7 @@ void invalidate_static_texture_cache() noexcept {
     s_textureObjectCaches.clear();
     s_tlutObjectCaches.clear();
     s_staticTextureSourceCache.clear();
+    s_staticSourceLatestVersion.clear();
     s_staticPaletteTextureSourceCache.clear();
     s_texObjSourceKeys.clear();
     s_texObjPaletteSourceKeys.clear();
@@ -2215,6 +2328,7 @@ void shutdown() noexcept {
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_staticTextureSourceCache.clear();
+  s_staticSourceLatestVersion.clear();
   s_staticPaletteTextureSourceCache.clear();
   s_texObjSourceKeys.clear();
   s_texObjPaletteSourceKeys.clear();

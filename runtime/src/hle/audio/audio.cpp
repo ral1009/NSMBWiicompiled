@@ -377,6 +377,49 @@ PPC_NATIVE_OVERRIDE(8015D57C, DSPAssertTask_8015d57c, uint32_t, (uint32_t taskPt
 
 // Each delivered block runs the AI DMA callback and deferred AX task callbacks before the
 // next block, preserving the SoundThread/DSP interleave order real hardware provides.
+namespace {
+// NSMBW_LOG_AUDIO_BACKLOG=1: every 2 s, the AI accumulator (wall-clock audio time owed to the guest
+// and not yet delivered as DMA blocks), blocks delivered vs. real time, and host time spent inside the
+// block loop (AX mix join + the guest's AI callback chain). A backlog that keeps growing means the
+// host cannot run the game's audio in real time.
+void LogAudioBacklog(int blocks, std::chrono::steady_clock::duration spent, double blockDuration)
+{
+    static const bool enabled = std::getenv("NSMBW_LOG_AUDIO_BACKLOG") != nullptr;
+    if (!enabled) {
+        return;
+    }
+    static auto windowStart = std::chrono::steady_clock::now();
+    static uint64_t windowBlocks = 0;
+    static uint64_t windowTicks = 0;
+    static uint64_t windowCappedTicks = 0;
+    static std::chrono::steady_clock::duration windowSpent{};
+    windowBlocks += static_cast<uint64_t>(blocks);
+    ++windowTicks;
+    windowCappedTicks += blocks >= kMaxBlocksPerTick ? 1 : 0;
+    windowSpent += spent;
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(now - windowStart).count();
+    if (elapsed < 2.0) {
+        return;
+    }
+    double backlog = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(g_ai.mutex);
+        backlog = g_ai.accumulatorSeconds;
+    }
+    std::fprintf(stderr,
+                 "[nsmbw][audio] backlog=%.3f s blocks=%llu (%.0f%% of real time) ticks=%llu capped=%llu "
+                 "host time in block loop=%.0f ms per %.1f s\n",
+                 backlog, static_cast<unsigned long long>(windowBlocks),
+                 100.0 * static_cast<double>(windowBlocks) * blockDuration / elapsed,
+                 static_cast<unsigned long long>(windowTicks), static_cast<unsigned long long>(windowCappedTicks),
+                 std::chrono::duration<double, std::milli>(windowSpent).count(), elapsed);
+    windowStart = now;
+    windowBlocks = windowTicks = windowCappedTicks = 0;
+    windowSpent = {};
+}
+} // namespace
+
 void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
 {
     uint32_t startAddr = 0;
@@ -432,6 +475,7 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
     CpuContextScope scope(cpu);
 
     int blocksCompleted = 0;
+    const auto drainStart = std::chrono::steady_clock::now();
     while (true) {
         // Claim the block in one critical section; sample-then-consume separately gains
         // nothing since the callback below (the only reentrancy point) runs mutex-released.
@@ -511,6 +555,7 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
         g_ai.tickActive = false;
         activeTickReset.armed = false;
     }
+    LogAudioBacklog(blocksCompleted, std::chrono::steady_clock::now() - drainStart, blockDuration);
 }
 
 namespace {

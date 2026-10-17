@@ -1111,5 +1111,7 @@ void set_enabled(bool enabled) noexcept {
 bool enabled() noexcept { return g_config.allowTextureReplacements && s_enabled.load(std::memory_order_relaxed); }
 
 uint32_t revision() noexcept { return s_revision.load(std::memory_order_acquire); }
+uint64_t cached_bytes() noexcept { return s_replacementCacheBytes; }
+size_t cached_count() noexcept { return s_replacementCache.size(); }
 
 } // namespace aurora::gfx::texture_replacement

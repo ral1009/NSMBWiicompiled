@@ -572,6 +572,20 @@ The recurring classes, for reference (details in CLAUDE.md):
 
 ---
 
+## 2026-10-16 — shader cache
+
+### Shader cache thrown away on every launch (0.5 s stalls in the first minute)
+- Symptom: every launch recompiled all ~230 pipelines on first use. Frames of 150-590 ms in the first ~40 s, against a 30 ms worst frame with a warm cache (same exe, save and route, 2026-10-16 A/B). Every test log began with "Dawn cache schema changed; recreating", which is what a brand-new DB logs.
+- Root cause: `ResetPersistentStateForCleanRun` (`nsmbw_product.cpp`) deletes `pipeline_cache.db`/`dawn_cache.db` whenever `nsmbw_data/Cache/.last_run_unclean` is still present at startup. Only an `atexit` hook cleared it. Closing the window exits through `ExitForAuroraWindowClose` (`runtime/include/aurora_events.h`), which calls `ExitProcess(0)` deliberately (CRT shutdown from a guest fiber faults) and therefore runs no `atexit` handlers. Reproduced: CloseMainWindow → the marker survived → the next launch logged "Reset: previous run did not exit cleanly - wiped 6 pipeline/shader cache file(s)".
+- Fix: `ExitForAuroraWindowClose` now drains aurora's pipeline-cache writer (new `aurora_flush_pipeline_cache()`, `aurora-main/lib/gfx/pipeline_cache.cpp`), then calls `g_beforeWindowCloseExit`, which NSMBW sets to the marker-clearing function. Verified: window close → no marker → the relaunch logged "Pipeline prewarm finished: 226 pipelines in 0.0 s (Dawn blob cache: 886/886 hits)" and no wipe.
+- Scope: NSMBW-specific (the crash marker is NSMBW's). The class is general: any exit path that skips `atexit` also skips `aurora_shutdown`, so before this fix MKW's window close also dropped pipeline recipes still queued for the cache DB. Still open: a force-kill (every `run_nsmbw.ps1` test run) still wipes the cache; plan item 2 in MASTER_PLAN 2026-10-16.
+
+### Texture source cache grew without bound (memory climbing, GPU texture churn every frame)
+- Symptom: memory climbed for as long as the game ran: 700 → 2,240 MB private and 290 → 838 MB GPU in 6 minutes at 1x, no interpolation, identical across two runs. The developer reported an Iris Xe laptop starting at 30 fps and sliding to about 3 fps; this leak is the suspected cause (an integrated GPU's memory is system RAM), not yet confirmed on that laptop.
+- Root cause: aurora's `s_staticTextureSourceCache` (`aurora-main/lib/gx/gx.cpp`) keys each entry on the source address, shape and `texDataVersion`. The runtime's `GXLoadTexObj` path calls `GXInitTexObjData`, which bumps that version whenever a guest cache flush overlaps the texture's bytes (`needsUpload`, `runtime/src/hle/gx/gx_objects.cpp`). NSMBW does that every frame for some textures. Per frame on the world map: 1024x32 IA4 x36 and 64x1024 IA4 x8 (both HD-pack hits), and 64x4 I8 x20. Each new version missed the cache: decode or pack lookup, a new GPU texture, and a new entry beside the old one. The amortised sweep only drops entries nothing else references, and the pack's LRU always references its textures, so those entries were never dropped. `AURORA_LOG_TEXTURE_STATS=1` showed 819,000 entries and 77,000 live GPU textures after 5 minutes.
+- Fix: `s_staticSourceLatestVersion` remembers the latest version per (address, shape). On a miss, `take_previous_static_source_version` removes the older entry, and if the bytes still match its digest it re-keys the same GPU texture with no decode or upload. Verified with the same 6-minute route: memory flat at 560 MB private / 218 MB GPU, 112 entries, 267 live textures. Screenshots of the title backdrop and the World 1 map are fully textured (`build_nsmbw/shots/texfix_level_0.png`, `texfix_map2_0.png`).
+- Scope: General. Any title whose texture objects get re-armed for upload while their bytes are unchanged hits this. `s_staticPaletteTextureSourceCache` has the same keying and was not changed; NSMBW never used it in these runs (paletteSrc=0).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -602,3 +616,6 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Multiplayer (2026-10-11, `7dc53c3`): a second controller joining is untested.
 - Glyph downscaling and keycap icons (2026-10-12, `812ad7d`): not re-checked on screen.
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.
+- Shader cache still wiped after a force-kill or crash at any point (2026-10-16): the crash marker covers the whole run, not just the boot prewarm it was meant to protect. Plan item 2 in MASTER_PLAN 2026-10-16.
+- Iris Xe slowdown (2026-10-16): the texture leak above is the suspected cause; to be confirmed on the laptop. The 30 fps starting point there is separate and unexplained (cold shader cache is one known contributor).
+- The palette source cache keys on `texDataVersion` the same way and could leak the same way for palette (CI) textures; not observed in NSMBW.
