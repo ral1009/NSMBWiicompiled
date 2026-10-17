@@ -18,6 +18,7 @@ using NewPipelineCallback = std::function<wgpu::RenderPipeline()>;
 
 void initialize_pipeline_cache();
 void shutdown_pipeline_cache();
+void flush_pipeline_cache();
 void begin_pipeline_frame();
 void end_pipeline_frame();
 void set_skip_unready_pipelines(bool enabled) noexcept;

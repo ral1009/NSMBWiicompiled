@@ -9,6 +9,7 @@
 // No window, no aurora, no input: whatever the guest code needs from those will fail loudly
 // through RuntimeCrash::FatalMissingGuestTarget (unimplemented HLE calls) rather than silently -
 // that failure, once we see it, is Phase 6's actual starting point.
+#include "aurora_events.h"
 #include "abi_bridge.h"
 #include <aurora/env.hpp>
 #include "runtime_config.h"
@@ -817,10 +818,13 @@ int main() {
         std::filesystem::create_directories(cacheDir, ec);
         ResetPersistentStateForCleanRun(cacheDir);
         static const std::string markerPath = (cacheDir / kCrashMarkerName).string();
-        std::atexit(+[] {
+        static constexpr auto clearMarker = +[] {
             std::error_code ec2;
             std::filesystem::remove(markerPath, ec2);
-        });
+        };
+        std::atexit(clearMarker);
+        // Closing the window exits through ExitProcess, which never runs atexit handlers.
+        g_beforeWindowCloseExit = clearMarker;
     }
 #if defined(_WIN32)
     ::AddVectoredExceptionHandler(1, DiagVectoredExceptionHandler);

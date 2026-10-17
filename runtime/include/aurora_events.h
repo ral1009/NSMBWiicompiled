@@ -5,6 +5,7 @@
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
+#include <aurora/gfx.h>
 #include <dolphin/gx/GXAurora.h>
 
 #include <cstdlib>
@@ -57,8 +58,20 @@ inline void Flush(bool force = false) {
 // fiber re-enters runtime teardown and can fault while the fiber machinery is
 // still active.  A window close is an intentional successful exit, so end the
 // process directly and do not run the crash/atexit paths.
+//
+// Skipping atexit also skips aurora_shutdown and every product's atexit hook, so anything that
+// must survive a window close happens here instead: the pipeline-cache writer's queue is drained
+// (without it, recipes first seen in this session were lost), then the product's hook runs.
+// NSMBW's hook clears its crash marker; left in place, the next launch wiped the whole shader
+// cache (2026-10-16: CloseMainWindow -> relaunch logged "previous run did not exit cleanly").
+inline void (*g_beforeWindowCloseExit)() = nullptr;
+
 [[noreturn]] inline void ExitForAuroraWindowClose() noexcept {
     WindowPlacementPersistence::Flush(true);
+    aurora_flush_pipeline_cache();
+    if (g_beforeWindowCloseExit != nullptr) {
+        g_beforeWindowCloseExit();
+    }
 #if defined(_WIN32)
     ::ExitProcess(0);
 #else

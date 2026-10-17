@@ -80,6 +80,10 @@ uint32_t aurora_get_frame_interpolation_fps();
 void aurora_set_skip_unready_pipelines(bool enabled);
 bool aurora_get_skip_unready_pipelines();
 uint32_t aurora_get_queued_pipeline_count();
+// Writes every pipeline recipe still queued for pipeline_cache.db and stops the writer thread.
+// For exit paths that skip aurora_shutdown (e.g. ExitProcess on window close); recipes queued
+// after this call are not persisted.
+void aurora_flush_pipeline_cache();
 
 // Controls whether display copies bypass the Wii's vertical copy filter.
 void aurora_set_disable_copy_filter(bool disabled);

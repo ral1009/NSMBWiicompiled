@@ -1216,6 +1216,11 @@ void shutdown_pipeline_cache() {
   createdPipelines = 0;
 }
 
+void flush_pipeline_cache() {
+  // stop_pipeline_cache_writer() lets the writer finish its queue before joining it.
+  stop_pipeline_cache_writer();
+}
+
 void begin_pipeline_frame() {
   g_pipelineFrameActive = true;
   if (!g_hasPipelineThread) {
@@ -1300,3 +1305,5 @@ void aurora_set_skip_unready_pipelines(const bool enabled) { aurora::gfx::set_sk
 bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipelines(); }
 
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
+
+void aurora_flush_pipeline_cache() { aurora::gfx::flush_pipeline_cache(); }
