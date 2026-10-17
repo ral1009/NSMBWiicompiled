@@ -45,6 +45,7 @@ $required = @(
     'SDL3.dll', 'webgpu_dawn.dll', 'dxcompiler.dll', 'dxil.dll',
     'libc++.dll', 'libunwind.dll', 'libpng16.dll', 'libz.dll',
     'dsp_coef.bin',                             # AX mixer resampling table (ax_mix.cpp)
+    'initial_pipeline_cache.db',                # seed shader recipes (merge_pipeline_cache.py)
     'wii_bootstrap\shared2\wc24\nwc24msg.cfg'   # first-run NAND seed (nand_path.h)
 )
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $B $_)) }
@@ -53,7 +54,7 @@ if ($missing) { throw "build_nsmbw is missing: $($missing -join ', ') - rebuild 
 $pkg = Join-Path $OutDir "NSMBWCompiled"
 if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg -Confirm:$false }
 New-Item -ItemType Directory -Force $pkg | Out-Null
-Copy-Item (Join-Path $B 'NSMBWCompiled.exe'), (Join-Path $B 'dsp_coef.bin') $pkg
+Copy-Item (Join-Path $B 'NSMBWCompiled.exe'), (Join-Path $B 'dsp_coef.bin'), (Join-Path $B 'initial_pipeline_cache.db') $pkg
 Get-ChildItem $B -Filter *.dll | Copy-Item -Destination $pkg
 Copy-Item -Recurse (Join-Path $B 'wii_bootstrap') $pkg
 Copy-Item (Join-Path $tools 'PLAYING.txt') $pkg

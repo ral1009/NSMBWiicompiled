@@ -708,11 +708,20 @@ namespace {
 //    while loading it (Windows event log: 0xC0000409 in ucrtbase, right after "Using framebuffer
 //    size"; a fresh Cache/ booted immediately). Wiping it unconditionally would cost a full shader
 //    recompile and skipped draws on every launch, so a marker file records whether the last run
-//    reached a clean exit instead.
+//    got through the boot prewarm: it is removed once the pipeline queue first drains (product
+//    event hook), on a clean exit and on window close.
 //
 // This runs before aurora_initialize (which reads Config.toml) and before any guest code (which
 // reads the NAND). Set NSMBW_KEEP_STATE=1 to skip all three for a run that should carry state over.
 constexpr const char* kCrashMarkerName = ".last_run_unclean";
+// Set once the marker is armed; cleared (file removed) by ClearCrashMarker.
+std::string g_crashMarkerPath;
+
+void ClearCrashMarker() noexcept {
+    if (g_crashMarkerPath.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(g_crashMarkerPath, ec);
+}
 
 void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
     if (AURORA_ENV("NSMBW_KEEP_STATE") != nullptr) {
@@ -817,14 +826,10 @@ int main() {
         const auto cacheDir = NsmbwDataDir() / "Cache";
         std::filesystem::create_directories(cacheDir, ec);
         ResetPersistentStateForCleanRun(cacheDir);
-        static const std::string markerPath = (cacheDir / kCrashMarkerName).string();
-        static constexpr auto clearMarker = +[] {
-            std::error_code ec2;
-            std::filesystem::remove(markerPath, ec2);
-        };
-        std::atexit(clearMarker);
+        g_crashMarkerPath = (cacheDir / kCrashMarkerName).string();
+        std::atexit(+[] { ClearCrashMarker(); });
         // Closing the window exits through ExitProcess, which never runs atexit handlers.
-        g_beforeWindowCloseExit = clearMarker;
+        g_beforeWindowCloseExit = +[] { ClearCrashMarker(); };
     }
 #if defined(_WIN32)
     ::AddVectoredExceptionHandler(1, DiagVectoredExceptionHandler);
@@ -869,6 +874,16 @@ int main() {
     // Per-context action bindings (rebind capture reads events) and controller glyphs for the
     // in-text button icons; both driven by the overlay's per-frame event batch and F10 menu.
     settings_overlay::SetProductEventHook(+[](const AuroraEvent* events) noexcept {
+        // The crash marker only guards the boot-time pipeline prewarm (the 2026-09-19 abort was
+        // inside it, reading a cache a killed run had left half-written). Once that queue has
+        // drained, a later crash or force-kill says nothing about the cache, and wiping it then
+        // cost the next launch a full recompile: every run_nsmbw.ps1 test run started cold.
+        static bool prewarmMarkerCleared = false;
+        static uint32_t hookFrames = 0;
+        if (!prewarmMarkerCleared && ++hookFrames > 60 && aurora_get_queued_pipeline_count() == 0) {
+            prewarmMarkerCleared = true;
+            ClearCrashMarker();
+        }
         nsmbw_controls::HandleEvents(events);
         nsmbw_button_glyphs::HandleEvents(events);
         // NSMBW_LOG_INTERP: every 2 s, why presented FPS is below the interpolation target - frames
@@ -898,6 +913,12 @@ int main() {
                              static_cast<unsigned long long>(hist[3] - prevHist[3]));
                 prevGameFrames = gameFrames;
                 for (int i = 0; i < 4; ++i) prevHist[i] = hist[i];
+                {
+                    extern std::atomic<uint64_t> g_schedulerIdleSleepNanos;
+                    const uint64_t idle = g_schedulerIdleSleepNanos.exchange(0, std::memory_order_relaxed);
+                    std::fprintf(stderr, "[nsmbw][interp]   game thread idle (spare time): %.0f ms per 2 s (%.0f%%)\n",
+                                 idle / 1e6, idle / 2e7);
+                }
                 {
                     uint64_t drainTotal = 0, drainMax = 0;
                     aurora_consume_fifo_drain_wait(&drainTotal, &drainMax);

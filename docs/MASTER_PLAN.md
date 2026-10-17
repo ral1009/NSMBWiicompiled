@@ -938,3 +938,29 @@ What's next:
 - Developer: test the fixed build on the Iris Xe laptop, ideally with `NSMBW_LOG_INTERP=1` and `AURORA_LOG_TEXTURE_STATS=1`. If it still starts at 30 fps, profile there (`NSMBW_PROFILE_SAMPLER=1`); this machine can't reproduce a slow baseline.
 - Cache plan items 2-4 from the entry above are unchanged.
 
+
+## 2026-10-16 (night) — Laptop confirmed; seed pipeline cache; crash marker narrowed
+What I did:
+- **Laptop result** (developer's Iris Xe / i7-1355U log, build with the texture fix): a steady 59-60 fps at 1x for the whole session, with no decline. Texture counters stayed bounded (live ~400, static source cache ~230). 180 FPS interpolation held 165-180 presented fps, with occasional "Presenter fell behind" drops.
+- What was still slow there, read from the log:
+  - First launch: 17-26 fps for ~30 s and a 3.1 s freeze ("fifo drain wait ... longest 3108 ms") on the first world-map visit. That is first-use pipeline compiles with an empty cache.
+  - About 10 s at 10 fps after the texture area jumped from 60 to 182 Mtexel. That looks like a render-scale change in F10, which was GPU-bound on the Iris Xe; it is not confirmed which setting was used.
+- **Seed pipeline cache** (cache plan item 3): `projects/nsmbw/tools/merge_pipeline_cache.py` merged every local `pipeline_cache.db` into `projects/nsmbw/assets/pipeline/initial_pipeline_cache.db` (398 recipes, 1.6 MB). The build copies it next to the exe and the package script ships it.
+- **Crash marker narrowed** (cache plan item 2): it is now also cleared once the boot prewarm queue drains, so only a crash during that window wipes the cache.
+- Desktop measurements (new switches, both off by default):
+  - The game thread's spare time is now printed in `NSMBW_LOG_INTERP` ("game thread idle (spare time)"). It was 74-86% at 1x on this desktop, i.e. about 4 ms of work per 16.7 ms frame.
+  - `NSMBW_LOG_AUDIO_BACKLOG` now times every scheduler poll: ~900 polls/s and ~31 ms/s in total, about 3% of a core. The sampling profiler had attributed 5-7x more than that to `Audio_HLE_Poll` and the audio lock, so the sampler's numbers for small, frequently called functions are not reliable.
+  - 3D utilisation at 1x on the RTX 4060 was 6-23%.
+
+What broke / what I didn't expect:
+- The game thread was never the laptop's bottleneck: the CPU side has 3x headroom even on a slower core. The remaining laptop limits are GPU-side, and only show above 1x.
+
+What I learned:
+- A pipeline recipe cache is portable between machines because it stores state, not compiled code. Only the compile has to happen on each machine, and a background prewarm at boot hides it: 398 pipelines took 2.1 s here, against 150-590 ms freezes spread through the first minute without it.
+- Measure a function's cost directly (a timer around the call) before optimising what a sampling profiler blames. Here the two disagreed by 5-7x.
+
+What's next:
+- Grow the seed: merge caches from play sessions through later worlds (W2-W9, towers, castles, airships).
+- GPU cost on integrated GPUs above 1x: per-pass GPU timing (Dawn timestamp queries) to find which pass dominates. Candidates are EFB copies, the scaled tile cache and the presenter.
+- Texture plan item 4 (HD-pack prefetch, texture pooling) is low priority now: neither showed up as a hitch on the laptop.
+

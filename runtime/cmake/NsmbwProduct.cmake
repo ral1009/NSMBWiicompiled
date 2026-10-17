@@ -250,8 +250,16 @@ if(MKW_BUILD_NSMBW)
     # (2026-09-27) failed at NAND init ("Unable to initialize managed NAND",
     # runtime/include/nand_path.h:145) and then at AIInit (uncaught "Missing bundled Wii DSP
     # coefficient ROM (dsp_coef.bin)", runtime/src/hle/audio/ax_mix.cpp:54).
-    # MKW's initial_pipeline_cache.db is deliberately not copied: it holds pipeline recipes for
-    # Mario Kart's shaders, and aurora treats a missing seed as a warning.
+    # NSMBW's own seed pipeline cache (recipes collected from play sessions with
+    # projects/nsmbw/tools/merge_pipeline_cache.py; MKW's runtime/assets/pipeline copy holds Mario
+    # Kart's shaders). aurora merges it into the player's cache at boot and compiles every recipe in
+    # the background, so a first launch does not freeze mid-game on its first shader compiles
+    # (3.1 s on the first world-map visit on an Iris Xe, 2026-10-16).
+    set(NSMBW_PIPELINE_SEED "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/assets/pipeline/initial_pipeline_cache.db")
+    if(EXISTS "${NSMBW_PIPELINE_SEED}")
+        add_custom_command(TARGET NSMBWCompiled POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${NSMBW_PIPELINE_SEED}" "$<TARGET_FILE_DIR:NSMBWCompiled>/initial_pipeline_cache.db")
+    endif()
     set(NSMBW_WII_BOOTSTRAP_SOURCE_DIR "${MKW_RUNTIME_SOURCE_DIR}/assets/wii")
     if(NOT EXISTS "${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}/shared2/wc24")
         message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}")
