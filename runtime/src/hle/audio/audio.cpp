@@ -8,6 +8,7 @@
 #include "runtime_log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <chrono>
 #include <cstdio>
@@ -377,6 +378,9 @@ PPC_NATIVE_OVERRIDE(8015D57C, DSPAssertTask_8015d57c, uint32_t, (uint32_t taskPt
 
 // Each delivered block runs the AI DMA callback and deferred AX task callbacks before the
 // next block, preserving the SoundThread/DSP interleave order real hardware provides.
+extern std::atomic<uint64_t> g_pollCalls;
+extern std::atomic<uint64_t> g_pollNanos;
+
 namespace {
 // NSMBW_LOG_AUDIO_BACKLOG=1: every 2 s, the AI accumulator (wall-clock audio time owed to the guest
 // and not yet delivered as DMA blocks), blocks delivered vs. real time, and host time spent inside the
@@ -414,6 +418,11 @@ void LogAudioBacklog(int blocks, std::chrono::steady_clock::duration spent, doub
                  100.0 * static_cast<double>(windowBlocks) * blockDuration / elapsed,
                  static_cast<unsigned long long>(windowTicks), static_cast<unsigned long long>(windowCappedTicks),
                  std::chrono::duration<double, std::milli>(windowSpent).count(), elapsed);
+    const uint64_t polls = g_pollCalls.exchange(0, std::memory_order_relaxed);
+    const uint64_t pollNanos = g_pollNanos.exchange(0, std::memory_order_relaxed);
+    std::fprintf(stderr, "[nsmbw][audio]   scheduler polls=%llu (%.0f/s) total poll time=%.1f ms per %.1f s\n",
+                 static_cast<unsigned long long>(polls), static_cast<double>(polls) / elapsed,
+                 static_cast<double>(pollNanos) / 1e6, elapsed);
     windowStart = now;
     windowBlocks = windowTicks = windowCappedTicks = 0;
     windowSpent = {};
@@ -585,10 +594,23 @@ int64_t ConsumeAudioPollDeltaMicros()
 
 } // namespace
 
+// NSMBW_LOG_AUDIO_BACKLOG also times every scheduler poll (calls/s and total host time), the
+// ground truth for the profiler's attribution of idle-loop time to Audio_HLE_Poll.
+std::atomic<uint64_t> g_pollCalls{0};
+std::atomic<uint64_t> g_pollNanos{0};
+
 void Audio_HLE_Poll(CpuContext* ctx)
 {
+    static const bool timed = std::getenv("NSMBW_LOG_AUDIO_BACKLOG") != nullptr;
+    const auto start = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     MusicAttenuation::TickGuest();
     Audio_HLE_Tick(ctx, static_cast<uint32_t>(ConsumeAudioPollDeltaMicros()));
+    if (timed) {
+        g_pollCalls.fetch_add(1, std::memory_order_relaxed);
+        g_pollNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now() - start).count()),
+                              std::memory_order_relaxed);
+    }
 }
 
 void Audio_HLE_PollDeferred()

@@ -14,6 +14,13 @@
 #include "runtime_log.h"
 #include "os_internal.h"
 
+#include <atomic>
+#include <chrono>
+
+// Host time the guest scheduler spent asleep with nothing runnable: the game thread's spare time.
+// NSMBW_LOG_INTERP reports it per 2 s; near zero means the game thread is the frame-rate limit.
+std::atomic<uint64_t> g_schedulerIdleSleepNanos{0};
+
 namespace {
 void LinkMutexToThread(uint32_t threadPtr, uint32_t mutexPtr)
 {
@@ -370,7 +377,15 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
                 if (::Memory::Read32(kSchedulerPendingFlagAddr) != 0) {
                     break;
                 }
-                VI_HLE_WaitForNextRetracePoll();
+                {
+                    const auto sleepStart = std::chrono::steady_clock::now();
+                    VI_HLE_WaitForNextRetracePoll();
+                    g_schedulerIdleSleepNanos.fetch_add(
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now() - sleepStart)
+                                                  .count()),
+                        std::memory_order_relaxed);
+                }
             }
 
             OS__DisableInterrupts_801a65ac();
