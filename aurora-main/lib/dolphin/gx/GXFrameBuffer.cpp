@@ -175,6 +175,7 @@ struct CopyTexturePoolEntry {
   u32 scaledWidth = 0;
   u32 scaledHeight = 0;
   aurora::gfx::TextureHandle handle;
+  u32 lastUsedFrame = 0;
 };
 std::vector<CopyTexturePoolEntry> g_copyTexturePool;
   // Keep only a few reusable copy targets per destination.
@@ -195,6 +196,7 @@ aurora::gfx::TextureHandle acquire_copy_texture(const aurora::gx::GXState::CopyT
     }
     ++sameKey;
     if (it->scaledWidth == width && it->scaledHeight == height && it->handle.use_count() == 1) {
+      it->lastUsedFrame = aurora::gfx::current_frame();
       return it->handle;
     }
     ++it;
@@ -202,7 +204,7 @@ aurora::gfx::TextureHandle acquire_copy_texture(const aurora::gx::GXState::CopyT
 
   auto handle = create_copy_texture(width, height, texCopyFmt);
   if (sameKey < kCopyTexturePoolPerKey) {
-    g_copyTexturePool.push_back({key, width, height, handle});
+    g_copyTexturePool.push_back({key, width, height, handle, aurora::gfx::current_frame()});
   }
   return handle;
 }
@@ -240,7 +242,18 @@ void prune_copy_texture_pool(const void* dest) noexcept {
     g_copyTexturePool.clear();
     return;
   }
-  std::erase_if(g_copyTexturePool, [dest](const CopyTexturePoolEntry& entry) { return entry.key.dest == dest; });
+  // An eviction means the destination's RAM changed, which makes the cached copy's *contents*
+  // stale; the pool holds spare storage, which the next copy overwrites, so it is kept. Dropping
+  // it here made every copy to a destination the guest also flushes create a new GPU texture:
+  // NSMBW flushes its tileset atlas every frame, so each animated-tile copy (32x32, ~6 per frame
+  // in a level) allocated and freed one - 363 textures/s (AURORA_LOG_TEXTURE_STATS, 2026-10-16).
+  // Spares unused for kCopyTexturePoolIdleFrames are freed instead, so destinations that go away
+  // (a level change) do not pile up.
+  constexpr u32 kCopyTexturePoolIdleFrames = 600;
+  const u32 frame = aurora::gfx::current_frame();
+  std::erase_if(g_copyTexturePool, [frame](const CopyTexturePoolEntry& entry) {
+    return entry.handle.use_count() <= 1 && frame - entry.lastUsedFrame > kCopyTexturePoolIdleFrames;
+  });
 }
 } // namespace aurora::gx
 

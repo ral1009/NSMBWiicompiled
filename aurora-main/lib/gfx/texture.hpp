@@ -2,7 +2,9 @@
 #include <dolphin/gx.h>
 
 #include <atomic>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "common.hpp"
 
@@ -58,6 +60,7 @@ struct TextureRef {
   , mipCount(mipCount)
   , gxFormat(gxFormat) {
     g_liveTextureRefs.fetch_add(1, std::memory_order_relaxed);
+    g_createdTextureRefs.fetch_add(1, std::memory_order_relaxed);
     g_liveTextureTexels.fetch_add(texels(), std::memory_order_relaxed);
   }
   ~TextureRef() {
@@ -71,12 +74,18 @@ struct TextureRef {
   // by area without walking every cache. Texels of the base level; mips add at most a third.
   static inline std::atomic<int64_t> g_liveTextureRefs{0};
   static inline std::atomic<int64_t> g_liveTextureTexels{0};
+  static inline std::atomic<uint64_t> g_createdTextureRefs{0};
 
 private:
   int64_t texels() const noexcept {
     return static_cast<int64_t>(size.width) * size.height * std::max(size.depthOrArrayLayers, 1u);
   }
 };
+
+// AURORA_LOG_TEXTURE_STATS: counts GPU texture creations per label, so per-frame churn can be traced
+// to the code that creates it. take_texture_creation_counts returns and resets the counts.
+void note_texture_created(const char* label, uint32_t width, uint32_t height) noexcept;
+std::vector<std::pair<std::string, uint64_t>> take_texture_creation_counts() noexcept;
 
 TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 gxFormat,
                                     ArrayRef<uint8_t> data, bool tlut, const char* label) noexcept;

@@ -7,7 +7,13 @@
 #include "texture_convert.hpp"
 #include "../gx/gx_fmt.hpp"
 
+#include <absl/container/flat_hash_map.h>
+#include <fmt/format.h>
+
 #include <algorithm>
+#include <cstdlib>
+#include <mutex>
+#include <string>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -75,6 +81,28 @@ uint64_t calc_texture_size(wgpu::TextureFormat format, u32 width, u32 height, u3
     total += mipBytes;
   }
   return total;
+}
+
+namespace {
+std::mutex s_creationCountsMutex;
+absl::flat_hash_map<std::string, uint64_t> s_creationCounts;
+} // namespace
+
+void note_texture_created(const char* label, uint32_t width, uint32_t height) noexcept {
+  static const bool enabled = std::getenv("AURORA_LOG_TEXTURE_STATS") != nullptr;
+  if (!enabled) {
+    return;
+  }
+  std::lock_guard lock(s_creationCountsMutex);
+  ++s_creationCounts[fmt::format("{} {}x{}", label != nullptr ? label : "?", width, height)];
+}
+
+std::vector<std::pair<std::string, uint64_t>> take_texture_creation_counts() noexcept {
+  std::lock_guard lock(s_creationCountsMutex);
+  std::vector<std::pair<std::string, uint64_t>> counts(s_creationCounts.begin(), s_creationCounts.end());
+  s_creationCounts.clear();
+  std::sort(counts.begin(), counts.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+  return counts;
 }
 
 TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 format, ArrayRef<uint8_t> data,
@@ -149,6 +177,7 @@ TextureHandle new_dynamic_texture_2d(uint32_t width, uint32_t height, uint32_t m
                                      const char* label) noexcept {
   ZoneScopedS(3);
   mips = clamp_mip_count(width, height, mips, label);
+  note_texture_created(label, width, height);
   const auto wgpuFormat = to_wgpu(gxFormat);
   const wgpu::Extent3D size{
       .width = width,
@@ -178,6 +207,7 @@ TextureHandle new_dynamic_texture_2d(uint32_t width, uint32_t height, uint32_t m
 }
 
 TextureHandle new_render_texture(uint32_t width, uint32_t height, u32 gxFormat, const char* label) noexcept {
+  note_texture_created(label, width, height);
   ZoneScoped;
 
   const auto wgpuFormat = webgpu::g_graphicsConfig.surfaceConfiguration.format;
@@ -212,6 +242,7 @@ TextureHandle new_render_texture(uint32_t width, uint32_t height, u32 gxFormat, 
 }
 
 TextureHandle new_conv_texture(uint32_t width, uint32_t height, u32 gxFormat, const char* label) noexcept {
+  note_texture_created(label, width, height);
   ZoneScoped;
 
   const auto wgpuFormat = to_wgpu(gxFormat);

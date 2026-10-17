@@ -22,7 +22,18 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <chrono>
+#include <cstdio>
 #include <string_view>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include "png_io.hpp"
 #include "../fs_helper.hpp"
@@ -515,6 +526,8 @@ void evict_replacement_cache_if_needed() noexcept {
   }
 }
 
+void start_prefetch() noexcept;
+
 void build_index() noexcept {
   if (!g_config.allowTextureReplacements) {
     return;
@@ -572,6 +585,11 @@ void build_index() noexcept {
   }
 
   Log.info("Indexed {} texture replacements", s_replacementIndex.size());
+  // NSMBW sets the pack's on/off state before aurora_initialize builds this index, so set_enabled
+  // saw an empty index; start the prefetch here when the pack is already on.
+  if (s_enabled.load(std::memory_order_relaxed)) {
+    start_prefetch();
+  }
 }
 
 const ReplacementIndexEntry* find_replacement_path(const RuntimeTextureKey& key) noexcept {
@@ -637,8 +655,62 @@ gfx::TextureHandle upload_converted(const std::string& label, const ConvertedTex
   return handle;
 }
 
+// Host time spent loading pack files on demand (read + parse), for AURORA_LOG_TEXTURE_STATS.
+std::atomic<uint64_t> s_loadNanos{0};
+std::atomic<uint32_t> s_loadCount{0};
+
+// Reads every indexed pack file once on a background-priority thread and discards the bytes, so
+// the on-demand load on the game thread finds them in the OS file cache. Pack files are read
+// synchronously when a texture first appears; with a cold OS cache the read was ~3x slower
+// (read_binary_file: 123 vs 37 profiler samples in the boot window, 2026-10-16). Warming the OS
+// cache instead of holding the bytes ourselves keeps the memory reclaimable by Windows and cannot
+// change what is drawn.
+std::atomic<bool> s_prefetchStarted{false};
+
+void start_prefetch() noexcept {
+  if (s_replacementIndex.empty() || s_prefetchStarted.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  std::vector<std::filesystem::path> paths;
+  paths.reserve(s_replacementIndex.size());
+  for (const auto& [key, entry] : s_replacementIndex) {
+    paths.push_back(entry.path);
+  }
+  std::thread([paths = std::move(paths)] {
+#if defined(_WIN32)
+    // Background mode lowers both CPU and I/O priority, so the game's own reads go first.
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+#endif
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<char> buffer(1 << 20);
+    uint64_t bytes = 0;
+    for (const auto& path : paths) {
+#if defined(_WIN32)
+      std::FILE* file = _wfopen(path.c_str(), L"rb");
+#else
+      std::FILE* file = std::fopen(path.c_str(), "rb");
+#endif
+      if (file != nullptr) {
+        size_t n = 0;
+        while ((n = std::fread(buffer.data(), 1, buffer.size(), file)) > 0) {
+          bytes += n;
+        }
+        std::fclose(file);
+      }
+    }
+    Log.info("Prefetched {} texture pack files ({:.1f} MB) into the OS file cache in {:.1f} s", paths.size(),
+             static_cast<double>(bytes) / (1024.0 * 1024.0),
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+  }).detach();
+}
+
 gfx::TextureHandle load_replacement_texture(const RuntimeTextureKey& key, const ReplacementIndexEntry& entry) noexcept {
+  const auto loadStart = std::chrono::steady_clock::now();
   const auto replacement = load_replacement(entry);
+  s_loadNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - loadStart).count()),
+                        std::memory_order_relaxed);
+  s_loadCount.fetch_add(1, std::memory_order_relaxed);
   if (!replacement.has_value()) {
     s_failedKeys.insert(key);
     return {};
@@ -1106,6 +1178,14 @@ void set_enabled(bool enabled) noexcept {
   if (s_enabled.exchange(enabled, std::memory_order_relaxed) != enabled) {
     s_revision.fetch_add(1, std::memory_order_release);
   }
+  if (enabled && g_config.allowTextureReplacements) {
+    start_prefetch();
+  }
+}
+
+uint64_t take_load_nanos(uint32_t& count) noexcept {
+  count = s_loadCount.exchange(0, std::memory_order_relaxed);
+  return s_loadNanos.exchange(0, std::memory_order_relaxed);
 }
 
 bool enabled() noexcept { return g_config.allowTextureReplacements && s_enabled.load(std::memory_order_relaxed); }
