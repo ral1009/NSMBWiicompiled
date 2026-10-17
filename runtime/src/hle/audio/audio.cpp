@@ -378,6 +378,11 @@ PPC_NATIVE_OVERRIDE(8015D57C, DSPAssertTask_8015d57c, uint32_t, (uint32_t taskPt
 
 // Each delivered block runs the AI DMA callback and deferred AX task callbacks before the
 // next block, preserving the SoundThread/DSP interleave order real hardware provides.
+// NSMBW_LOG_AUDIO_BACKLOG: host time per stage of the block loop (mix-worker join, SDL push, the
+// guest's AI DMA callback, i.e. AX and nw4r::snd running as translated code).
+std::atomic<uint64_t> g_stageJoinNanos{0};
+std::atomic<uint64_t> g_stagePushNanos{0};
+std::atomic<uint64_t> g_stageCallbackNanos{0};
 extern std::atomic<uint64_t> g_pollCalls;
 extern std::atomic<uint64_t> g_pollNanos;
 
@@ -418,6 +423,9 @@ void LogAudioBacklog(int blocks, std::chrono::steady_clock::duration spent, doub
                  100.0 * static_cast<double>(windowBlocks) * blockDuration / elapsed,
                  static_cast<unsigned long long>(windowTicks), static_cast<unsigned long long>(windowCappedTicks),
                  std::chrono::duration<double, std::milli>(windowSpent).count(), elapsed);
+    std::fprintf(stderr, "[nsmbw][audio]   stages: mix-worker join %.1f ms, SDL push %.1f ms, guest callback %.1f ms\n",
+                 g_stageJoinNanos.exchange(0) / 1e6, g_stagePushNanos.exchange(0) / 1e6,
+                 g_stageCallbackNanos.exchange(0) / 1e6);
     const uint64_t polls = g_pollCalls.exchange(0, std::memory_order_relaxed);
     const uint64_t pollNanos = g_pollNanos.exchange(0, std::memory_order_relaxed);
     std::fprintf(stderr, "[nsmbw][audio]   scheduler polls=%llu (%.0f/s) total poll time=%.1f ms per %.1f s\n",
@@ -501,7 +509,10 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
         // that reads its PB write-back and aux buffers (__AXOutNewFrame via the AI DMA
         // callback), so the mix worker must finish first; the join also publishes its
         // aux-out shadow.
+        const auto stageJoin = std::chrono::steady_clock::now();
         AxDspHle::JoinMixWorker();
+        const auto stagePush = std::chrono::steady_clock::now();
+        g_stageJoinNanos.fetch_add(static_cast<uint64_t>((stagePush - stageJoin).count()), std::memory_order_relaxed);
 
         if (!EnsureAudioBackend(sampleRate)) {
             std::lock_guard<std::mutex> lock(g_ai.mutex);
@@ -511,6 +522,8 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
             }
         } else {
             const bool pushed = PushAudioBlock(startAddr, length);
+            g_stagePushNanos.fetch_add(
+                static_cast<uint64_t>((std::chrono::steady_clock::now() - stagePush).count()), std::memory_order_relaxed);
             if (!pushed) {
                 std::lock_guard<std::mutex> lock(g_ai.mutex);
                 if (!g_ai.loggedAccessFailure) {
@@ -533,7 +546,11 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
                 }
             } else {
                 Memory::TryWrite32(kAICallbackBusyAddr, 1);
+                const auto stageCallback = std::chrono::steady_clock::now();
                 InvokeIndirectCpu(callback, cpu);
+                g_stageCallbackNanos.fetch_add(
+                    static_cast<uint64_t>((std::chrono::steady_clock::now() - stageCallback).count()),
+                    std::memory_order_relaxed);
                 Memory::TryWrite32(kAICallbackBusyAddr, 0);
                 AxDspHle::ServiceDeferredCallbacks();
             }

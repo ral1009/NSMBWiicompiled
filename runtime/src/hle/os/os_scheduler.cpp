@@ -20,6 +20,11 @@
 // Host time the guest scheduler spent asleep with nothing runnable: the game thread's spare time.
 // NSMBW_LOG_INTERP reports it per 2 s; near zero means the game thread is the frame-rate limit.
 std::atomic<uint64_t> g_schedulerIdleSleepNanos{0};
+// Idle-loop sleeps entered (each ends in a host wakeup), reported next to the spare time. ~500/s
+// on the world map, driven by real guest work (an audio block every 3 ms wakes SoundThread), so
+// sleeping to the next timer/alarm/audio deadline instead of polling every 1 ms changed neither
+// the wakeup rate nor process CPU (34% of a core either way, 2026-10-16) and was dropped.
+std::atomic<uint64_t> g_schedulerIdleWakeups{0};
 
 namespace {
 void LinkMutexToThread(uint32_t threadPtr, uint32_t mutexPtr)
@@ -379,6 +384,7 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
                 }
                 {
                     const auto sleepStart = std::chrono::steady_clock::now();
+                    g_schedulerIdleWakeups.fetch_add(1, std::memory_order_relaxed);
                     VI_HLE_WaitForNextRetracePoll();
                     g_schedulerIdleSleepNanos.fetch_add(
                         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(

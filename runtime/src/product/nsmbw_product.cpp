@@ -915,9 +915,12 @@ int main() {
                 for (int i = 0; i < 4; ++i) prevHist[i] = hist[i];
                 {
                     extern std::atomic<uint64_t> g_schedulerIdleSleepNanos;
+                    extern std::atomic<uint64_t> g_schedulerIdleWakeups;
                     const uint64_t idle = g_schedulerIdleSleepNanos.exchange(0, std::memory_order_relaxed);
-                    std::fprintf(stderr, "[nsmbw][interp]   game thread idle (spare time): %.0f ms per 2 s (%.0f%%)\n",
-                                 idle / 1e6, idle / 2e7);
+                    const uint64_t wakeups = g_schedulerIdleWakeups.exchange(0, std::memory_order_relaxed);
+                    std::fprintf(stderr,
+                                 "[nsmbw][interp]   game thread idle (spare time): %.0f ms per 2 s (%.0f%%), %.0f idle wakeups/s\n",
+                                 idle / 1e6, idle / 2e7, wakeups / 2.0);
                 }
                 {
                     uint64_t drainTotal = 0, drainMax = 0;
