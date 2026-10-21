@@ -58,6 +58,9 @@ extern wgpu::RenderPipeline g_CopyPipeline;
 extern wgpu::BindGroup g_CopyBindGroup;
 extern wgpu::Instance g_instance;
 extern bool g_bcTexturesSupported;
+// AURORA_GPU_TIMING=1 and the adapter supports timestamp queries: render passes are GPU-timed
+// (gfx/common.cpp, gpu_timing).
+extern bool g_timestampQueriesEnabled;
 
 bool initialize(AuroraBackend backend);
 void shutdown();

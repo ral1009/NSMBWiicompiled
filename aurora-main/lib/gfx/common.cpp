@@ -1259,6 +1259,193 @@ void expire_bind_group_cache() noexcept {
 
 // Debug labels for the render passes. Formatting them per pass per slot costs a heap-allocating
 // fmt::format for a name nothing reads outside a capture.
+// AURORA_GPU_TIMING=1: GPU time per render pass from timestamp queries, logged every 2 s as totals
+// per kind of pass (size, native frame vs interpolated slot, render-to-texture or not). Added to
+// find what saturates the GPU on the world map at 4x with 180 FPS interpolation (presenter
+// "schedule wait" 25-45 ms per present, CPU stages all under 3 ms, 2026-10-21).
+namespace gpu_timing {
+constexpr uint32_t kMaxQueries = 2048; // two per pass: up to 1024 timed passes per submission
+constexpr size_t kBatches = 4;
+
+struct PassInfo {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  bool slot = false;
+  bool toTexture = false;
+};
+
+struct Batch {
+  wgpu::QuerySet querySet;
+  wgpu::Buffer resolveBuffer;
+  wgpu::Buffer readback;
+  std::vector<PassInfo> passes;
+  uint32_t used = 0;
+  uint32_t resolvedUpTo = 0;
+  bool busy = false;
+};
+
+struct Accum {
+  double ms = 0.0;
+  uint64_t count = 0;
+};
+
+std::mutex s_mutex;
+std::array<Batch, kBatches> s_batches;
+Batch* s_recording = nullptr;
+absl::flat_hash_map<std::string, Accum> s_accum;
+double s_windowMs = 0.0;
+uint64_t s_windowSubmissions = 0;
+std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
+
+void ensure_batch(Batch& batch) {
+  if (batch.querySet) {
+    return;
+  }
+  const wgpu::QuerySetDescriptor querySetDescriptor{
+      .label = "GPU timing queries",
+      .type = wgpu::QueryType::Timestamp,
+      .count = kMaxQueries,
+  };
+  batch.querySet = webgpu::g_device.CreateQuerySet(&querySetDescriptor);
+  const wgpu::BufferDescriptor resolveDescriptor{
+      .label = "GPU timing resolve",
+      .usage = wgpu::BufferUsage::QueryResolve | wgpu::BufferUsage::CopySrc,
+      .size = kMaxQueries * sizeof(uint64_t),
+  };
+  batch.resolveBuffer = webgpu::g_device.CreateBuffer(&resolveDescriptor);
+  const wgpu::BufferDescriptor readbackDescriptor{
+      .label = "GPU timing readback",
+      .usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst,
+      .size = kMaxQueries * sizeof(uint64_t),
+  };
+  batch.readback = webgpu::g_device.CreateBuffer(&readbackDescriptor);
+}
+
+// Fills `writes` for the pass about to begin; false when timing is off or no batch is free.
+bool begin_pass(wgpu::PassTimestampWrites& writes, uint32_t width, uint32_t height, bool slot, bool toTexture) {
+  if (!webgpu::g_timestampQueriesEnabled) {
+    return false;
+  }
+  std::lock_guard lock(s_mutex);
+  if (s_recording == nullptr) {
+    for (auto& batch : s_batches) {
+      if (!batch.busy) {
+        ensure_batch(batch);
+        batch.busy = true;
+        batch.used = 0;
+        batch.resolvedUpTo = 0;
+        batch.passes.clear();
+        s_recording = &batch;
+        break;
+      }
+    }
+    if (s_recording == nullptr) {
+      return false; // every batch is still being read back: skip timing this submission
+    }
+  }
+  Batch& batch = *s_recording;
+  if (batch.used + 2 > kMaxQueries) {
+    return false;
+  }
+  writes = wgpu::PassTimestampWrites{
+      .querySet = batch.querySet,
+      .beginningOfPassWriteIndex = batch.used,
+      .endOfPassWriteIndex = batch.used + 1,
+  };
+  batch.used += 2;
+  batch.passes.push_back({width, height, slot, toTexture});
+  return true;
+}
+
+// End of one render_impl: resolve the timestamps it wrote into the batch's readback buffer.
+void end_encode(const wgpu::CommandEncoder& cmd) {
+  std::lock_guard lock(s_mutex);
+  if (s_recording == nullptr || s_recording->used == s_recording->resolvedUpTo) {
+    return;
+  }
+  Batch& batch = *s_recording;
+  const uint32_t first = batch.resolvedUpTo;
+  const uint32_t count = batch.used - first;
+  cmd.ResolveQuerySet(batch.querySet, first, count, batch.resolveBuffer, first * sizeof(uint64_t));
+  cmd.CopyBufferToBuffer(batch.resolveBuffer, first * sizeof(uint64_t), batch.readback, first * sizeof(uint64_t),
+                         count * sizeof(uint64_t));
+  batch.resolvedUpTo = batch.used;
+}
+
+void log_window_locked() {
+  const auto now = std::chrono::steady_clock::now();
+  const double seconds = std::chrono::duration<double>(now - s_windowStart).count();
+  if (seconds < 2.0) {
+    return;
+  }
+  std::vector<std::pair<std::string, Accum>> rows(s_accum.begin(), s_accum.end());
+  std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
+  std::fprintf(stderr, "[aurora][gpu] %.1f ms GPU per second in timed passes (%.0f submissions/s, %.2f ms each)\n",
+               s_windowMs / seconds, static_cast<double>(s_windowSubmissions) / seconds,
+               s_windowSubmissions != 0 ? s_windowMs / static_cast<double>(s_windowSubmissions) : 0.0);
+  for (size_t i = 0; i < rows.size() && i < 10; ++i) {
+    std::fprintf(stderr, "[aurora][gpu]   %6.1f ms/s  %5.0f passes/s  %s\n", rows[i].second.ms / seconds,
+                 static_cast<double>(rows[i].second.count) / seconds, rows[i].first.c_str());
+  }
+  s_accum.clear();
+  s_windowMs = 0.0;
+  s_windowSubmissions = 0;
+  s_windowStart = now;
+}
+
+void on_mapped(Batch* batch, wgpu::MapAsyncStatus status, uint32_t queries) {
+  std::lock_guard lock(s_mutex);
+  if (status == wgpu::MapAsyncStatus::Success) {
+    const auto* ticks =
+        static_cast<const uint64_t*>(batch->readback.GetConstMappedRange(0, queries * sizeof(uint64_t)));
+    if (ticks != nullptr) {
+      for (size_t k = 0; k < batch->passes.size() && 2 * k + 1 < queries; ++k) {
+        const uint64_t begin = ticks[2 * k];
+        const uint64_t end = ticks[2 * k + 1];
+        if (end <= begin) {
+          continue;
+        }
+        const auto& pass = batch->passes[k];
+        const double ms = static_cast<double>(end - begin) / 1e6; // WebGPU timestamps are nanoseconds
+        auto& row = s_accum[fmt::format("{} {}x{}{}", pass.slot ? "slot  " : "native", pass.width, pass.height,
+                                        pass.toTexture ? " -> texture" : "")];
+        row.ms += ms;
+        ++row.count;
+        s_windowMs += ms;
+      }
+      ++s_windowSubmissions;
+    }
+    batch->readback.Unmap();
+  }
+  batch->busy = false;
+  log_window_locked();
+}
+
+// After the submission that carried the resolves: start reading the batch back.
+void after_submit() {
+  Batch* batch = nullptr;
+  uint32_t queries = 0;
+  {
+    std::lock_guard lock(s_mutex);
+    if (s_recording == nullptr) {
+      return;
+    }
+    batch = s_recording;
+    s_recording = nullptr;
+    queries = batch->resolvedUpTo;
+    if (queries == 0) {
+      batch->busy = false;
+      return;
+    }
+  }
+  // Outside the lock: an AllowSpontaneous callback may run inside MapAsync itself.
+  batch->readback.MapAsync(wgpu::MapMode::Read, 0, queries * sizeof(uint64_t), wgpu::CallbackMode::AllowSpontaneous,
+                           [batch, queries](wgpu::MapAsyncStatus status, wgpu::StringView) {
+                             on_mapped(batch, status, queries);
+                           });
+}
+} // namespace gpu_timing
+
 static const char* render_pass_label(u32 index) noexcept {
   static constexpr std::array<const char*, 16> kRenderPassLabels{
       "Render pass 0",  "Render pass 1",  "Render pass 2",  "Render pass 3",
@@ -1339,12 +1526,17 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         .depthStoreOp = wgpu::StoreOp::Store,
         .depthClearValue = passInfo.clearDepthValue,
     };
-    const wgpu::RenderPassDescriptor renderPassDescriptor{
+    wgpu::RenderPassDescriptor renderPassDescriptor{
         .label = render_pass_label(i),
         .colorAttachmentCount = attachments.size(),
         .colorAttachments = attachments.data(),
         .depthStencilAttachment = &depthStencilAttachment,
     };
+    wgpu::PassTimestampWrites timestampWrites{};
+    if (gpu_timing::begin_pass(timestampWrites, passInfo.targetSize.width, passInfo.targetSize.height,
+                               interpolatedFrame >= 0, static_cast<bool>(passInfo.resolveTarget))) {
+      renderPassDescriptor.timestampWrites = &timestampWrites;
+    }
 
     auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
     render_pass_impl(pass, renderPasses, i, interpolatedFrame);
@@ -1480,6 +1672,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
       }
     }
   }
+  gpu_timing::end_encode(cmd);
   if (finalize) {
     recycle_render_passes(renderPasses);
   }
@@ -1524,6 +1717,7 @@ void render(wgpu::CommandEncoder& cmd, int32_t interpolatedFrame, bool finalize)
 }
 
 void after_submit() noexcept {
+  gpu_timing::after_submit();
   depth_peek::after_submit();
   efb_ram::after_submit();
   // Retire this frame's completed GPU work. Dawn only reclaims destroyed resources inside a device

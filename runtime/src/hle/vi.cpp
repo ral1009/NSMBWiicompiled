@@ -604,6 +604,14 @@ std::atomic<uint64_t> g_viPresentedXfbFrames{0};
 std::atomic<uint64_t> g_viRetracesPerFrame[4]{};
 // [kept up, late][count, production us sum, end_frame us sum, production us max, end_frame us max].
 std::atomic<uint64_t> g_viFrameTiming[2][5]{};
+// NSMBW_LOG_INTERP: paced presents (each stamps a presentation anchor), presents whose anchor was
+// pushed past the next boundary because it collided with the previous one, and the anchor's lead
+// over "now" when stamped (sum and max, ns). Added for the world map at 4x/180 presenting ~42 fps
+// with the presenter sleeping 25-45 ms per present until presentAt (2026-10-21).
+std::atomic<uint64_t> g_viPacedPresents{0};
+std::atomic<uint64_t> g_viAnchorBumps{0};
+std::atomic<uint64_t> g_viAnchorLeadSumNanos{0};
+std::atomic<uint64_t> g_viAnchorLeadMaxNanos{0};
 
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
@@ -659,8 +667,19 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         uint64_t anchorNanos = baseNanos + intervalNanos;
         if (s_lastPresentAnchorNanos != 0 && anchorNanos <= s_lastPresentAnchorNanos) {
             anchorNanos = s_lastPresentAnchorNanos + intervalNanos;
+            g_viAnchorBumps.fetch_add(1, std::memory_order_relaxed);
         }
         s_lastPresentAnchorNanos = anchorNanos;
+        {
+            g_viPacedPresents.fetch_add(1, std::memory_order_relaxed);
+            const auto nowNanos = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
+            const uint64_t lead = anchorNanos > nowNanos ? anchorNanos - nowNanos : 0;
+            g_viAnchorLeadSumNanos.fetch_add(lead, std::memory_order_relaxed);
+            uint64_t prevMax = g_viAnchorLeadMaxNanos.load(std::memory_order_relaxed);
+            while (lead > prevMax && !g_viAnchorLeadMaxNanos.compare_exchange_weak(prevMax, lead)) {
+            }
+        }
         aurora_set_present_schedule(anchorNanos, intervalNanos);
     } else {
         // Retrace-context presents (VI black, boot) have no display period of

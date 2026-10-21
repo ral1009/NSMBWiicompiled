@@ -744,8 +744,11 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
     // Only for test runs (the self-test, or NSMBW_RESET_WINDOW=1), which want consistent 640x480
     // windowed captures. A player's window/fullscreen choice is otherwise kept: resetting it on
     // every launch was an open release blocker (issues.md, 2026-09-27).
+    // NSMBW_KEEP_WINDOW=1 keeps the configured display mode in a self-test run, for measurements that
+    // depend on it (borderless 2560x1417 vs the 640x480 test window, 2026-10-21).
     const bool resetWindow =
-        AURORA_ENV("NSMBW_AUTO_PRESS_SELFTEST") != nullptr || AURORA_ENV("NSMBW_RESET_WINDOW") != nullptr;
+        (AURORA_ENV("NSMBW_AUTO_PRESS_SELFTEST") != nullptr || AURORA_ENV("NSMBW_RESET_WINDOW") != nullptr) &&
+        AURORA_ENV("NSMBW_KEEP_WINDOW") == nullptr;
     constexpr float kMaxStartupResolutionScale = 4.0f;
     if (resetWindow) {
         bool wroteVideo = RuntimeConfigFile::SetDisplayMode("windowed") && RuntimeConfigFile::SetWindowSize(640u, 480u);
@@ -921,6 +924,28 @@ int main() {
                     std::fprintf(stderr,
                                  "[nsmbw][interp]   game thread idle (spare time): %.0f ms per 2 s (%.0f%%), %.0f idle wakeups/s\n",
                                  idle / 1e6, idle / 2e7, wakeups / 2.0);
+                    // New pipelines compiled in this window and how many are still queued: a scene
+                    // whose models pop in late while these are non-zero is waiting on shader compiles
+                    // (draws whose pipeline isn't ready are skipped, aurora_set_skip_unready_pipelines).
+                    extern std::atomic<uint64_t> g_viPacedPresents;
+                    extern std::atomic<uint64_t> g_viAnchorBumps;
+                    extern std::atomic<uint64_t> g_viAnchorLeadSumNanos;
+                    extern std::atomic<uint64_t> g_viAnchorLeadMaxNanos;
+                    const uint64_t paced = g_viPacedPresents.exchange(0);
+                    const uint64_t bumps = g_viAnchorBumps.exchange(0);
+                    const uint64_t leadSum = g_viAnchorLeadSumNanos.exchange(0);
+                    const uint64_t leadMax = g_viAnchorLeadMaxNanos.exchange(0);
+                    std::fprintf(stderr,
+                                 "[nsmbw][interp]   paced presents: %llu per 2 s, anchor bumped %llu, anchor lead avg %.1f ms max %.1f ms\n",
+                                 static_cast<unsigned long long>(paced), static_cast<unsigned long long>(bumps),
+                                 paced != 0 ? static_cast<double>(leadSum) / static_cast<double>(paced) / 1e6 : 0.0,
+                                 static_cast<double>(leadMax) / 1e6);
+                    static uint32_t prevCreated = 0;
+                    const AuroraStats* stats = aurora_get_stats();
+                    const uint32_t created = stats != nullptr ? stats->createdPipelines : 0;
+                    std::fprintf(stderr, "[nsmbw][interp]   pipelines: %u compiled, %u queued\n", created - prevCreated,
+                                 aurora_get_queued_pipeline_count());
+                    prevCreated = created;
                 }
                 {
                     uint64_t drainTotal = 0, drainMax = 0;

@@ -69,6 +69,7 @@ wgpu::Instance g_instance;
 static wgpu::AdapterInfo g_adapterInfo;
 static wgpu::SurfaceCapabilities g_surfaceCapabilities;
 bool g_bcTexturesSupported;
+bool g_timestampQueriesEnabled;
 // Written by Dawn's device-loss callback and consumed at ordered frame boundaries. Keep the
 // callback free of logging, allocation, teardown and renderer state mutation.
 static std::atomic_bool g_deviceLost{false};
@@ -822,6 +823,11 @@ bool initialize(AuroraBackend auroraBackend) {
       const auto feature = supportedFeatures.features[i];
       if (feature == wgpu::FeatureName::TextureCompressionBC) {
         g_bcTexturesSupported = true;
+        requiredFeatures.push_back(feature);
+      }
+      // Only on request: timestamp queries add work to every timed pass.
+      if (feature == wgpu::FeatureName::TimestampQuery && std::getenv("AURORA_GPU_TIMING") != nullptr) {
+        g_timestampQueriesEnabled = true;
         requiredFeatures.push_back(feature);
       }
       // The presenter calls device and queue methods while the frame worker encodes, which Dawn only

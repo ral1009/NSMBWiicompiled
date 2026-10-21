@@ -39,6 +39,7 @@ constexpr uint32_t kWpadButtonA = 1u << 11;
 // Sideways-remote "screen right" is the remote's DOWN bit (see nsmbw_kpad_overrides.cpp).
 constexpr uint32_t kWpadScreenRight = 1u << 2;
 constexpr uint32_t kWpadButton2 = 1u << 8;
+constexpr uint32_t kWpadMinus = 1u << 12;
 
 // DIAGNOSTIC (temporary): NSMBW_WATCH_WMOBJ. The world map's teardown (func_808DC2D0, after the
 // wipe-out into a level) deletes the 56-byte object at *(0x8099FDFC) through its vtable and
@@ -239,6 +240,23 @@ void NsmbwDiagWatch() {
         if (stopInLevel && inLevel) {
             g_nsmbwSelfTestPressBits = 0;
             return;
+        }
+        // NSMBW_AUTO_PRESS_MAP_MINUS_TICK=<n>: hold - for ticks n..n+5 of the first map visit (opens
+        // Select World), for scripted runs of that menu; a keyboard press from a script needs the
+        // window in the foreground, which Windows does not reliably grant (2026-10-21).
+        static const int mapMinusTick = [] {
+            const char* v = AURORA_ENV("NSMBW_AUTO_PRESS_MAP_MINUS_TICK");
+            return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : -1;
+        }();
+        static bool mapMinusDone = false;
+        if (mapMinusTick >= 0 && onMap && !mapMinusDone && mapTicks >= mapMinusTick) {
+            if (mapTicks < mapMinusTick + 6) {
+                g_nsmbwSelfTestPressBits |= kWpadMinus;
+            } else {
+                g_nsmbwSelfTestPressBits &= ~kWpadMinus;
+                mapMinusDone = true;
+                std::fprintf(stderr, "[nsmbw][diag] self-test: pressed - on the world map (tick %d)\n", mapTicks);
+            }
         }
         const bool walkInLevel = inLevel && levelTicks >= 120 && levelTicks < 600;
         const bool jumpHeld = walkInLevel && ((levelTicks / 30) % 2) == 0; // re-press 2 every second

@@ -992,3 +992,26 @@ What I learned:
 What's next:
 - The to-do list: confirm the seed on the laptop, GPU per-pass timing, grow the seed list.
 
+
+## 2026-10-21 — Select World on the laptop, colored locked worlds (not a bug), map FPS at 4x/180
+What I did:
+- **Select World slow on the Iris Xe** (developer report: models take long to appear, FPS halves; not visible on the desktop). On the desktop, opening the menu compiled no pipelines (its recipes are already in the seed) and created 130 GPU textures in one 2 s window (the world models). Not yet confirmed on the laptop. Two suspects: the texture burst, and the HD pack, where 277 of 312 textures are 256 px or larger with no mipmaps. A *mipmap* is a chain of pre-shrunk copies the GPU samples when a texture is drawn small; without one, small-on-screen models read scattered texels from the full-size image, which is expensive on an integrated GPU.
+- **"All worlds colored on a new save" was my test artifact.** Locked worlds get their dark look from fog. Three runs ran back to back in one PowerShell process, and the `NSMBW_DEBUG_NO_FOG=1` from the second run leaked into the "baseline" third run. Bisecting the copy-target fix (7c39bcf) showed dark silhouettes both with and without it. Test scripts now clear the variables they set.
+- **World map ~55 fps vs 180 in levels at 4x/180** (developer, desktop). With the game window in front, my runs gave 173-180 on the map and in levels at 640x480, and 180 in a level at the developer's settings (borderless 2560x1417). With the window not in front, the map dropped to 110-140 fps and the game's GPU load rose from ~53-60% to 75-86%. That fits Windows compositing a window that cannot present directly. Not reproduced with the window in front; waiting for the developer's `NSMBW_LOG_INTERP` log.
+- New diagnostics (all off by default):
+  - `AURORA_GPU_TIMING=1`: GPU time per render pass from timestamp queries, summed every 2 s by pass size, native frame vs interpolated slot, and render-to-texture or not. It does not yet cover resolve/copy passes or the presenter blit.
+  - `NSMBW_LOG_INTERP` now also prints pipelines compiled and queued, paced presents, anchor bumps and the presentation anchor's lead.
+  - `NSMBW_AUTO_PRESS_MAP_MINUS_TICK=<n>`: the self-test presses - on the map, which opens Select World without keyboard focus.
+  - `NSMBW_KEEP_WINDOW=1`: keeps the configured display mode in a self-test run.
+
+What broke / what I didn't expect:
+- Several measurements were wrong before they were right: Windows "GPU utilisation" at low load swung 11-46% between identical runs; keyboard input from a script reaches the game only if its window is in front (an Alt tap to force focus opened the map's free-look); and a covered game window cut the map from 180 to 40-140 fps.
+- The GPU timer showed the map re-runs about 2.5 full-screen render-to-texture passes per interpolated slot (195 ms/s at 4x/180). Levels do similar work (130-156 ms/s), so it does not explain the map/level difference.
+
+What I learned:
+- Whether the game window is in front changes GPU cost and presentation substantially. Check focus before trusting any FPS measurement.
+- Environment variables set with `[Environment]::SetEnvironmentVariable(..., 'Process')` persist for the rest of that PowerShell process, so back-to-back test runs inherit each other's switches.
+
+What's next:
+- The developer's map log at their settings; laptop Select World with and without the HD pack (a mipmap fix if the pack is the cause).
+
