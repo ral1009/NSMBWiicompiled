@@ -1034,3 +1034,18 @@ What's next:
 - Confirm on the Iris Xe laptop that Select World no longer halves the frame rate (its memory bandwidth is far lower, so the old copies would have hit it harder).
 - The map still makes ~66 full-frame snapshots per submission for copies that are not shader-sampled (exact copies are already cropped, so these are likely large copies); worth a look if the map ever limits a slower GPU.
 
+
+## 2026-10-26 — Stability audit: lock order around Dawn callbacks
+What I did:
+- After the GPU-timer deadlock (2026-10-25) I checked every mutex that a Dawn map callback also takes. Two more modules, EFB RAM readback and depth peek, called Dawn while holding such a mutex. Both now claim a slot under the lock and do the Dawn work outside it (details in `docs/issues.md`). The EFB readback one is on the normal play path, not just a diagnostic.
+
+What broke / what I didn't expect:
+- My first A/B loop silently ran the same exe four times: `Copy-Item` failed because the just-killed process still held the file. The rerun retried the copy until it succeeded and printed each exe's hash to prove the swap.
+- The same binary measured 130-145 fps in some runs and 180 in others, with GPU time per second doubling for identical work. Single runs on this desktop are not enough to call a few-percent regression either way.
+
+What I learned:
+- The lock-order rule from the timer fix generalises into a checklist: for any lock a library callback takes, nothing that calls into the library may run while holding it. Claim under the lock, work outside, publish under the lock.
+
+What's next:
+- Remaining audit candidates are listed in chat (WebGPU validation errors are fatal; re-key hashing cost; HD-pack textures without mipmaps on the laptop).
+

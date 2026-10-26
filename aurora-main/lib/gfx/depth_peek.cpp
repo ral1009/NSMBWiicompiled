@@ -49,6 +49,8 @@ struct LatestSnapshot {
 
 enum class SlotState : uint8_t {
   Available,
+  // Claimed by encode_frame_snapshot, which (re)creates its buffers outside g_mutex.
+  Preparing,
   CopySubmitted,
   MapPending,
 };
@@ -266,16 +268,18 @@ bool ensure_slot(Slot& slot, uint32_t width, uint32_t height) {
   return slot.storageBuffer && slot.readbackBuffer && slot.paramsBuffer;
 }
 
-Slot* find_available_slot(uint32_t width, uint32_t height) {
+// Claims an available slot (state -> Preparing) without touching its buffers: ensure_slot creates
+// and releases Dawn buffers, which must not happen under g_mutex. complete_slot runs as an
+// AllowSpontaneous map callback, possibly under Dawn's device lock, and takes g_mutex, so a Dawn
+// call under g_mutex can deadlock against it (the same inversion froze the GPU timer, 2026-10-25).
+Slot* claim_available_slot() {
   for (size_t i = 0; i < g_slots.size(); ++i) {
     const size_t idx = (g_nextSlot + i) % g_slots.size();
     auto& slot = g_slots[idx];
     if (slot.state != SlotState::Available) {
       continue;
     }
-    if (!ensure_slot(slot, width, height)) {
-      continue;
-    }
+    slot.state = SlotState::Preparing;
     g_nextSlot = (idx + 1) % g_slots.size();
     return &slot;
   }
@@ -362,10 +366,20 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
   wgpu::Buffer readbackBuffer;
   wgpu::Buffer paramsBuffer;
   uint64_t byteSize = 0;
+  Slot* slot = nullptr;
   {
     std::lock_guard lock{g_mutex};
-    auto* slot = find_available_slot(dstSize.x, dstSize.y);
+    slot = claim_available_slot();
     if (slot == nullptr) {
+      return;
+    }
+  }
+  // The claimed slot is ours until it is handed back, so its buffers are (re)created unlocked.
+  const bool ready = ensure_slot(*slot, dstSize.x, dstSize.y);
+  {
+    std::lock_guard lock{g_mutex};
+    if (!ready) {
+      slot->state = SlotState::Available;
       return;
     }
     slot->state = SlotState::CopySubmitted;

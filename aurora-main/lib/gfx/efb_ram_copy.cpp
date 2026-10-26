@@ -51,9 +51,18 @@ struct Download {
 
 enum class AsyncState : uint8_t {
   Idle,
+  // Claimed by encode_async_downloads, which fills the slot outside g_asyncMutex.
+  Encoding,
   CopySubmitted,
   MapPending,
 };
+
+// Lock order: no Dawn call is made while g_asyncMutex is held. complete_async_slot runs as an
+// AllowSpontaneous map callback, which Dawn can invoke while holding its own device lock, and it takes
+// g_asyncMutex; a Dawn call made under g_asyncMutex (CreateBuffer, a texture creation, recording a
+// copy) could then wait on the device lock held by that callback's thread - a deadlock. The same
+// inversion froze the GPU timer within seconds on 2026-10-25. A slot is claimed under the lock
+// (Encoding) and filled outside it; the callback only touches slots it mapped (MapPending).
 
 // One readback per destination address, reused for that destination's lifetime: the probe hits
 // the same buffer every frame, so pooling avoids a per-frame allocation.
@@ -401,12 +410,19 @@ void cancel() noexcept {
 }
 
 void seal_async_downloads() noexcept {
+  // Look the slots up under the lock, create textures outside it (see the lock-order note). The map
+  // is node-based, so the slot pointers stay valid; nativeTexture is never read by the callback.
+  std::vector<AsyncSlot*> slots;
+  slots.reserve(g_asyncPending.size());
   {
     std::lock_guard lock{g_asyncMutex};
     for (auto& pending : g_asyncPending) {
       const auto it = g_asyncSlots.find(pending.dest);
-      ensure_native_texture(pending, it != g_asyncSlots.end() ? &it->second.nativeTexture : nullptr);
+      slots.push_back(it != g_asyncSlots.end() ? &it->second : nullptr);
     }
+  }
+  for (size_t i = 0; i < g_asyncPending.size(); ++i) {
+    ensure_native_texture(g_asyncPending[i], slots[i] != nullptr ? &slots[i]->nativeTexture : nullptr);
   }
   g_asyncSealed = std::move(g_asyncPending);
   g_asyncPending.clear();
@@ -419,18 +435,28 @@ void encode_async_downloads(const wgpu::CommandEncoder& encoder) noexcept {
   // Retire the previous frame's map first so its slot is free here, otherwise a single-slot
   // destination could only be sampled every other frame.
   drain_async_events();
-  std::lock_guard lock{g_asyncMutex};
-  for (auto& pending : g_asyncSealed) {
-    const auto it = g_asyncSlots.find(pending.dest);
-    if (it == g_asyncSlots.end()) {
-      continue;
+  // Claim the idle slots under the lock, record the copies without it (lock-order note above).
+  std::vector<std::pair<PendingCopy*, AsyncSlot*>> claimed;
+  claimed.reserve(g_asyncSealed.size());
+  {
+    std::lock_guard lock{g_asyncMutex};
+    for (auto& pending : g_asyncSealed) {
+      const auto it = g_asyncSlots.find(pending.dest);
+      if (it == g_asyncSlots.end()) {
+        continue;
+      }
+      // Only one readback per destination may be outstanding and the previous map still owns the
+      // pooled buffer. Dropping this request just leaves the guest on a slightly older probe.
+      if (it->second.state != AsyncState::Idle) {
+        continue;
+      }
+      it->second.state = AsyncState::Encoding;
+      claimed.emplace_back(&pending, &it->second);
     }
-    auto& slot = it->second;
-    // Only one readback per destination may be outstanding and the previous map still owns the pooled
-    // buffer. Dropping this request just leaves the guest on a slightly older probe.
-    if (slot.state != AsyncState::Idle) {
-      continue;
-    }
+  }
+  for (auto& [pendingPtr, slotPtr] : claimed) {
+    auto& pending = *pendingPtr;
+    auto& slot = *slotPtr;
     if (pending.nativeTexture) {
       encode_native_blit(encoder, pending);
     }
@@ -447,6 +473,7 @@ void encode_async_downloads(const wgpu::CommandEncoder& encoder) noexcept {
       slot.bufferSize = bufferSize;
     }
     if (!slot.buffer) {
+      slotPtr = nullptr; // released back to Idle below
       continue;
     }
     const wgpu::TexelCopyTextureInfo source{
@@ -474,7 +501,16 @@ void encode_async_downloads(const wgpu::CommandEncoder& encoder) noexcept {
     slot.hostWidth = texture->size.width;
     slot.hostHeight = texture->size.height;
     slot.order = texture_pixel_order(texture);
-    slot.state = AsyncState::CopySubmitted;
+  }
+  {
+    std::lock_guard lock{g_asyncMutex};
+    for (auto& [pendingPtr, slotPtr] : claimed) {
+      if (slotPtr != nullptr) {
+        slotPtr->state = AsyncState::CopySubmitted;
+      } else if (const auto it = g_asyncSlots.find(pendingPtr->dest); it != g_asyncSlots.end()) {
+        it->second.state = AsyncState::Idle;
+      }
+    }
   }
   g_asyncSealed.clear();
 }

@@ -618,6 +618,14 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: no Dawn call is made while holding the timer mutex. Resources are created once through `std::call_once`, resolves are recorded after the lock is released, and the readback is copied out and unmapped before the lock is taken (`gpu_timing` in `common.cpp`). Verified: runs complete and the scripted Select World press happens.
 - Scope: General (diagnostic only; off by default, so players were not affected).
 
+## 2026-10-26 — stability audit: lock-order inversions
+
+### EFB RAM readback and depth peek could deadlock the same way the GPU timer did
+- Symptom: none observed. Found by auditing every mutex that a Dawn map callback takes, after the 2026-10-25 GPU-timer deadlock.
+- Root cause: both use `AllowSpontaneous` map callbacks that take a module mutex (`complete_async_slot` takes `g_asyncMutex` in `efb_ram_copy.cpp`; `complete_slot` takes `g_mutex` in `depth_peek.cpp`). Dawn may run such a callback while holding its own device lock, and both modules called Dawn while holding their mutex: `seal_async_downloads` created textures and `encode_async_downloads` created buffers and recorded copies; depth peek's `find_available_slot` created and released buffers. That is the same two-locks-in-opposite-order pattern (a lock-order inversion: thread A holds lock 1 and waits for lock 2 while thread B holds lock 2 and waits for lock 1). The EFB readback path runs whenever the game reads back an EFB copy, so players could hit it; whether Dawn actually takes its lock on those calls in this build was not checked.
+- Fix: a slot is claimed under the mutex (new states `AsyncState::Encoding` / `SlotState::Preparing`, which the callbacks never touch), its Dawn work is done with the mutex released, and its state is published under the mutex afterwards. Verified: 8 scripted map + Select World runs at 4x/180 with `AURORA_GPU_TIMING=1` completed without a freeze; A/B with verified exe swaps gave 180 fps for both old and new builds. Both builds also showed runs at 130-145 fps, with GPU ms/s doubled for identical work, which is measurement noise (GPU clock state or background load), not this change.
+- Scope: General (aurora). Unconfirmed as a real-world hang cause; it is a removed risk, not a reproduced bug.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
