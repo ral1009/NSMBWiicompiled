@@ -604,6 +604,20 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: the same retire-and-reuse pattern (`s_staticPaletteSourceLatestVersion`, `take_previous_static_palette_source_version` in `aurora-main/lib/gx/gx.cpp`), checking both the texture and TLUT digests. Verified only that the build runs and renders; NSMBW does not exercise it.
 - Scope: General; Unconfirmed as a live bug.
 
+## 2026-10-25 — Select World frame rate, GPU timer deadlock
+
+### Select World dropped to ~55 fps at 4x/180 (full-frame resolve snapshots)
+- Symptom: opening Select World (-) on the world map at 4x with 180 FPS interpolation dropped the presented rate from 180 to 53-58 on an RTX 4060 (developer's log: the game thread waited ~1,500 ms per 2 s for the render worker). The GPU sat at ~100% while the timed render passes totalled only ~280 ms/s. The laptop's "frame rate halves in Select World" is probably the same cause; not confirmed there.
+- Root cause: before an EFB copy that also clears, aurora snapshots the copy source (`calculate_resolve_snapshot_rect`, `aurora-main/lib/gfx/common.cpp`). Upstream kept the snapshot full-target for shader-sampled or format-converted copies, citing MKW's DOF chain. At 4x that meant a 2560x2112 copy for every small (e.g. 128x128) copy: the menu made ~172 per submission, 9,500 copies/s, 51.7 Gtexel/s (~400 GB/s of reads and writes, more than the card's ~272 GB/s), against ~21 Gtexel/s on the plain map. Found with the new copy counters in `AURORA_GPU_TIMING`.
+- Fix: sampled and converted copies now snapshot only the source rectangle plus a 2-texel border; the copy shader samples nothing outside that (linear filtering and the copy filter read one neighbour, half-scale averages 2x2). `NSMBW_FULL_RESOLVE_SNAPSHOT=1` restores the old behaviour. Verified: Select World at 180 fps with snapshot traffic at 1.0 Gtexel/s (55 fps with the switch); screenshot A/B of Select World, the W1 map and 1-1 shows no visible difference.
+- Scope: General (aurora). Unconfirmed for MKW: the upstream comment says its depth-of-field chain needed full-target snapshots, and that hasn't been tested here.
+
+### The GPU timer deadlocked the game when enabled
+- Symptom: with `AURORA_GPU_TIMING=1` the game froze within seconds, intermittently. It showed up as test runs that never reached the menu, with logs ending early.
+- Root cause: the timer called Dawn (resource creation, ResolveQuerySet, GetConstMappedRange/Unmap) while holding its own mutex, and Dawn runs the AllowSpontaneous map callback (which takes that mutex) while holding its device lock. Two locks taken in opposite orders: a lock-order inversion.
+- Fix: no Dawn call is made while holding the timer mutex. Resources are created once through `std::call_once`, resolves are recorded after the lock is released, and the readback is copied out and unmapped before the lock is taken (`gpu_timing` in `common.cpp`). Verified: runs complete and the scripted Select World press happens.
+- Scope: General (diagnostic only; off by default, so players were not affected).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -635,3 +649,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Glyph downscaling and keycap icons (2026-10-12, `812ad7d`): not re-checked on screen.
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.
 - Seed pipeline cache coverage (2026-10-16): only W1-era scenes were collected; levels in later worlds still compile some pipelines on first visit. Merge caches from longer play sessions with `merge_pipeline_cache.py`.
+- Full-target resolve snapshots (2026-10-25): cropped for sampled/converted copies; MKW's depth-of-field chain, which the upstream comment says needed them, is untested with the crop (`NSMBW_FULL_RESOLVE_SNAPSHOT=1` to compare).

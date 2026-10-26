@@ -245,11 +245,15 @@ void run(const wgpu::CommandEncoder& cmd, const ConvRequest& req) {
           .clearValue = {0.0, 0.0, 0.0, 0.0},
       },
   };
-  const wgpu::RenderPassDescriptor renderPassDescriptor{
+  wgpu::RenderPassDescriptor renderPassDescriptor{
       .label = "TexPaletteConv Pass",
       .colorAttachmentCount = colorAttachments.size(),
       .colorAttachments = colorAttachments.data(),
   };
+  wgpu::PassTimestampWrites timestampWrites{};
+  if (gpu_timing_begin_pass(timestampWrites, "palette conv", req.dst->size.width, req.dst->size.height)) {
+    renderPassDescriptor.timestampWrites = &timestampWrites;
+  }
   const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
   pass.SetPipeline(pipeline);
   pass.SetBindGroup(0, bindGroup);

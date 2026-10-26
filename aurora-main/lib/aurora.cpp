@@ -1275,11 +1275,16 @@ void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
             .storeOp = wgpu::StoreOp::Store,
         },
     };
-    const wgpu::RenderPassDescriptor renderPassDescriptor{
+    wgpu::RenderPassDescriptor renderPassDescriptor{
         .label = "Interpolation snapshot pass",
         .colorAttachmentCount = attachments.size(),
         .colorAttachments = attachments.data(),
     };
+    wgpu::PassTimestampWrites timestampWrites{};
+    if (gfx::gpu_timing_begin_pass(timestampWrites, "present snapshot", image.texture.size.width,
+                                   image.texture.size.height)) {
+      renderPassDescriptor.timestampWrites = &timestampWrites;
+    }
     const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
     pass.SetPipeline(webgpu::g_CopyPipeline);
     pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
@@ -1302,17 +1307,23 @@ void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
             .storeOp = wgpu::StoreOp::Store,
         },
     };
-    const wgpu::RenderPassDescriptor renderPassDescriptor{
+    wgpu::RenderPassDescriptor renderPassDescriptor{
         .label = "Snapshot ImGui pass",
         .colorAttachmentCount = attachments.size(),
         .colorAttachments = attachments.data(),
     };
+    wgpu::PassTimestampWrites timestampWrites{};
+    if (gfx::gpu_timing_begin_pass(timestampWrites, "snapshot imgui", image.texture.size.width,
+                                   image.texture.size.height)) {
+      renderPassDescriptor.timestampWrites = &timestampWrites;
+    }
     const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
     pass.SetViewport(0.f, 0.f, static_cast<float>(image.texture.size.width),
                      static_cast<float>(image.texture.size.height), 0.f, 1.f);
     imgui::render(pass);
     pass.End();
   }
+  gfx::gpu_timing_end_encode(encoder);
 }
 #endif
 

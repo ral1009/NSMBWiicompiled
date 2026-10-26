@@ -31,6 +31,12 @@
 #include "tracy/Tracy.hpp"
 
 namespace aurora::gfx {
+// AURORA_GPU_TIMING: GPU work that cannot carry timestamps (copies outside render passes) is counted
+// instead, and reported with the per-pass totals (gpu_timing::log_window_locked).
+std::atomic<uint64_t> g_timingUploadCount{0};
+std::atomic<uint64_t> g_timingUploadBytes{0};
+std::array<std::atomic<uint64_t>, 3> g_timingCopyCountSite{}; // [0] resolve-source snapshot, [1] resolve copy, [2] copy ops (tile pastes)
+std::array<std::atomic<uint64_t>, 3> g_timingCopyTexelsSite{};
 static Module Log("aurora::gfx");
 
 using webgpu::g_device;
@@ -352,10 +358,15 @@ static ClipRect calculate_resolve_snapshot_rect(const wgpu::Extent3D& targetSize
       .width = static_cast<int32_t>(targetSize.width),
       .height = static_cast<int32_t>(targetSize.height),
   };
-  // Shader-sampled and converted copies can feed effects that read outside the copy rectangle
-  // (MKW's DOF chain), so keep those full-target. Exact copies have a closed, crop-safe footprint.
-  if (samplingPlan.needsConversion ||
-      samplingPlan.needsShaderSampling ||
+  // Upstream kept shader-sampled and converted copies full-target ("can feed effects that read
+  // outside the copy rectangle (MKW's DOF chain)"). The copy shader itself samples only the source
+  // rectangle plus a linear/copy-filter halo, so a padded crop yields the same copy. Full-target cost
+  // a 2560x2112 snapshot per small copy at 4x: NSMBW's Select World made ~170 per submission, ~51
+  // Gtexel/s, saturating an RTX 4060 (55 fps at 4x/180; AURORA_GPU_TIMING, 2026-10-25).
+  // NSMBW_FULL_RESOLVE_SNAPSHOT=1 restores full-target snapshots for A/B comparison.
+  static const bool fullSnapshotForSampledCopies = std::getenv("NSMBW_FULL_RESOLVE_SNAPSHOT") != nullptr;
+  const bool sampledCopy = samplingPlan.needsConversion || samplingPlan.needsShaderSampling;
+  if ((sampledCopy && fullSnapshotForSampledCopies) ||
       targetSize.width == 0 || targetSize.height == 0 ||
       !std::isfinite(sourceRect.x()) || !std::isfinite(sourceRect.y()) ||
       !std::isfinite(sourceRect.z()) || !std::isfinite(sourceRect.w()) ||
@@ -365,8 +376,9 @@ static ClipRect calculate_resolve_snapshot_rect(const wgpu::Extent3D& targetSize
 
   // Linear sampling can touch one neighbor on every edge. The vertical GX
   // copy filter explicitly samples the previous and next rows.
-  const int32_t haloX = samplingPlan.usesLinearSampling ? 1 : 0;
-  const int32_t haloY = (samplingPlan.usesLinearSampling || copyFilterActive) ? 1 : 0;
+  // A shader-sampled copy may also average a 2x2 block (half scale), so pad it by 2 on every side.
+  const int32_t haloX = sampledCopy ? 2 : samplingPlan.usesLinearSampling ? 1 : 0;
+  const int32_t haloY = sampledCopy ? 2 : (samplingPlan.usesLinearSampling || copyFilterActive) ? 1 : 0;
   const int32_t targetWidth = static_cast<int32_t>(targetSize.width);
   const int32_t targetHeight = static_cast<int32_t>(targetSize.height);
   const int32_t left = std::clamp(static_cast<int32_t>(std::floor(sourceRect.x())) - haloX, 0, targetWidth - 1);
@@ -1217,6 +1229,12 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
             .buffer = g_stagingBuffers[currentStagingBuffer],
         };
         cmd.CopyBufferToTexture(&buf, &item.tex, &item.size);
+        if (webgpu::g_timestampQueriesEnabled) {
+          g_timingUploadCount.fetch_add(1, std::memory_order_relaxed);
+          g_timingUploadBytes.fetch_add(static_cast<uint64_t>(AURORA_ALIGN(item.layout.bytesPerRow, 256)) *
+                                            item.size.height * item.size.depthOrArrayLayers,
+                                        std::memory_order_relaxed);
+        }
       }
       g_textureUploads.clear();
       g_textureUpload.release();
@@ -1268,10 +1286,7 @@ constexpr uint32_t kMaxQueries = 2048; // two per pass: up to 1024 timed passes 
 constexpr size_t kBatches = 4;
 
 struct PassInfo {
-  uint32_t width = 0;
-  uint32_t height = 0;
-  bool slot = false;
-  bool toTexture = false;
+  std::string key;
 };
 
 struct Batch {
@@ -1322,15 +1337,24 @@ void ensure_batch(Batch& batch) {
 }
 
 // Fills `writes` for the pass about to begin; false when timing is off or no batch is free.
-bool begin_pass(wgpu::PassTimestampWrites& writes, uint32_t width, uint32_t height, bool slot, bool toTexture) {
+// Lock order: s_mutex is never held across a Dawn call. Dawn invokes the AllowSpontaneous map
+// callback (on_mapped, which takes s_mutex) while holding its own device lock, so a Dawn call made
+// under s_mutex deadlocked against it; the 2026-10-25 test runs froze within seconds with timing on.
+std::once_flag s_createOnce;
+
+bool begin_pass_keyed(wgpu::PassTimestampWrites& writes, std::string key) {
   if (!webgpu::g_timestampQueriesEnabled) {
     return false;
   }
+  std::call_once(s_createOnce, [] {
+    for (auto& batch : s_batches) {
+      ensure_batch(batch);
+    }
+  });
   std::lock_guard lock(s_mutex);
   if (s_recording == nullptr) {
     for (auto& batch : s_batches) {
       if (!batch.busy) {
-        ensure_batch(batch);
         batch.busy = true;
         batch.used = 0;
         batch.resolvedUpTo = 0;
@@ -1353,23 +1377,38 @@ bool begin_pass(wgpu::PassTimestampWrites& writes, uint32_t width, uint32_t heig
       .endOfPassWriteIndex = batch.used + 1,
   };
   batch.used += 2;
-  batch.passes.push_back({width, height, slot, toTexture});
+  batch.passes.push_back({std::move(key)});
   return true;
+}
+
+bool begin_pass(wgpu::PassTimestampWrites& writes, uint32_t width, uint32_t height, bool slot, bool toTexture) {
+  if (!webgpu::g_timestampQueriesEnabled) {
+    return false;
+  }
+  return begin_pass_keyed(writes, fmt::format("{} {}x{}{}", slot ? "slot  " : "native", width, height,
+                                              toTexture ? " -> texture" : ""));
 }
 
 // End of one render_impl: resolve the timestamps it wrote into the batch's readback buffer.
 void end_encode(const wgpu::CommandEncoder& cmd) {
-  std::lock_guard lock(s_mutex);
-  if (s_recording == nullptr || s_recording->used == s_recording->resolvedUpTo) {
-    return;
+  Batch* batch = nullptr;
+  uint32_t first = 0;
+  uint32_t count = 0;
+  {
+    std::lock_guard lock(s_mutex);
+    if (s_recording == nullptr || s_recording->used == s_recording->resolvedUpTo) {
+      return;
+    }
+    batch = s_recording;
+    first = batch->resolvedUpTo;
+    count = batch->used - first;
+    batch->resolvedUpTo = batch->used;
   }
-  Batch& batch = *s_recording;
-  const uint32_t first = batch.resolvedUpTo;
-  const uint32_t count = batch.used - first;
-  cmd.ResolveQuerySet(batch.querySet, first, count, batch.resolveBuffer, first * sizeof(uint64_t));
-  cmd.CopyBufferToBuffer(batch.resolveBuffer, first * sizeof(uint64_t), batch.readback, first * sizeof(uint64_t),
+  // The batch stays busy (owned by this submission) until after_submit hands it to MapAsync, and its
+  // GPU objects never change after creation, so they are safe to use without the lock.
+  cmd.ResolveQuerySet(batch->querySet, first, count, batch->resolveBuffer, first * sizeof(uint64_t));
+  cmd.CopyBufferToBuffer(batch->resolveBuffer, first * sizeof(uint64_t), batch->readback, first * sizeof(uint64_t),
                          count * sizeof(uint64_t));
-  batch.resolvedUpTo = batch.used;
 }
 
 void log_window_locked() {
@@ -1383,6 +1422,15 @@ void log_window_locked() {
   std::fprintf(stderr, "[aurora][gpu] %.1f ms GPU per second in timed passes (%.0f submissions/s, %.2f ms each)\n",
                s_windowMs / seconds, static_cast<double>(s_windowSubmissions) / seconds,
                s_windowSubmissions != 0 ? s_windowMs / static_cast<double>(s_windowSubmissions) : 0.0);
+  std::fprintf(stderr, "[aurora][gpu]   untimed: %.0f texture uploads/s (%.1f MB/s)\n",
+               static_cast<double>(g_timingUploadCount.exchange(0)) / seconds,
+               static_cast<double>(g_timingUploadBytes.exchange(0)) / seconds / (1024.0 * 1024.0));
+  static constexpr const char* kCopySites[3] = {"resolve-source snapshot", "resolve copy", "copy op (tile paste)"};
+  for (size_t site = 0; site < 3; ++site) {
+    std::fprintf(stderr, "[aurora][gpu]   untimed: %.0f copies/s (%.1f Mtexel/s) %s\n",
+                 static_cast<double>(g_timingCopyCountSite[site].exchange(0)) / seconds,
+                 static_cast<double>(g_timingCopyTexelsSite[site].exchange(0)) / seconds / 1e6, kCopySites[site]);
+  }
   for (size_t i = 0; i < rows.size() && i < 10; ++i) {
     std::fprintf(stderr, "[aurora][gpu]   %6.1f ms/s  %5.0f passes/s  %s\n", rows[i].second.ms / seconds,
                  static_cast<double>(rows[i].second.count) / seconds, rows[i].first.c_str());
@@ -1394,11 +1442,18 @@ void log_window_locked() {
 }
 
 void on_mapped(Batch* batch, wgpu::MapAsyncStatus status, uint32_t queries) {
-  std::lock_guard lock(s_mutex);
+  // Copy the results out and unmap before taking s_mutex (see the lock-order note above).
+  std::vector<uint64_t> ticks;
   if (status == wgpu::MapAsyncStatus::Success) {
-    const auto* ticks =
-        static_cast<const uint64_t*>(batch->readback.GetConstMappedRange(0, queries * sizeof(uint64_t)));
-    if (ticks != nullptr) {
+    if (const auto* mapped =
+            static_cast<const uint64_t*>(batch->readback.GetConstMappedRange(0, queries * sizeof(uint64_t)))) {
+      ticks.assign(mapped, mapped + queries);
+    }
+    batch->readback.Unmap();
+  }
+  std::lock_guard lock(s_mutex);
+  {
+    if (!ticks.empty()) {
       for (size_t k = 0; k < batch->passes.size() && 2 * k + 1 < queries; ++k) {
         const uint64_t begin = ticks[2 * k];
         const uint64_t end = ticks[2 * k + 1];
@@ -1407,15 +1462,13 @@ void on_mapped(Batch* batch, wgpu::MapAsyncStatus status, uint32_t queries) {
         }
         const auto& pass = batch->passes[k];
         const double ms = static_cast<double>(end - begin) / 1e6; // WebGPU timestamps are nanoseconds
-        auto& row = s_accum[fmt::format("{} {}x{}{}", pass.slot ? "slot  " : "native", pass.width, pass.height,
-                                        pass.toTexture ? " -> texture" : "")];
+        auto& row = s_accum[pass.key];
         row.ms += ms;
         ++row.count;
         s_windowMs += ms;
       }
       ++s_windowSubmissions;
     }
-    batch->readback.Unmap();
   }
   batch->busy = false;
   log_window_locked();
@@ -1445,6 +1498,20 @@ void after_submit() {
                            });
 }
 } // namespace gpu_timing
+
+void gpu_timing_end_encode(const wgpu::CommandEncoder& cmd) noexcept {
+  if (webgpu::g_timestampQueriesEnabled) {
+    gpu_timing::end_encode(cmd);
+  }
+}
+
+bool gpu_timing_begin_pass(wgpu::PassTimestampWrites& writes, const char* label, uint32_t width,
+                           uint32_t height) noexcept {
+  if (!webgpu::g_timestampQueriesEnabled) {
+    return false;
+  }
+  return gpu_timing::begin_pass_keyed(writes, fmt::format("{} {}x{}", label, width, height));
+}
 
 static const char* render_pass_label(u32 index) noexcept {
   static constexpr std::array<const char*, 16> kRenderPassLabels{
@@ -1594,6 +1661,10 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
             .depthOrArrayLayers = 1,
         };
         cmd.CopyTextureToTexture(&src, &dst, &size);
+        if (webgpu::g_timestampQueriesEnabled) {
+          g_timingCopyCountSite[0].fetch_add(1, std::memory_order_relaxed);
+          g_timingCopyTexelsSite[0].fetch_add(static_cast<uint64_t>(size.width) * size.height, std::memory_order_relaxed);
+        }
         resolveSourceTexture = passInfo.resolveSourceSnapshot->texture;
         resolveSourceView = passInfo.resolveSourceSnapshot->sampleTextureView;
       }
@@ -1636,6 +1707,10 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
             .depthOrArrayLayers = 1,
         };
         cmd.CopyTextureToTexture(&src, &dst, &size);
+        if (webgpu::g_timestampQueriesEnabled) {
+          g_timingCopyCountSite[1].fetch_add(1, std::memory_order_relaxed);
+          g_timingCopyTexelsSite[1].fetch_add(static_cast<uint64_t>(size.width) * size.height, std::memory_order_relaxed);
+        }
       }
       static bool firedB = false;
       if (AURORA_ENV("NSMBW_GPU_PEEK") != nullptr && !firedB && aurora::nsmbw_gpu_peek_ready(g_nsmbwDiagSeq.load())) {
@@ -1669,6 +1744,10 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
             .depthOrArrayLayers = 1,
         };
         cmd.CopyTextureToTexture(&src, &dst, &size);
+        if (webgpu::g_timestampQueriesEnabled) {
+          g_timingCopyCountSite[2].fetch_add(1, std::memory_order_relaxed);
+          g_timingCopyTexelsSite[2].fetch_add(static_cast<uint64_t>(size.width) * size.height, std::memory_order_relaxed);
+        }
       }
     }
   }

@@ -1015,3 +1015,22 @@ What I learned:
 What's next:
 - The developer's map log at their settings; laptop Select World with and without the HD pack (a mipmap fix if the pack is the cause).
 
+
+## 2026-10-25 — Select World at 4x/180: 55 -> 180 fps
+What I did:
+- The developer's log of "the map at 55 fps" was really the **Select World menu**: they had been pressing - in my test windows. With their settings (borderless, 2560x1440, 4x, 180) I reproduced it: 180 on the map, 53-58 in Select World, GPU ~100%, the game thread waiting ~1,500 ms per 2 s for the render worker.
+- The per-pass GPU timer only found ~280 ms/s, so I extended it to the resolve, palette-conversion, presentation-snapshot and ImGui passes and counted the copies it cannot timestamp. That pointed at the **resolve-source snapshot**: 3,950 full-frame copies/s on the map (21 Gtexel/s) and 9,500/s in the menu (52 Gtexel/s), more memory bandwidth than the card has. Cause and fix are in `docs/issues.md`: sampled copies snapshot only their source rectangle plus a 2-texel border instead of the whole 2560x2112 frame. Select World now holds 180 fps; snapshot traffic fell 50x; the screenshot A/B shows no difference.
+- Fixed a deadlock I had introduced in the GPU timer (issues.md). It made several test runs freeze, which first looked like the scripted - press failing.
+
+What broke / what I didn't expect:
+- Three false leads before the real one: a scheduling theory (the anchors were fine), "window focus" (real, but not the developer's problem), and GPU power states. The developer's correction that they were pressing - is what made the measurements line up.
+- PowerShell 5.1's `2>` writes UTF-16, so grep found nothing in the developer's first log until it was converted.
+
+What I learned:
+- A *memory-bandwidth* bottleneck looks like "GPU 100% busy" while every timed shader pass is cheap: the work is plain copying. Counting bytes moved is the way to find it.
+- Lock-order rule for callbacks: never call into a library while holding a lock that the library's callbacks also take.
+
+What's next:
+- Confirm on the Iris Xe laptop that Select World no longer halves the frame rate (its memory bandwidth is far lower, so the old copies would have hit it harder).
+- The map still makes ~66 full-frame snapshots per submission for copies that are not shader-sampled (exact copies are already cropped, so these are likely large copies); worth a look if the map ever limits a slower GPU.
+

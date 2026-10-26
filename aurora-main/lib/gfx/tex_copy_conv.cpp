@@ -582,11 +582,15 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
           .clearValue = {0.0, 0.0, 0.0, 0.0},
       },
   };
-  const wgpu::RenderPassDescriptor renderPassDescriptor{
+  wgpu::RenderPassDescriptor renderPassDescriptor{
       .label = "TexCopyConv Pass",
       .colorAttachmentCount = colorAttachments.size(),
       .colorAttachments = colorAttachments.data(),
   };
+  wgpu::PassTimestampWrites timestampWrites{};
+  if (gpu_timing_begin_pass(timestampWrites, "resolve", req.dst->size.width, req.dst->size.height)) {
+    renderPassDescriptor.timestampWrites = &timestampWrites;
+  }
   const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
   pass.SetPipeline(pipeline);
   pass.SetBindGroup(0, bindGroup);

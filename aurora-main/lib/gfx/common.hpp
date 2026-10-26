@@ -224,6 +224,14 @@ private:
 } // namespace aurora
 
 namespace aurora::gfx {
+// AURORA_GPU_TIMING: fills `writes` so the pass about to begin is GPU-timed under `label WxH`, and
+// returns false when timing is off. Only for passes encoded into the frame worker's command buffer
+// (the batch is read back from gfx::after_submit).
+bool gpu_timing_begin_pass(wgpu::PassTimestampWrites& writes, const char* label, uint32_t width,
+                           uint32_t height) noexcept;
+// Resolves the timestamps written so far into the readback buffer; call before finishing `cmd`.
+void gpu_timing_end_encode(const wgpu::CommandEncoder& cmd) noexcept;
+
 inline constexpr bool UseTextureBuffer = false;
 inline constexpr uint64_t UniformBufferSize = 25165824;  // 24mb
 inline constexpr uint64_t VertexBufferSize = 3145728;    // 3mb
