@@ -1049,3 +1049,22 @@ What I learned:
 What's next:
 - Remaining audit candidates are listed in chat (WebGPU validation errors are fatal; re-key hashing cost; HD-pack textures without mipmaps on the laptop).
 
+
+## 2026-10-26 (later) — Audit follow-ups: one kept, one fixed, one rejected, one deferred
+What I did:
+- **Re-key hashing:** texture re-keys no longer hash the same bytes twice; ~42% less hashing on the map and in Select World (issues.md). A small CPU saving, kept because it was finished and measured.
+- **GPU timer:** fixed resolves at offsets that are not multiples of 256 bytes (issues.md).
+- **"Keep running after a GPU error" (tried and reverted):** the idea was to log WebGPU errors in release builds instead of exiting. Two findings ended it. (1) Release-mode builds (`NDEBUG`) run Dawn with `skip_validation`, so invalid commands are never reported there anyway; only out-of-memory and internal errors would reach the handler, and neither has appeared in any log. (2) A test that injected errors (`InjectError`) showed what continuing looks like when an error repeats: every frame's encoder was invalid and the screen flashed rapidly between two images, which the developer saw. That is worse than an exit, and a risk for photosensitive players. Errors stay fatal; nothing from this attempt was committed.
+- **HD-pack mipmaps (deferred):** 277 of 312 pack textures have no mipmaps (smaller pre-shrunk copies used for distant or scaled-down textures). This was a suspect for the laptop's slowdown, which the texture-leak fix has since solved, so it waits until a laptop run shows a reason.
+
+What broke / what I didn't expect:
+- The error-injection test flashed on the developer's screen without warning. Rule from now on: no test that discards or corrupts frames runs in the foreground without asking first.
+- A deliberately invalid command (a 3-byte buffer copy) produced no error at all, which is how the `skip_validation` toggle was found (`aurora-main/lib/webgpu/gpu.cpp`).
+
+What I learned:
+- `skip_validation` means release-mode builds rely on the driver for anything WebGPU would normally reject; a debug-mode build is the place to look for validation errors.
+- After the big fixes, the remaining audit items were worth a percent of a core or less. Measure the payoff before starting the next "oversight".
+
+What's next:
+- Nothing pending from the audit. HD-pack mipmaps only if the laptop shows frame drops in levels or shimmering distant textures with the pack on.
+

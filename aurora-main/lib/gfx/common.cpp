@@ -1284,9 +1284,16 @@ void expire_bind_group_cache() noexcept {
 namespace gpu_timing {
 constexpr uint32_t kMaxQueries = 2048; // two per pass: up to 1024 timed passes per submission
 constexpr size_t kBatches = 4;
+// ResolveQuerySet's destination offset must be a multiple of 256 bytes, i.e. 32 timestamps. A
+// submission resolves its batch in several segments (one per command encoder: each presentation
+// slot and the ImGui snapshot), so every segment starts on a 32-query boundary. Unaligned offsets
+// (e.g. 752) were silently accepted under skip_validation until a 2026-10-26 test run reported them,
+// after which every frame's encoder was invalid and the screen flashed between stale and new frames.
+constexpr uint32_t kResolveAlignQueries = 256 / sizeof(uint64_t);
 
 struct PassInfo {
   std::string key;
+  uint32_t query = 0; // begin timestamp; end is query + 1
 };
 
 struct Batch {
@@ -1368,6 +1375,15 @@ bool begin_pass_keyed(wgpu::PassTimestampWrites& writes, std::string key) {
     }
   }
   Batch& batch = *s_recording;
+  if (batch.used == batch.resolvedUpTo) {
+    // First pass of a new resolve segment: start it on an aligned query (see kResolveAlignQueries).
+    const uint32_t aligned = (batch.used + kResolveAlignQueries - 1) / kResolveAlignQueries * kResolveAlignQueries;
+    if (aligned + 2 > kMaxQueries) {
+      return false;
+    }
+    batch.used = aligned;
+    batch.resolvedUpTo = aligned;
+  }
   if (batch.used + 2 > kMaxQueries) {
     return false;
   }
@@ -1376,8 +1392,8 @@ bool begin_pass_keyed(wgpu::PassTimestampWrites& writes, std::string key) {
       .beginningOfPassWriteIndex = batch.used,
       .endOfPassWriteIndex = batch.used + 1,
   };
+  batch.passes.push_back({std::move(key), batch.used});
   batch.used += 2;
-  batch.passes.push_back({std::move(key)});
   return true;
 }
 
@@ -1454,13 +1470,15 @@ void on_mapped(Batch* batch, wgpu::MapAsyncStatus status, uint32_t queries) {
   std::lock_guard lock(s_mutex);
   {
     if (!ticks.empty()) {
-      for (size_t k = 0; k < batch->passes.size() && 2 * k + 1 < queries; ++k) {
-        const uint64_t begin = ticks[2 * k];
-        const uint64_t end = ticks[2 * k + 1];
+      for (const auto& pass : batch->passes) {
+        if (pass.query + 1 >= queries) {
+          continue;
+        }
+        const uint64_t begin = ticks[pass.query];
+        const uint64_t end = ticks[pass.query + 1];
         if (end <= begin) {
           continue;
         }
-        const auto& pass = batch->passes[k];
         const double ms = static_cast<double>(end - begin) / 1e6; // WebGPU timestamps are nanoseconds
         auto& row = s_accum[pass.key];
         row.ms += ms;

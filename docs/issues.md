@@ -626,6 +626,20 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: a slot is claimed under the mutex (new states `AsyncState::Encoding` / `SlotState::Preparing`, which the callbacks never touch), its Dawn work is done with the mutex released, and its state is published under the mutex afterwards. Verified: 8 scripted map + Select World runs at 4x/180 with `AURORA_GPU_TIMING=1` completed without a freeze; A/B with verified exe swaps gave 180 fps for both old and new builds. Both builds also showed runs at 130-145 fps, with GPU ms/s doubled for identical work, which is measurement noise (GPU clock state or background load), not this change.
 - Scope: General (aurora). Unconfirmed as a real-world hang cause; it is a removed risk, not a reproduced bug.
 
+## 2026-10-26 — re-key hashing, GPU timer resolve alignment
+
+### Texture re-keys hashed the source bytes twice
+- Symptom: none visible; found in the performance audit. On the world map and in Select World, ~15,600 texture sources are digested per second.
+- Root cause: when NSMBW re-arms a texture upload (new `texDataVersion`, same bytes), `take_previous_static_source_version` hashed the bytes to prove them unchanged, and `make_static_texture_source_entry` then hashed them again to build the new entry's digest. Same in the palette tier. The guest-write generation cannot skip the first hash: the flush that re-armed the upload also bumps the 64 KiB range's generation.
+- Fix: the re-key check returns the finished entry (verified digest plus the generation sampled before reading) and the insert stores it (`aurora-main/lib/gx/gx.cpp`). `AURORA_LOG_TEXTURE_STATS` now prints the digested bytes and the re-key bytes. Measured: 445 MB hashed per 2 s, plus 329 MB of re-keys that are no longer hashed twice, so ~42% less hashing (roughly 1% of one core; no fps change expected). Select World screenshot looks correct.
+- Scope: General (aurora).
+
+### GPU timer resolved timestamps at unaligned offsets
+- Symptom: in one test run (with injected errors, see the progress log) Dawn reported `The destination buffer [Buffer "GPU timing resolve"] offset (752) is not a multiple of 256`; from then on every frame's encoder was invalid and the screen flashed between Select World and a stale title-screen frame.
+- Root cause: one timing batch is resolved in several segments per submission (one per command encoder: each presentation slot and the ImGui snapshot). Each segment started where the previous one stopped, but `ResolveQuerySet`'s destination offset must be a multiple of 256 bytes (32 timestamps). Release-mode builds run Dawn with `skip_validation`, which normally hides this; why it was reported in that run was not established.
+- Fix: each segment starts on a 32-query boundary, and every pass stores its own query index (`gpu_timing` in `aurora-main/lib/gfx/common.cpp`). Verified: two normal timing runs with no errors and the same per-pass breakdown as before the fix. The condition that made Dawn report the error was not reproduced again, so the fix is checked by construction, not by a before/after of the error.
+- Scope: General (diagnostic only; `AURORA_GPU_TIMING` is off for players).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -658,3 +672,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.
 - Seed pipeline cache coverage (2026-10-16): only W1-era scenes were collected; levels in later worlds still compile some pipelines on first visit. Merge caches from longer play sessions with `merge_pipeline_cache.py`.
 - Full-target resolve snapshots (2026-10-25): cropped for sampled/converted copies; MKW's depth-of-field chain, which the upstream comment says needed them, is untested with the crop (`NSMBW_FULL_RESOLVE_SNAPSHOT=1` to compare).
+- GPU timer resolve alignment (2026-10-26): why Dawn reported the unaligned offset despite `skip_validation` in one run (after an injected out-of-memory error) is unexplained.

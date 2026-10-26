@@ -378,10 +378,18 @@ static u32 static_texture_data_size(const StaticTextureKey& key) noexcept {
                             key.mips > 1 ? GX_TRUE : GX_FALSE, static_cast<u8>(key.mips - 1));
 }
 
+// Source bytes hashed, for AURORA_LOG_TEXTURE_STATS (game thread only, like the caches).
+static u64 s_digestCalls = 0;
+static u64 s_digestBytes = 0;
+// Bytes of successful re-keys; each one used to be hashed a second time, so this is the saving.
+static u64 s_reKeyBytes = 0;
+
 static u64 digest_source_bytes(const void* data, size_t size) noexcept {
   if (data == nullptr || size == 0) {
     return 0;
   }
+  ++s_digestCalls;
+  s_digestBytes += size;
   return static_cast<u64>(xxh3_hash_s(data, size));
 }
 
@@ -597,9 +605,13 @@ static StaticTextureKey static_source_identity(StaticTextureKey key) noexcept {
 }
 
 // On a miss for `key`, removes the entry that the same source identity holds under an older
-// texDataVersion. Returns its texture if the source bytes still match that entry's digest (the
-// caller re-keys it), or an empty handle if they changed or there was none.
-static gfx::TextureHandle take_previous_static_source_version(const StaticTextureKey& key) noexcept {
+// texDataVersion. If the source bytes still match that entry's digest, returns the entry ready to
+// be stored under `key` (the caller re-keys it); otherwise an entry with an empty handle.
+// The returned entry carries the digest just computed: re-keying used to hash the bytes twice, once
+// here and again in make_static_texture_source_entry (~100-150 MB/s of hashing on the world map,
+// AURORA_LOG_TEXTURE_STATS, 2026-10-17). The write generation cannot skip this one hash: the
+// guest's flush that re-armed the upload also bumped the range's generation.
+static StaticTextureSourceEntry take_previous_static_source_version(const StaticTextureKey& key) noexcept {
   const auto versionIt = s_staticSourceLatestVersion.find(static_source_identity(key));
   if (versionIt == s_staticSourceLatestVersion.end() || versionIt->second == key.texDataVersion) {
     return {};
@@ -616,10 +628,20 @@ static gfx::TextureHandle take_previous_static_source_version(const StaticTextur
   const u32 size = it->second.sourceSize;
   s_staticTextureSourceCache.erase(it);
   clear_static_source_front_cache();
+  // Generation before the bytes (see guest_write_generation): a racing write costs a re-digest later.
+  const u64 generation = guest_write_generation(key.data, size);
   if (!source_matches_digest(key.data, static_texture_data_size(key), digest, size)) {
     return {};
   }
-  return handle;
+  s_reKeyBytes += size;
+  note_texture_cache_stamp();
+  return {
+      .handle = std::move(handle),
+      .digest = digest,
+      .sourceSize = size,
+      .validationRevision = s_staticTextureCacheValidationRevision,
+      .sourceGeneration = generation,
+  };
 }
 
 gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
@@ -662,8 +684,10 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
   }
 
   gfx::TextureHandle handle;
+  StaticTextureSourceEntry reKeyed;
   if (canUseSourceCache) {
-    handle = take_previous_static_source_version(sourceKey);
+    reKeyed = take_previous_static_source_version(sourceKey);
+    handle = reKeyed.handle;
   }
   if (handle) {
     // Same bytes under a new texDataVersion: re-keyed below without a decode, upload or pack lookup.
@@ -701,7 +725,8 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
         s_sourceCacheSweepAt = std::max<size_t>(512, s_staticTextureSourceCache.size() * 2);
       }
       note_static_source_insert(sourceKey, handle);
-      s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle);
+      s_staticTextureSourceCache[sourceKey] =
+          reKeyed.handle ? std::move(reKeyed) : make_static_texture_source_entry(sourceKey, handle);
       s_staticSourceLatestVersion[static_source_identity(sourceKey)] = sourceKey.texDataVersion;
       store_static_source_front_cache(sourceKey, sourceHash, handle);
       if (obj.texObjId != 0) {
@@ -720,8 +745,10 @@ static StaticPaletteTextureKey static_palette_source_identity(StaticPaletteTextu
 
 // Palette counterpart of take_previous_static_source_version: on a miss, retires the entry the same
 // texture+TLUT identity holds under older versions, returning its texture if both the texture and
-// the TLUT bytes still match that entry's digests.
-static gfx::TextureHandle take_previous_static_palette_source_version(const StaticPaletteTextureKey& key) noexcept {
+// the TLUT bytes still match that entry's digests. Like the non-palette version, it returns the
+// entry for the new key so the digests are not computed a second time.
+static StaticPaletteTextureSourceEntry take_previous_static_palette_source_version(
+    const StaticPaletteTextureKey& key) noexcept {
   const auto versionIt = s_staticPaletteSourceLatestVersion.find(static_palette_source_identity(key));
   if (versionIt == s_staticPaletteSourceLatestVersion.end() ||
       (versionIt->second.texDataVersion == key.texture.texDataVersion &&
@@ -736,16 +763,22 @@ static gfx::TextureHandle take_previous_static_palette_source_version(const Stat
   if (it == s_staticPaletteTextureSourceCache.end()) {
     return {};
   }
-  gfx::TextureHandle handle = std::move(it->second.handle);
-  const StaticPaletteTextureSourceEntry entry = it->second;
+  StaticPaletteTextureSourceEntry entry = std::move(it->second);
   s_staticPaletteTextureSourceCache.erase(it);
   const size_t tlutSize = static_cast<size_t>(key.tlutEntries) * sizeof(u16);
+  const u64 textureGeneration = guest_write_generation(key.texture.data, entry.textureSize);
+  const u64 tlutGeneration = guest_write_generation(key.tlutData, entry.tlutSize);
   if (!source_matches_digest(key.texture.data, static_texture_data_size(key.texture), entry.textureDigest,
                              entry.textureSize) ||
       !source_matches_digest(key.tlutData, tlutSize, entry.tlutDigest, entry.tlutSize)) {
     return {};
   }
-  return handle;
+  s_reKeyBytes += entry.textureSize + entry.tlutSize;
+  entry.textureGeneration = textureGeneration;
+  entry.tlutGeneration = tlutGeneration;
+  entry.validationRevision = s_staticTextureCacheValidationRevision;
+  note_texture_cache_stamp();
+  return entry;
 }
 
 gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GXTlutObj_& tlut) {
@@ -782,8 +815,10 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
   }
 
   gfx::TextureHandle handle;
+  StaticPaletteTextureSourceEntry reKeyed;
   if (canUseSourceCache) {
-    handle = take_previous_static_palette_source_version(sourceKey);
+    reKeyed = take_previous_static_palette_source_version(sourceKey);
+    handle = reKeyed.handle;
   }
   if (handle) {
     // Same texture and palette bytes under new versions: re-keyed below, no conversion or upload.
@@ -818,7 +853,8 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
         });
         s_paletteCacheSweepAt = std::max<size_t>(256, s_staticPaletteTextureSourceCache.size() * 2);
       }
-      s_staticPaletteTextureSourceCache[sourceKey] = make_static_palette_texture_source_entry(sourceKey, handle);
+      s_staticPaletteTextureSourceCache[sourceKey] =
+          reKeyed.handle ? std::move(reKeyed) : make_static_palette_texture_source_entry(sourceKey, handle);
       s_staticPaletteSourceLatestVersion[static_palette_source_identity(sourceKey)] =
           PaletteSourceVersions{sourceKey.texture.texDataVersion, sourceKey.tlutDataVersion};
       if (obj.texObjId != 0) {
@@ -1289,6 +1325,12 @@ static void log_texture_stats() noexcept {
   std::fprintf(stderr, "[aurora][texstats]   GPU textures created: %llu\n",
                static_cast<unsigned long long>(created - s_lastCreated));
   s_lastCreated = created;
+  std::fprintf(stderr, "[aurora][texstats]   source digests: %llu (%.1f MB) in 2 s; re-keys %.1f MB (no longer hashed twice)\n",
+               static_cast<unsigned long long>(s_digestCalls), static_cast<double>(s_digestBytes) / (1024.0 * 1024.0),
+               static_cast<double>(s_reKeyBytes) / (1024.0 * 1024.0));
+  s_digestCalls = 0;
+  s_digestBytes = 0;
+  s_reKeyBytes = 0;
   const auto creations = gfx::take_texture_creation_counts();
   for (size_t i = 0; i < creations.size() && i < 5; ++i) {
     std::fprintf(stderr, "[aurora][texstats]     %llu x %s\n", static_cast<unsigned long long>(creations[i].second),
