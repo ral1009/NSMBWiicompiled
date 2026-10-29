@@ -33,6 +33,7 @@
 #include "runtime_config.h"
 
 #include <aurora/gfx.h>
+#include <aurora/imgui.h>
 #include <dolphin/pad.h>
 #include <imgui.h>
 
@@ -284,6 +285,39 @@ void DrawSettingsMenu() noexcept {
         }
         ImGui::EndCombo();
     }
+}
+
+namespace {
+// Decoded once per glyph and kept for the run (a menu shows a few dozen at most).
+ImTextureID TextureFor(const Glyph* glyph) {
+    if (glyph == nullptr) return ImTextureID{};
+    static std::vector<std::pair<const Glyph*, ImTextureID>> cache;
+    for (const auto& [cached, texture] : cache) {
+        if (cached == glyph) return texture;
+    }
+    const ImTextureID texture = aurora_imgui_add_texture_png(glyph->png, glyph->size, nullptr, nullptr);
+    cache.emplace_back(glyph, texture);
+    return texture;
+}
+
+// The pad style to draw pad buttons in: the one in use, else player 1's pad, else Xbox. The
+// options menu is a PC menu, so the Wii set never applies to it.
+GlyphSet PadSet() {
+    const GlyphSet active = ActiveSet();
+    if (active != GlyphSet::Wii && active != GlyphSet::Keyboard) return active;
+    const GlyphSet first = DefaultDevice();
+    return first != GlyphSet::Wii && first != GlyphSet::Keyboard ? first : GlyphSet::Xbox;
+}
+} // namespace
+
+ImTextureID PromptTexture(const char* padControl, const char* keyControl) noexcept {
+    const bool keyboard = ActiveSet() == GlyphSet::Keyboard;
+    const char* control = keyboard ? keyControl : padControl;
+    return TextureFor(FindGlyph(keyboard ? GlyphSet::Keyboard : PadSet(), control != nullptr ? control : ""));
+}
+
+ImTextureID ControlTexture(const char* control, bool key) noexcept {
+    return TextureFor(FindGlyph(key ? GlyphSet::Keyboard : PadSet(), control != nullptr ? control : ""));
 }
 
 } // namespace nsmbw_button_glyphs

@@ -1169,6 +1169,42 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   return handle;
 }
 
+bool replacement_rgba8(const void* gxData, uint32_t width, uint32_t height, uint32_t format,
+                       void (*receive)(void* user, uint32_t width, uint32_t height, const void* rgba8),
+                       void* user) noexcept {
+  if (gxData == nullptr || receive == nullptr || !enabled() || is_palette_format(format)) {
+    return false;
+  }
+  // The same key build_runtime_key makes for a draw of this texture.
+  RuntimeTextureKey key{.width = width, .height = height, .hasTlut = false, .format = format};
+  const uint32_t size = GXGetTexBufferSize(static_cast<u16>(width), static_cast<u16>(height), format, false, 0);
+  key.textureHash = XXH64(gxData, size, 0);
+  const auto* entry = find_replacement_path(key);
+  if (entry == nullptr) {
+    return false;
+  }
+  const auto image = load_replacement(*entry);
+  // The base level comes first in the data; mips (if any) follow it. Uncompressed 32-bit DDS files
+  // (every NSMBW pack file checked on 2026-10-26) load as BGRA8, so swap to RGBA for the caller.
+  const size_t bytes = image ? static_cast<size_t>(image->width) * image->height * 4 : 0;
+  if (!image || image->data.size() < bytes) {
+    return false;
+  }
+  if (image->format == wgpu::TextureFormat::RGBA8Unorm) {
+    receive(user, image->width, image->height, image->data.data());
+    return true;
+  }
+  if (image->format != wgpu::TextureFormat::BGRA8Unorm) {
+    return false;
+  }
+  std::vector<uint8_t> rgba(image->data.data(), image->data.data() + bytes);
+  for (size_t i = 0; i < bytes; i += 4) {
+    std::swap(rgba[i], rgba[i + 2]);
+  }
+  receive(user, image->width, image->height, rgba.data());
+  return true;
+}
+
 std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept {
   const RuntimeTextureKey key = build_runtime_key(obj);
   return format_replacement_filename(key);

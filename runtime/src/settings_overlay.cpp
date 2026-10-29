@@ -246,6 +246,10 @@ constexpr std::array<ResolutionItem, 8> kResolutions = {{
 
 constexpr std::array<uint32_t, 3> kFrameInterpolationTargetFps{0, 120, 180};
 
+// 6x and 8x are refused while frame interpolation is on: greyed out in the menus, and a saved 6x /
+// 8x is lowered to 4x at startup or when interpolation is turned on. Inherited from WiiCompiled;
+// removed on 2026-10-29 and restored the same day after 8x at 180 fps "ran horribly" on the
+// developer's machine.
 bool IsHighResolutionScale(float scale) {
     return std::fabs(scale - 6.0f) < 0.001f || std::fabs(scale - 8.0f) < 0.001f;
 }
@@ -265,6 +269,22 @@ void LimitResolutionForFrameRate() {
         SetResolutionScale(4.0f);
     }
 }
+
+void SetPostProcessingPathDisabled(uint32_t flag, bool disabled) {
+    if (disabled) {
+        g_disabledPostProcessingPaths |= flag;
+    } else {
+        g_disabledPostProcessingPaths &= ~flag;
+    }
+    RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
+    RuntimeConfigFile::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
+}
+
+// Disables bloom in the game's post-processing (the F10 bar's "Disable bloom").
+constexpr uint32_t kBloomPathFlag = 0x10u;
+
+ProductMenu g_productMenu{};
+bool ProductMenuOpen() { return g_productMenu.isOpen != nullptr && g_productMenu.isOpen(); }
 
 const NativeButtonItem* FindNativeButton(std::string value) {
     const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
@@ -638,41 +658,23 @@ void DrawControllerSettings() {
 
 void DrawAudioSettings() {
     ImGui::SetNextItemWidth(220.0f);
-    if (ImGui::SliderInt("Master", &g_audioVolumePercent, 0, 100, "%d%%")) {
-        const float volume = static_cast<float>(g_audioVolumePercent) / 100.0f;
-        AudioBackend::Instance().SetMasterVolume(volume);
-        RuntimeConfigFile::SetAudioVolume(volume);
+    using settings::Volume;
+    for (const auto& [volume, label] : {std::pair{Volume::Master, "Master"}, std::pair{Volume::Music, "Music"},
+                                        std::pair{Volume::SoundEffects, "Sound Effects"}, std::pair{Volume::Ui, "UI"},
+                                        std::pair{Volume::Voices, "Voices"}}) {
+        int percent = settings::GetVolume(volume);
+        if (ImGui::SliderInt(label, &percent, 0, 100, "%d%%")) {
+            settings::SetVolume(volume, percent);
+        }
     }
-    if (ImGui::SliderInt("Music", &g_musicVolumePercent, 0, 100, "%d%%")) {
-        const float volume = static_cast<float>(g_musicVolumePercent) / 100.0f;
-        MusicAttenuation::SetMusicVolume(volume);
-        RuntimeConfigFile::SetMusicVolume(volume);
-    }
-    if (ImGui::SliderInt("Sound Effects", &g_soundEffectsVolumePercent, 0, 100, "%d%%")) {
-        const float volume = static_cast<float>(g_soundEffectsVolumePercent) / 100.0f;
-        MusicAttenuation::SetSoundEffectsVolume(volume);
-        RuntimeConfigFile::SetSoundEffectsVolume(volume);
-    }
-    if (ImGui::SliderInt("UI", &g_uiVolumePercent, 0, 100, "%d%%")) {
-        const float volume = static_cast<float>(g_uiVolumePercent) / 100.0f;
-        MusicAttenuation::SetUiVolume(volume);
-        RuntimeConfigFile::SetUiVolume(volume);
-    }
-    if (ImGui::SliderInt("Voices", &g_voicesVolumePercent, 0, 100, "%d%%")) {
-        const float volume = static_cast<float>(g_voicesVolumePercent) / 100.0f;
-        MusicAttenuation::SetVoicesVolume(volume);
-        RuntimeConfigFile::SetVoicesVolume(volume);
-    }
-    if (ImGui::Checkbox("Mute", &g_audioMuted)) {
-        AudioBackend::Instance().SetMuted(g_audioMuted);
-        RuntimeConfigFile::SetAudioMuted(g_audioMuted);
+    bool muted = g_audioMuted;
+    if (ImGui::Checkbox("Mute", &muted)) {
+        settings::SetMuted(muted);
     }
     ImGui::Separator();
-    if (ImGui::Checkbox("Mix audio on a worker thread", &g_audioMixWorker)) {
-        // Applies immediately: SetMixWorkerEnabled joins any in-flight mix
-        // before switching, so the change never lands mid-frame.
-        AxDspHle::SetMixWorkerEnabled(g_audioMixWorker);
-        RuntimeConfigFile::SetAudioMixWorker(g_audioMixWorker);
+    bool mixWorker = g_audioMixWorker;
+    if (ImGui::Checkbox("Mix audio on a worker thread", &mixWorker)) {
+        settings::SetAudioMixWorker(mixWorker);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
@@ -680,10 +682,9 @@ void DrawAudioSettings() {
             "suspect an audio problem; the mix then runs inline as it used to.");
     }
     ImGui::Separator();
-    if (ImGui::Checkbox("Mute game music while external media is playing",
-                        &g_attenuateMusicWhenMediaPlays)) {
-        MusicAttenuation::SetEnabled(g_attenuateMusicWhenMediaPlays);
-        RuntimeConfigFile::SetAttenuateMusicWhenMediaPlays(g_attenuateMusicWhenMediaPlays);
+    bool attenuate = g_attenuateMusicWhenMediaPlays;
+    if (ImGui::Checkbox("Mute game music while external media is playing", &attenuate)) {
+        settings::SetMuteMusicForMedia(attenuate);
     }
     if (g_attenuateMusicWhenMediaPlays) {
         if (MusicAttenuation::IsExternalMediaPlaying()) {
@@ -711,13 +712,7 @@ void DrawGraphicsSettings() {
     for (const auto& effect : kEffectFlags) {
         bool disabled = (g_disabledPostProcessingPaths & effect.flag) != 0;
         if (ImGui::Checkbox(effect.label, &disabled)) {
-            if (disabled) {
-                g_disabledPostProcessingPaths |= effect.flag;
-            } else {
-                g_disabledPostProcessingPaths &= ~effect.flag;
-            }
-            RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
-            RuntimeConfigFile::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
+            SetPostProcessingPathDisabled(effect.flag, disabled);
         }
     }
     ImGui::TextDisabled("Applied when the next scene renderer is created.");
@@ -727,15 +722,9 @@ void DrawGraphicsSettings() {
         "Borderless fullscreen",
         "Exclusive fullscreen",
     };
-    if (ImGui::Combo("Display mode", &g_displayMode, kDisplayModes, static_cast<int>(std::size(kDisplayModes)))) {
-        const auto mode = static_cast<AuroraDisplayMode>(g_displayMode);
-        aurora_set_display_mode(mode);
-        const AuroraDisplayMode activeMode = aurora_get_display_mode();
-        if (activeMode == mode) {
-            RuntimeConfigFile::SetDisplayMode(std::string(kDisplayModeConfigNames[static_cast<size_t>(g_displayMode)]));
-        } else {
-            g_displayMode = static_cast<int>(activeMode);
-        }
+    int displayMode = g_displayMode;
+    if (ImGui::Combo("Display mode", &displayMode, kDisplayModes, static_cast<int>(std::size(kDisplayModes)))) {
+        settings::SetDisplayMode(displayMode);
     }
     if (g_displayMode == AURORA_DISPLAY_MODE_EXCLUSIVE) {
         ImGui::TextDisabled(
@@ -747,13 +736,11 @@ void DrawGraphicsSettings() {
     };
     const char* currentFrameInterpolationMode =
         kFrameInterpolationModes[static_cast<size_t>(g_frameInterpolationMode)];
-    bool frameInterpolationModeChanged = false;
-    if (ImGui::BeginCombo("Race frame interpolation (experimental)", currentFrameInterpolationMode)) {
+    if (ImGui::BeginCombo("Frame interpolation (experimental)", currentFrameInterpolationMode)) {
         for (int mode = 0; mode < static_cast<int>(kFrameInterpolationModes.size()); ++mode) {
             const bool selected = g_frameInterpolationMode == mode;
             if (ImGui::Selectable(kFrameInterpolationModes[static_cast<size_t>(mode)], selected)) {
-                g_frameInterpolationMode = mode;
-                frameInterpolationModeChanged = true;
+                settings::SetFrameInterpolation(mode);
             }
             if (selected) {
                 ImGui::SetItemDefaultFocus();
@@ -761,33 +748,24 @@ void DrawGraphicsSettings() {
         }
         ImGui::EndCombo();
     }
-    if (frameInterpolationModeChanged) {
-        const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
-        aurora_set_frame_interpolation_fps(targetFps);
-        RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
-        LimitResolutionForFrameRate();
-        if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) {
-            // Re-apply exclusive mode so the display refresh tracks the new target.
-            aurora_set_display_mode(AURORA_DISPLAY_MODE_EXCLUSIVE);
-        }
-    }
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
     ImGui::TextDisabled("Frame interpolation is experimental, you might find visual artifacts");
     ImGui::PopTextWrapPos();
-    if (ImGui::Checkbox("Disable copy filter", &g_disableCopyFilter)) {
-        aurora_set_disable_copy_filter(g_disableCopyFilter);
-        RuntimeConfigFile::SetDisableCopyFilter(g_disableCopyFilter);
+    bool copyFilterDisabled = g_disableCopyFilter;
+    if (ImGui::Checkbox("Disable copy filter", &copyFilterDisabled)) {
+        settings::SetCopyFilterDisabled(copyFilterDisabled);
     }
-    if (ImGui::Checkbox("Skip draws while shaders compile", &g_skipUnreadyPipelines)) {
-        aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
-        RuntimeConfigFile::SetSkipUnreadyPipelines(g_skipUnreadyPipelines);
+    bool skipUnready = g_skipUnreadyPipelines;
+    if (ImGui::Checkbox("Skip draws while shaders compile", &skipUnready)) {
+        settings::SetSkipUnreadyPipelines(skipUnready);
     }
-    if (ImGui::Checkbox("Show FPS", &g_showFps)) {
-        RuntimeConfigFile::SetShowFps(g_showFps);
+    bool showFps = g_showFps;
+    if (ImGui::Checkbox("Show FPS", &showFps)) {
+        settings::SetShowFps(showFps);
     }
-    if (ImGui::Checkbox("HD texture pack", &g_textureReplacements)) {
-        aurora_set_texture_replacements_enabled(g_textureReplacements);
-        RuntimeConfigFile::SetTextureReplacements(g_textureReplacements);
+    bool hdTextures = g_textureReplacements;
+    if (ImGui::Checkbox("HD texture pack", &hdTextures)) {
+        settings::SetHdTextures(hdTextures);
     }
     if (!aurora_texture_replacements_available()) {
         ImGui::TextDisabled("Takes effect after a restart.");
@@ -996,6 +974,148 @@ void PersistDisplayModeIfChanged() {
 }
 } // namespace
 
+void SetProductMenu(const ProductMenu& menu) noexcept { g_productMenu = menu; }
+
+namespace settings {
+namespace {
+int* VolumeStorage(Volume volume) {
+    switch (volume) {
+    case Volume::Music: return &g_musicVolumePercent;
+    case Volume::SoundEffects: return &g_soundEffectsVolumePercent;
+    case Volume::Ui: return &g_uiVolumePercent;
+    case Volume::Voices: return &g_voicesVolumePercent;
+    default: return &g_audioVolumePercent;
+    }
+}
+} // namespace
+
+int GetVolume(Volume volume) noexcept { return *VolumeStorage(volume); }
+
+void SetVolume(Volume volume, int percent) noexcept {
+    percent = std::clamp(percent, 0, 100);
+    *VolumeStorage(volume) = percent;
+    const float value = static_cast<float>(percent) / 100.0f;
+    switch (volume) {
+    case Volume::Master:
+        AudioBackend::Instance().SetMasterVolume(value);
+        RuntimeConfigFile::SetAudioVolume(value);
+        break;
+    case Volume::Music:
+        MusicAttenuation::SetMusicVolume(value);
+        RuntimeConfigFile::SetMusicVolume(value);
+        break;
+    case Volume::SoundEffects:
+        MusicAttenuation::SetSoundEffectsVolume(value);
+        RuntimeConfigFile::SetSoundEffectsVolume(value);
+        break;
+    case Volume::Ui:
+        MusicAttenuation::SetUiVolume(value);
+        RuntimeConfigFile::SetUiVolume(value);
+        break;
+    case Volume::Voices:
+        MusicAttenuation::SetVoicesVolume(value);
+        RuntimeConfigFile::SetVoicesVolume(value);
+        break;
+    }
+}
+
+bool Muted() noexcept { return g_audioMuted; }
+void SetMuted(bool muted) noexcept {
+    g_audioMuted = muted;
+    AudioBackend::Instance().SetMuted(muted);
+    RuntimeConfigFile::SetAudioMuted(muted);
+}
+
+bool MuteMusicForMedia() noexcept { return g_attenuateMusicWhenMediaPlays; }
+void SetMuteMusicForMedia(bool enabled) noexcept {
+    g_attenuateMusicWhenMediaPlays = enabled;
+    MusicAttenuation::SetEnabled(enabled);
+    RuntimeConfigFile::SetAttenuateMusicWhenMediaPlays(enabled);
+}
+
+bool AudioMixWorker() noexcept { return g_audioMixWorker; }
+void SetAudioMixWorker(bool enabled) noexcept {
+    g_audioMixWorker = enabled;
+    // Applies immediately: SetMixWorkerEnabled joins any in-flight mix before switching, so the
+    // change never lands mid-frame.
+    AxDspHle::SetMixWorkerEnabled(enabled);
+    RuntimeConfigFile::SetAudioMixWorker(enabled);
+}
+
+int DisplayMode() noexcept { return static_cast<int>(aurora_get_display_mode()); }
+void SetDisplayMode(int mode) noexcept {
+    mode = std::clamp(mode, 0, static_cast<int>(kDisplayModeConfigNames.size()) - 1);
+    aurora_set_display_mode(static_cast<AuroraDisplayMode>(mode));
+    // aurora can refuse a mode (exclusive fullscreen with no matching display mode); keep what it chose.
+    g_displayMode = static_cast<int>(aurora_get_display_mode());
+    if (g_displayMode == mode) {
+        RuntimeConfigFile::SetDisplayMode(std::string(kDisplayModeConfigNames[static_cast<size_t>(mode)]));
+    }
+}
+
+int FrameInterpolation() noexcept { return g_frameInterpolationMode; }
+void SetFrameInterpolation(int mode) noexcept {
+    g_frameInterpolationMode = std::clamp(mode, 0, static_cast<int>(kFrameInterpolationTargetFps.size()) - 1);
+    const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
+    aurora_set_frame_interpolation_fps(targetFps);
+    RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
+    LimitResolutionForFrameRate();
+    if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) {
+        // Re-apply exclusive mode so the display refresh tracks the new target.
+        aurora_set_display_mode(AURORA_DISPLAY_MODE_EXCLUSIVE);
+    }
+}
+
+int ResolutionCount() noexcept { return static_cast<int>(kResolutions.size()); }
+const char* ResolutionLabel(int index) noexcept {
+    return index >= 0 && index < ResolutionCount() ? kResolutions[static_cast<size_t>(index)].label : "Custom";
+}
+bool ResolutionAllowed(int index) noexcept {
+    return index >= 0 && index < ResolutionCount() &&
+           !(IsHighFrameRateMode() && IsHighResolutionScale(kResolutions[static_cast<size_t>(index)].scale));
+}
+int ResolutionIndex() noexcept {
+    for (int i = 0; i < ResolutionCount(); ++i) {
+        if (std::fabs(kResolutions[static_cast<size_t>(i)].scale - g_resolutionScale) < 0.001f) return i;
+    }
+    return -1;
+}
+void SetResolutionIndex(int index) noexcept {
+    if (ResolutionAllowed(index)) SetResolutionScale(kResolutions[static_cast<size_t>(index)].scale);
+}
+
+bool Bloom() noexcept { return (g_disabledPostProcessingPaths & kBloomPathFlag) == 0; }
+void SetBloom(bool enabled) noexcept { SetPostProcessingPathDisabled(kBloomPathFlag, !enabled); }
+
+bool ShowFps() noexcept { return g_showFps; }
+void SetShowFps(bool show) noexcept {
+    g_showFps = show;
+    RuntimeConfigFile::SetShowFps(show);
+}
+
+bool HdTextures() noexcept { return g_textureReplacements; }
+void SetHdTextures(bool enabled) noexcept {
+    g_textureReplacements = enabled;
+    aurora_set_texture_replacements_enabled(enabled);
+    RuntimeConfigFile::SetTextureReplacements(enabled);
+}
+bool HdTexturesNeedRestart() noexcept { return !aurora_texture_replacements_available(); }
+
+bool CopyFilterDisabled() noexcept { return g_disableCopyFilter; }
+void SetCopyFilterDisabled(bool disabled) noexcept {
+    g_disableCopyFilter = disabled;
+    aurora_set_disable_copy_filter(disabled);
+    RuntimeConfigFile::SetDisableCopyFilter(disabled);
+}
+
+bool SkipUnreadyPipelines() noexcept { return g_skipUnreadyPipelines; }
+void SetSkipUnreadyPipelines(bool skip) noexcept {
+    g_skipUnreadyPipelines = skip;
+    aurora_set_skip_unready_pipelines(skip);
+    RuntimeConfigFile::SetSkipUnreadyPipelines(skip);
+}
+} // namespace settings
+
 void InitializeRuntimeSettings() noexcept {
     controller_mapping_wizard::LoadPersistedMappings();
     ApplyConfiguredMappings();
@@ -1026,6 +1146,9 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     if (g_productEventHook != nullptr) {
         g_productEventHook(events);
     }
+    if (g_productMenu.handleEvents != nullptr) {
+        g_productMenu.handleEvents(events);
+    }
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
@@ -1035,7 +1158,15 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         }
         controller_mapping_wizard::HandleSdlEvent(ev->sdl);
         if (IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
-            SetTopBarVisible(!g_topBarVisible);
+            // With a product menu, plain F10 opens that and Shift+F10 the bar; one at a time.
+            const bool shift = (ev->sdl.key.mod & SDL_KMOD_SHIFT) != 0;
+            if (g_productMenu.setOpen != nullptr && !shift) {
+                SetTopBarVisible(false);
+                g_productMenu.setOpen(!ProductMenuOpen());
+            } else {
+                if (g_productMenu.setOpen != nullptr) g_productMenu.setOpen(false);
+                SetTopBarVisible(!g_topBarVisible);
+            }
         }
         if (IsMouseActivity(ev->sdl)) {
             g_lastMouseActivity = Clock::now();
@@ -1043,7 +1174,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     }
 }
 
-bool InputBlocked() noexcept { return g_topBarVisible; }
+bool InputBlocked() noexcept { return g_topBarVisible || ProductMenuOpen(); }
 
 void Draw() noexcept {
     // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists
@@ -1057,10 +1188,13 @@ void Draw() noexcept {
     }
     DrawFpsOverlay();
     DrawTopBar();
+    if (g_productMenu.draw != nullptr) {
+        g_productMenu.draw();
+    }
     controller_mapping_wizard::Draw();
     // The wizard captures raw presses; keep them out of the game even when the
     // top bar is hidden mid-setup.
-    PADBlockInput(g_topBarVisible || controller_mapping_wizard::IsActive());
+    PADBlockInput(InputBlocked() || controller_mapping_wizard::IsActive());
     DrawStartupScreen();
 }
 

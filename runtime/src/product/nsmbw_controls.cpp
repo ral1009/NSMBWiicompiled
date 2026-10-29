@@ -35,9 +35,12 @@
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_guid.h>
+#include <SDL3/SDL_joystick.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_scancode.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -210,8 +213,10 @@ const std::vector<ActionDef> kMapActions = {
     {"right", "Right", kScreenRight, {"dpad_right", "lstick_right"}, {"right", nullptr}},
 };
 const std::vector<ActionDef> kMenuActions = {
-    {"confirm", "Confirm (2)", kWpad2, {"south", nullptr}, {"enter", "z"}},
-    {"back", "Back (1)", kWpad1, {"east", nullptr}, {"backspace", "x"}},
+    // Z / X first, as for 2 / 1 in a course and on the map, so the game's button prompts show the
+    // same key everywhere (menus showed Backspace while the map showed X; 2026-10-29).
+    {"confirm", "Confirm (2)", kWpad2, {"south", nullptr}, {"z", "enter"}},
+    {"back", "Back (1)", kWpad1, {"east", nullptr}, {"x", "backspace"}},
     {"a", "A button", kWpadA, {"north", nullptr}, {"space", nullptr}},
     {"plus", "+ button", kWpadPlus, {"start", nullptr}, {"equals", "escape"}},
     {"minus", "- button", kWpadMinus, {"back", nullptr}, {"minus", nullptr}},
@@ -235,23 +240,33 @@ struct Binding {
 };
 
 std::mutex g_mutex; // bindings are read on the guest thread, edited from the overlay
-std::array<std::vector<Binding>, 3> g_bindings;
+// Per player (Wii Remote channel 0..3), per context, per action. Only player 1's keys are read:
+// the keyboard belongs to player 1.
+constexpr size_t kPlayers = 4;
+std::array<std::array<std::vector<Binding>, 3>, kPlayers> g_bindings;
+// Each player's controller choice from the options menu: "auto", "keyboard", "none" or
+// "pad:<SDL GUID>:<name>" (the name is kept so a disconnected pad can still be shown).
+std::array<std::string, kPlayers> g_controller{"auto", "auto", "auto", "auto"};
 bool g_loaded = false;
 
-// A pending "press a button" from the menu.
+// A pending "press a button" from a menu.
 struct Capture {
     bool active = false;
     Context context{};
     size_t action = 0;
     size_t slot = 0;
     bool key = false;
+    uint32_t player = 0;
+    // The options menu's capture: Esc cancels and Delete clears the slot, for keys and buttons alike.
+    // (The F10 bar's older capture binds Esc to the first slot and clears the second with it.)
+    bool optionsMenu = false;
 } g_capture;
 
 std::filesystem::path SavePath() { return RuntimeConfigFile::ApplicationDataDirectory() / "nsmbw_controls.ini"; }
 
-void SetDefaults(Context c) {
+void SetDefaults(uint32_t player, Context c) {
     const auto& defs = ActionsFor(c);
-    auto& b = g_bindings[size_t(c)];
+    auto& b = g_bindings[player][size_t(c)];
     b.assign(defs.size(), Binding{});
     for (size_t i = 0; i < defs.size(); ++i) {
         for (size_t s = 0; s < kMaxBinds; ++s) {
@@ -274,13 +289,19 @@ std::string Join(const std::array<std::string, kMaxBinds>& v) {
 void Save() {
     std::ofstream f(SavePath());
     if (!f) return;
-    f << "# NSMBW controls, edited from the F10 menu. <context>.<action>.pad / .key = up to two names.\n";
-    for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) {
-        const auto& defs = ActionsFor(c);
-        for (size_t i = 0; i < defs.size(); ++i) {
-            const auto& b = g_bindings[size_t(c)][i];
-            f << ContextName(c) << '.' << defs[i].id << ".pad = " << Join(b.pad) << '\n';
-            f << ContextName(c) << '.' << defs[i].id << ".key = " << Join(b.key) << '\n';
+    f << "# NSMBW controls, edited from the options menu. <context>.<action>.pad / .key = up to two names.\n";
+    f << "# Player 1 has no prefix (the format before per-player bindings); players 2-4 use p2. .. p4.\n";
+    f << "# controller = auto | keyboard | none | pad:<SDL GUID>:<name>\n";
+    for (uint32_t p = 0; p < kPlayers; ++p) {
+        const std::string prefix = p == 0 ? "" : "p" + std::to_string(p + 1) + ".";
+        f << prefix << "controller = " << g_controller[p] << '\n';
+        for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) {
+            const auto& defs = ActionsFor(c);
+            for (size_t i = 0; i < defs.size(); ++i) {
+                const auto& b = g_bindings[p][size_t(c)][i];
+                f << prefix << ContextName(c) << '.' << defs[i].id << ".pad = " << Join(b.pad) << '\n';
+                f << prefix << ContextName(c) << '.' << defs[i].id << ".key = " << Join(b.key) << '\n';
+            }
         }
     }
 }
@@ -288,7 +309,10 @@ void Save() {
 void LoadLocked() {
     if (g_loaded) return;
     g_loaded = true;
-    for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) SetDefaults(c);
+    for (uint32_t p = 0; p < kPlayers; ++p) {
+        for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) SetDefaults(p, c);
+    }
+    std::array<bool, kPlayers> saved{}; // the file has lines for this player
     std::ifstream f(SavePath());
     std::string line;
     while (f && std::getline(f, line)) {
@@ -300,7 +324,20 @@ void LoadLocked() {
             while (!s.empty() && s.front() == ' ') s.erase(s.begin());
             return s;
         };
-        const std::string key = trim(line.substr(0, eq)), value = trim(line.substr(eq + 1));
+        std::string key = trim(line.substr(0, eq));
+        const std::string value = trim(line.substr(eq + 1));
+        uint32_t player = 0;
+        if (key.size() > 3 && key[0] == 'p' && key[1] >= '2' && key[1] <= '4' && key[2] == '.') {
+            player = uint32_t(key[1] - '1');
+            key = key.substr(3);
+        }
+        if (key == "controller") {
+            if (value == "auto" || value == "keyboard" || value == "none" || value.rfind("pad:", 0) == 0) {
+                g_controller[player] = value;
+            }
+            continue;
+        }
+        saved[player] = true;
         for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) {
             const auto& defs = ActionsFor(c);
             for (size_t i = 0; i < defs.size(); ++i) {
@@ -316,10 +353,29 @@ void LoadLocked() {
                     if (comma == std::string::npos) break;
                     start = comma + 1;
                 }
-                (isPad ? g_bindings[size_t(c)][i].pad : g_bindings[size_t(c)][i].key) = list;
+                auto& b = g_bindings[player][size_t(c)][i];
+                (isPad ? b.pad : b.key) = list;
             }
         }
     }
+    // A file from before per-player bindings: players 2-4 start with player 1's buttons.
+    for (uint32_t p = 1; p < kPlayers; ++p) {
+        if (!saved[p]) g_bindings[p] = g_bindings[0];
+    }
+    // Menu confirm / back keys still at the old default order (Enter / Backspace first) take the
+    // new one; a list someone changed is left alone.
+    bool migrated = false;
+    for (auto& player : g_bindings) {
+        for (auto& b : player[size_t(Context::Menu)]) {
+            for (const auto& [oldFirst, oldSecond] : {std::pair{"enter", "z"}, std::pair{"backspace", "x"}}) {
+                if (b.key[0] == oldFirst && b.key[1] == oldSecond) {
+                    std::swap(b.key[0], b.key[1]);
+                    migrated = true;
+                }
+            }
+        }
+    }
+    if (migrated) Save();
 }
 
 // ---- Reading -----------------------------------------------------------------------------------
@@ -351,11 +407,60 @@ std::vector<SDL_Gamepad*> OrderedPads() {
     return pads;
 }
 
-// The pads that drive player `chan` (0..3): at most one.
-std::vector<SDL_Gamepad*> PadsForPlayer(uint32_t chan) {
-    const auto all = OrderedPads();
-    if (chan < all.size()) return {all[chan]};
-    return {};
+std::string PadGuid(SDL_Gamepad* pad) {
+    char buf[33] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUID(SDL_GetGamepadJoystick(pad)), buf, int(sizeof(buf)));
+    return buf;
+}
+
+// "pad:<guid>:<name>" -> guid / name.
+std::string ChoiceGuid(const std::string& choice) {
+    if (choice.rfind("pad:", 0) != 0) return {};
+    return choice.substr(4, choice.find(':', 4) - 4);
+}
+std::string ChoiceName(const std::string& choice) {
+    const size_t colon = choice.find(':', 4);
+    return colon == std::string::npos ? std::string("Controller") : choice.substr(colon + 1);
+}
+
+// What drives each player this frame. Explicit choices are served first: a chosen pad is the first
+// connected pad with that GUID that no earlier player took (two identical pads share a GUID, so
+// those follow connection order). Then each "auto" player takes the next free pad in OrderedPads
+// order. The keyboard goes to every player who chose it, or, when nobody did, to an "auto"
+// player 1, which is how it worked before the choice existed.
+struct Device {
+    bool keyboard = false;
+    SDL_Gamepad* pad = nullptr;
+};
+std::array<Device, kPlayers> ResolveLocked() {
+    std::array<Device, kPlayers> out{};
+    std::vector<SDL_Gamepad*> free = OrderedPads();
+    auto take = [&](size_t i) {
+        SDL_Gamepad* p = free[i];
+        free.erase(free.begin() + std::ptrdiff_t(i));
+        return p;
+    };
+    bool keyboardChosen = false;
+    for (uint32_t p = 0; p < kPlayers; ++p) {
+        if (g_controller[p] == "keyboard") {
+            out[p].keyboard = true;
+            keyboardChosen = true;
+        }
+        const std::string guid = ChoiceGuid(g_controller[p]);
+        if (guid.empty()) continue;
+        for (size_t i = 0; i < free.size(); ++i) {
+            if (PadGuid(free[i]) == guid) {
+                out[p].pad = take(i);
+                break;
+            }
+        }
+    }
+    for (uint32_t p = 0; p < kPlayers; ++p) {
+        if (g_controller[p] != "auto") continue;
+        if (p == 0 && !keyboardChosen) out[p].keyboard = true;
+        if (!free.empty()) out[p].pad = take(0);
+    }
+    return out;
 }
 
 
@@ -409,8 +514,22 @@ std::string GamepadGlyphFor(uint32_t wpadBit) {
     const auto& defs = ActionsFor(c);
     for (size_t i = 0; i < defs.size(); ++i) {
         if (defs[i].wpad != wpadBit) continue;
-        for (const auto& p : g_bindings[size_t(c)][i].pad) {
+        for (const auto& p : g_bindings[0][size_t(c)][i].pad) {
             if (!p.empty()) return GlyphNameForPad(p);
+        }
+    }
+    return "";
+}
+
+std::string MenuPromptGlyph(const char* action, bool key) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    const auto& defs = ActionsFor(Context::Menu);
+    for (size_t i = 0; i < defs.size(); ++i) {
+        if (std::strcmp(defs[i].id, action) != 0) continue;
+        const Binding& b = g_bindings[0][size_t(Context::Menu)][i];
+        for (const auto& name : key ? b.key : b.pad) {
+            if (!name.empty()) return key ? name : GlyphNameForPad(name);
         }
     }
     return "";
@@ -423,7 +542,7 @@ std::string KeyGlyphFor(uint32_t wpadBit) {
     const auto& defs = ActionsFor(c);
     for (size_t i = 0; i < defs.size(); ++i) {
         if (defs[i].wpad != wpadBit) continue;
-        for (const auto& k : g_bindings[size_t(c)][i].key) {
+        for (const auto& k : g_bindings[0][size_t(c)][i].key) {
             if (k.empty()) continue;
             // A d-pad prompt bound to an arrow key shows the whole arrow cluster.
             if (k == "up" || k == "down" || k == "left" || k == "right") return "arrows";
@@ -440,7 +559,14 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         if (ev->type != AURORA_SDL_EVENT) continue;
         const SDL_Event& e = ev->sdl;
         std::string captured;
-        if (g_capture.key && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+        if (g_capture.optionsMenu && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+            (e.key.scancode == SDL_SCANCODE_ESCAPE || e.key.scancode == SDL_SCANCODE_DELETE)) {
+            if (e.key.scancode == SDL_SCANCODE_ESCAPE) { // cancel: keep what was there
+                g_capture.active = false;
+                return;
+            }
+            captured = ""; // Delete: clear the slot
+        } else if (g_capture.key && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
             if (e.key.scancode == SDL_SCANCODE_F10) continue;
             captured = e.key.scancode == SDL_SCANCODE_ESCAPE && g_capture.slot > 0 ? "" : KeyToName(e.key.scancode);
         } else if (!g_capture.key && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -456,7 +582,8 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         } else {
             continue;
         }
-        auto& b = g_bindings[size_t(g_capture.context)][g_capture.action];
+        if (!g_capture.key && e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && captured.empty()) continue;
+        auto& b = g_bindings[g_capture.player][size_t(g_capture.context)][g_capture.action];
         (g_capture.key ? b.key : b.pad)[g_capture.slot] = captured;
         g_capture.active = false;
         Save();
@@ -468,7 +595,8 @@ void DrawMenu() noexcept {
     std::lock_guard lock(g_mutex);
     LoadLocked();
     if (!ImGui::BeginMenu("NSMBW controls")) return;
-    ImGui::TextDisabled("Current: %s. Click a slot, then press the button or key.", ContextName(CurrentContext()));
+    ImGui::TextDisabled("Player 1's buttons (others: F10 options menu). Current: %s. Click a slot, then press the "
+                        "button or key.", ContextName(CurrentContext()));
     // Tabs rather than a third menu level: a nested popup opened over its parent, and the parent
     // kept the mouse wherever they overlapped, so the top rows could not be clicked.
     if (!ImGui::BeginTabBar("contexts")) {
@@ -481,7 +609,7 @@ void DrawMenu() noexcept {
         const auto& defs = ActionsFor(c);
         if (ImGui::BeginTable("binds", 5, ImGuiTableFlags_SizingFixedFit)) {
             for (size_t i = 0; i < defs.size(); ++i) {
-                auto& b = g_bindings[size_t(c)][i];
+                auto& b = g_bindings[0][size_t(c)][i];
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(defs[i].label);
@@ -509,7 +637,7 @@ void DrawMenu() noexcept {
         }
         ImGui::TextDisabled("Right-click a slot to clear it.");
         if (ImGui::Button("Reset to defaults")) {
-            SetDefaults(c);
+            SetDefaults(0, c);
             g_capture.active = false;
             Save();
         }
@@ -519,13 +647,136 @@ void DrawMenu() noexcept {
     ImGui::EndMenu();
 }
 
+std::vector<BoundAction> Bindings(uint32_t player, Context context) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    std::vector<BoundAction> out;
+    if (player >= kPlayers) return out;
+    const auto& defs = ActionsFor(context);
+    for (size_t i = 0; i < defs.size(); ++i) {
+        BoundAction a;
+        a.label = defs[i].label;
+        // "Jump (2)" -> "Jump": the Wii button in brackets is for the F10 bar's table.
+        if (const size_t bracket = a.label.rfind(" ("); bracket != std::string::npos && a.label.back() == ')') {
+            a.label.erase(bracket);
+        }
+        const auto& b = g_bindings[player][size_t(context)][i];
+        for (size_t s = 0; s < kBindSlots && s < kMaxBinds; ++s) {
+            a.pads[s] = b.pad[s].empty() ? "" : GlyphNameForPad(b.pad[s]);
+            a.keys[s] = b.key[s];
+        }
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+void StartCapture(uint32_t player, Context context, size_t action, bool key, size_t slot) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    if (player >= kPlayers || action >= ActionsFor(context).size() || slot >= kMaxBinds) return;
+    g_capture = Capture{true, context, action, slot, key, player, true};
+}
+
+bool Capturing() noexcept {
+    std::lock_guard lock(g_mutex);
+    return g_capture.active;
+}
+
+void CancelCapture() noexcept {
+    std::lock_guard lock(g_mutex);
+    g_capture.active = false;
+}
+
+void ClearBinding(uint32_t player, Context context, size_t action, bool key, size_t slot) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    if (player >= kPlayers || action >= ActionsFor(context).size() || slot >= kMaxBinds) return;
+    auto& b = g_bindings[player][size_t(context)][action];
+    (key ? b.key : b.pad)[slot].clear();
+    Save();
+}
+
+void ResetBindings(uint32_t player, Context context) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    if (player >= kPlayers) return;
+    SetDefaults(player, context);
+    g_capture.active = false;
+    Save();
+}
+
+namespace {
+std::string GamepadName(SDL_Gamepad* pad) {
+    const char* name = SDL_GetGamepadName(pad);
+    return name != nullptr && name[0] != '\0' ? name : "Controller";
+}
+} // namespace
+
+std::string PlayerControllerName(uint32_t chan) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    if (chan >= kPlayers) return {};
+    const Device d = ResolveLocked()[chan];
+    if (d.pad != nullptr) return d.keyboard ? "Keyboard + " + GamepadName(d.pad) : GamepadName(d.pad);
+    return d.keyboard ? "Keyboard" : "";
+}
+
+std::vector<ControllerChoice> ControllerChoices(uint32_t chan) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    std::vector<ControllerChoice> out{{"auto", "Automatic"}, {"keyboard", "Keyboard"}};
+    std::vector<std::string> seen;
+    for (SDL_Gamepad* p : OrderedPads()) {
+        const std::string guid = PadGuid(p);
+        if (std::find(seen.begin(), seen.end(), guid) != seen.end()) continue; // identical pads: one entry
+        seen.push_back(guid);
+        const std::string name = GamepadName(p);
+        out.push_back({"pad:" + guid + ":" + name, name});
+    }
+    // A chosen pad that isn't connected stays in the list, so the choice isn't lost by looking.
+    if (chan < kPlayers) {
+        const std::string guid = ChoiceGuid(g_controller[chan]);
+        if (!guid.empty() && std::find(seen.begin(), seen.end(), guid) == seen.end()) {
+            out.push_back({g_controller[chan], ChoiceName(g_controller[chan]) + " (not connected)"});
+        }
+    }
+    out.push_back({"none", "None"});
+    return out;
+}
+
+int ControllerChoiceIndex(uint32_t chan) {
+    const auto choices = ControllerChoices(chan);
+    std::lock_guard lock(g_mutex);
+    if (chan >= kPlayers) return 0;
+    const std::string guid = ChoiceGuid(g_controller[chan]);
+    for (size_t i = 0; i < choices.size(); ++i) {
+        if (guid.empty() ? choices[i].id == g_controller[chan] : ChoiceGuid(choices[i].id) == guid) return int(i);
+    }
+    return 0;
+}
+
+void SetControllerChoice(uint32_t chan, const std::string& id) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    if (chan >= kPlayers) return;
+    g_controller[chan] = id;
+    Save();
+}
+
 } // namespace nsmbw_controls
 
 // Players with a controller: 1 (keyboard) or the number of connected gamepads, at most 4.
 extern "C" uint32_t NsmbwControlsPlayerCount() {
     using namespace nsmbw_controls;
-    const size_t pads = OrderedPads().size();
-    return pads <= 1 ? 1u : (pads > 4 ? 4u : uint32_t(pads));
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    // Remotes 1..N are reported connected, so N is the last player with a device (at least 1).
+    const auto devices = ResolveLocked();
+    uint32_t count = 1;
+    for (uint32_t p = 0; p < kPlayers; ++p) {
+        if (devices[p].keyboard || devices[p].pad != nullptr) count = p + 1;
+    }
+    return count;
 }
 
 extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
@@ -536,10 +787,12 @@ extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
     if (g_capture.active) return 0; // a rebind press must not also reach the game
     const Context c = CurrentContext();
     const auto& defs = ActionsFor(c);
-    const auto& binds = g_bindings[size_t(c)];
-    const auto pads = PadsForPlayer(chan);
+    const auto& binds = g_bindings[chan < kPlayers ? chan : 0][size_t(c)];
+    const Device device = chan < kPlayers ? ResolveLocked()[chan] : Device{};
+    std::vector<SDL_Gamepad*> pads;
+    if (device.pad != nullptr) pads.push_back(device.pad);
     int numKeys = 0;
-    const bool* keys = chan == 0 ? SDL_GetKeyboardState(&numKeys) : nullptr;
+    const bool* keys = device.keyboard ? SDL_GetKeyboardState(&numKeys) : nullptr;
 
     uint32_t out = 0;
     for (size_t i = 0; i < defs.size(); ++i) {
@@ -570,10 +823,12 @@ extern "C" float NsmbwControlsReadTilt(uint32_t chan) {
     LoadLocked();
     if (g_capture.active || CurrentContext() != Context::Gameplay) return 0.0f;
     const auto& defs = ActionsFor(Context::Gameplay);
-    const auto& binds = g_bindings[size_t(Context::Gameplay)];
-    const auto pads = PadsForPlayer(chan);
+    const auto& binds = g_bindings[chan < kPlayers ? chan : 0][size_t(Context::Gameplay)];
+    const Device device = chan < kPlayers ? ResolveLocked()[chan] : Device{};
+    std::vector<SDL_Gamepad*> pads;
+    if (device.pad != nullptr) pads.push_back(device.pad);
     int numKeys = 0;
-    const bool* keys = chan == 0 ? SDL_GetKeyboardState(&numKeys) : nullptr;
+    const bool* keys = device.keyboard ? SDL_GetKeyboardState(&numKeys) : nullptr;
 
     constexpr float kDeadZone = 8000.0f; // about 25 % of the axis, a common stick dead zone
     auto amount = [&](const Binding& b) {

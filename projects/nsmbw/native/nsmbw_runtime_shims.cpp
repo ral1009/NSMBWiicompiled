@@ -108,18 +108,12 @@ extern "C" void func_801D9E94(CpuContext*) {}
 // The real music_attenuation.cpp needs the optional C++/WinRT SDK (see its own
 // #include <winrt/base.h>, not configured for this build) for actual Windows media-session
 // integration - detecting when e.g. a browser is playing audio, so guest music can duck under it.
-// Every function it exposes is either pure volume-math (TickGuest, SetSoundPlayerVolume) or a
-// query/setter for that optional feature; stubbed as "feature not running" throughout, which is
-// exactly the state the real implementation starts in until SetEnabled(true) succeeds anyway.
+// That part is stubbed as "feature not running", the state the real implementation starts in
+// until SetEnabled(true) succeeds anyway. The category volumes are NSMBW's own:
+// nsmbw_sound_volumes.cpp.
 namespace MusicAttenuation {
 
-void TickGuest() noexcept {}
-void SetSoundPlayerVolume(uint32_t, float) {}
 void SetEnabled(bool) noexcept {}
-void SetMusicVolume(float) noexcept {}
-void SetSoundEffectsVolume(float) noexcept {}
-void SetUiVolume(float) noexcept {}
-void SetVoicesVolume(float) noexcept {}
 bool IsExternalMediaPlaying() noexcept { return false; }
 bool IsMediaControlAvailable() noexcept { return false; }
 bool IsMediaControlInitializationComplete() noexcept { return true; }

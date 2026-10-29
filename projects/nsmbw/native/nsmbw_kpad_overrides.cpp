@@ -82,6 +82,7 @@ extern "C" void NsmbwSkipBootScreensApply();
 extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan); // runtime/src/product/nsmbw_controls.cpp
 extern "C" float NsmbwControlsReadTilt(uint32_t chan);     // same file; -1 (left) .. +1 (right)
 extern "C" uint32_t NsmbwControlsPlayerCount();            // same file; 1..4
+extern "C" int32_t NsmbwOptionsMenuTakeSound();            // runtime/src/product/nsmbw_options_menu.cpp; -1 when none
 extern "C" void NsmbwWpadSetConnectedCount(uint32_t count); // nsmbw_wpad_overrides.cpp
 extern "C" const bool* SDL_GetKeyboardState(int* numkeys);
 // Set by nsmbw_tick_read_pump.cpp's self-test (NSMBW_AUTO_PRESS_SELFTEST): a synthetic A press
@@ -287,6 +288,32 @@ void WriteZeroedStatus(uint32_t addr, int8_t wpadErr) {
     for (uint32_t off = 0; off < kKpadStatusSize; off += 4u) Memory::Write32(addr + off, 0);
     Memory::Write8(addr + 0x5Du, static_cast<uint8_t>(wpadErr));
 }
+
+// Plays the options menu's sounds (runtime/src/product/nsmbw_options_menu.cpp) with the game's own
+// SndAudioMgr::startSystemSe(id, 1) (0x801954C0; instance pointer SndAudioMgr::sInstance at
+// 0x8042A768 = r13 - 21016, read the same way at 0x8015B118 in Pausewindow_c). The menu draws on
+// the host thread, but a guest function must run on the game thread, and KPADRead is called there
+// every frame, also while the menu holds the game's update. The call clobbers the caller's
+// volatile registers, LR and CR, so the whole context is put back afterwards; the callee's stack
+// frame goes below the caller's r1, which KPADRead (a leaf for the caller) never uses.
+void PlayOptionsMenuSounds() {
+    int32_t sound = NsmbwOptionsMenuTakeSound();
+    if (sound < 0) return;
+    uint32_t mgr = 0;
+    if (!Memory::TryRead32(0x8042A768u, mgr) || mgr == 0) {
+        while (NsmbwOptionsMenuTakeSound() >= 0) {} // no sound system yet (early boot): drop them
+        return;
+    }
+    CpuContext* ctx = CurrentCpuContext();
+    const CpuContext saved = *ctx;
+    for (; sound >= 0; sound = NsmbwOptionsMenuTakeSound()) {
+        ctx->gpr[3] = mgr;
+        ctx->gpr[4] = static_cast<uint32_t>(sound);
+        ctx->gpr[5] = 1;
+        InvokeDirectCpu<0x801954C0u>(ctx);
+    }
+    *ctx = saved;
+}
 } // namespace
 
 extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint32_t num, uint32_t errPtr, uint32_t isEx)
@@ -294,6 +321,7 @@ extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint3
     (void)isEx;
     try {
         SampleKeyboardForFrame();
+        if (chan == 0) PlayOptionsMenuSounds();
         // Channels below the player count are connected remotes (nsmbw_wpad_overrides.cpp
         // marks the same channels connected for WPADProbe).
         if (chan >= g_connectedRemotes || chan >= kMaxRemotes || samples == 0 || num == 0) {

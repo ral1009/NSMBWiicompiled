@@ -10,6 +10,7 @@
 // layer's caches must be notified explicitly that these bytes changed.
 extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "hle/storage/riivolution.h"
+#include "dvd_generated_files.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -619,6 +620,33 @@ static fs::path ResolveDvdMappedHostPath(const std::string& dvdPath, const fs::p
     FailDvd("dvd_fst", "DVD file table is unavailable", reason);
 }
 
+static RuntimeDvd::GeneratedFilesHook g_generatedFilesHook = nullptr;
+
+namespace RuntimeDvd {
+void SetGeneratedFilesHook(GeneratedFilesHook hook) noexcept { g_generatedFilesHook = hook; }
+
+fs::path HostPathFor(const std::string& dvdPath) {
+    const auto it = g_pathToEntry.find(NormalizePath(DvdFstContract::CanonicalizePath(dvdPath)));
+    if (it == g_pathToEntry.end() || it->second < 0 || it->second >= static_cast<int32_t>(g_fileEntries.size())) {
+        return {};
+    }
+    return g_fileEntries[it->second].hostPath;
+}
+
+bool ServeFile(const std::string& dvdPath, const fs::path& hostPath) {
+    std::error_code ec;
+    const auto size = fs::file_size(hostPath, ec);
+    if (ec) {
+        RT_LOG(RT_TAG_DVD) << "generated file " << HostPathText(hostPath) << " is unreadable; keeping "
+                           << dvdPath << std::endl;
+        return false;
+    }
+    RegisterFileEntry(dvdPath, hostPath, static_cast<uint32_t>(size));
+    RT_LOG(RT_TAG_DVD) << "serving generated " << dvdPath << " (" << size << " bytes)" << std::endl;
+    return true;
+}
+} // namespace RuntimeDvd
+
 static void BuildAndPublishRuntimeFst() {
     // Preserve real disc offsets where a runtime entry replaces a file from the
     // extracted image. Created Riivolution paths have no physical disc extent;
@@ -627,6 +655,12 @@ static void BuildAndPublishRuntimeFst() {
         const auto mapped = g_pathToEntry.find(NormalizePath(fstFile.dvdPath));
         if (mapped == g_pathToEntry.end() || mapped->second < 0 ||
             mapped->second >= static_cast<int32_t>(g_fileEntries.size())) {
+            continue;
+        }
+        // A replacement larger than the disc file can't keep the disc range: its tail would
+        // overlap the next file's extent, and absolute reads there would resolve to that file.
+        // It gets a synthetic range below instead.
+        if (g_fileEntries[mapped->second].size > fstFile.size) {
             continue;
         }
         g_fileEntries[mapped->second].discOffsetWords = fstFile.start / 4u;
@@ -839,6 +873,10 @@ extern "C" void DVDInit_8015EA1C()
     RT_LOG(RT_TAG_DVD) << "disc index: " << vanillaEntryCount << " disc file(s), "
               << (g_fileEntries.size() - vanillaEntryCount) << " overlay registration(s) from "
               << overlays.size() << " root(s)" << std::endl;
+
+    if (g_generatedFilesHook != nullptr) {
+        g_generatedFilesHook();
+    }
 
     // Load FST mapping so real files keep their physical disc extents.
     LoadFstIndex();

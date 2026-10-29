@@ -95,6 +95,10 @@ if(MKW_BUILD_NSMBW)
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_layout_patch.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_art.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_draw.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_options_menu.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/host_cpu_baseline.cpp")
     if(NOT WIN32)
         list(REMOVE_ITEM NSMBW_RUNTIME_COMMON_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/wup028_adapter.cpp")
@@ -175,7 +179,11 @@ if(MKW_BUILD_NSMBW)
     add_executable(NSMBWCompiled "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp")
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_layout_patch.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_art.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_draw.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_options_menu.cpp")
     mkw_configure_object_target(NSMBWCompiled)
     # Same product define as nsmbw_runtime_common: runtime_config.h's inline functions read it, and
     # an inline function compiled differently in two objects of one exe is an ODR violation.

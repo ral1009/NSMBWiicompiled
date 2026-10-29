@@ -95,6 +95,13 @@ bool aurora_get_disable_copy_filter();
 void aurora_set_texture_replacements_enabled(bool enabled);
 bool aurora_get_texture_replacements_enabled();
 bool aurora_texture_replacements_available();
+// Looks up a GX texture in the texture pack the way a draw does (width, height, GX format and the
+// XXH64 of its texel data; non-palette formats only) and hands the pack image's base level, as
+// RGBA8, to `receive` before returning. False when there is no match, the pack is off, or the file
+// isn't RGBA8. For host-drawn UI that reuses game art.
+bool aurora_texture_replacement_rgba8(const void* gxData, uint32_t width, uint32_t height, uint32_t format,
+                                      void (*receive)(void* user, uint32_t width, uint32_t height, const void* rgba8),
+                                      void* user);
 
 // Paints images over rectangles of one game texture, identified the way a Dolphin texture-pack file
 // name identifies it (tex1_<width>x<height>_<hash>_<format>). Works on the pack's file when the pack

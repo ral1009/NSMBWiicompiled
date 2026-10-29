@@ -11,6 +11,7 @@
 #include <SDL3/SDL_render.h>
 
 #include "fs_helper.hpp"
+#include "gfx/png_io.hpp"
 #include "internal.hpp"
 #include "webgpu/gpu.hpp"
 #include "window.hpp"
@@ -250,5 +251,16 @@ ImTextureID add_texture(uint32_t width, uint32_t height, const uint8_t* data) no
 extern "C" {
 ImTextureID aurora_imgui_add_texture(uint32_t width, uint32_t height, const void* rgba8) {
   return aurora::imgui::add_texture(width, height, static_cast<const uint8_t*>(rgba8));
+}
+
+ImTextureID aurora_imgui_add_texture_png(const void* png, size_t size, uint32_t* width, uint32_t* height) {
+  auto image = aurora::gfx::png::load_png_bytes(static_cast<const uint8_t*>(png), size);
+  // load_png_bytes expands every PNG to RGBA8 (png_io.cpp); anything else would be a new path there.
+  if (!image || image->format != wgpu::TextureFormat::RGBA8Unorm) {
+    return 0;
+  }
+  if (width != nullptr) *width = image->width;
+  if (height != nullptr) *height = image->height;
+  return aurora::imgui::add_texture(image->width, image->height, image->data.data());
 }
 }

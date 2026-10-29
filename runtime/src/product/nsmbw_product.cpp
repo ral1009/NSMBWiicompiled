@@ -16,6 +16,8 @@
 #include "settings_overlay.h"
 #include "nsmbw_button_glyphs.h"
 #include "nsmbw_controls.h"
+#include "nsmbw_layout_patch.h"
+#include "nsmbw_options_menu.h"
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -866,6 +868,9 @@ int main() {
     // fails for the rest of the run. This is MKW's DVDInit HLE, reused for its index build and
     // BuildAndPublishRuntimeFst(); its trailing __DVDFSInit call targets MKW's address and is
     // already guarded by a registry lookup, so it simply no-ops here.
+    // The pause menu's Options button is a patched layout served from inside this DVDInit, so its
+    // hook has to be registered first (registered after it on 2026-10-28, it never ran).
+    nsmbw_layout_patch::Register();
     DVDInit_8015EA1C();
 
     // NSMBW's own boot sequence draws its Wii Remote strap warning as its first real content -
@@ -981,6 +986,8 @@ int main() {
         nsmbw_controls::DrawMenu();
         nsmbw_button_glyphs::DrawSettingsMenu();
     });
+    // F10: the options menu drawn with the game's own pause-menu art (Shift+F10: the F10 bar).
+    nsmbw_options_menu::Register();
 
     std::printf("[nsmbw] Opening window...\n");
     AuroraInfo auroraInfo{};

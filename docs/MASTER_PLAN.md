@@ -1068,3 +1068,33 @@ What I learned:
 What's next:
 - Nothing pending from the audit. HD-pack mipmaps only if the laptop shows frame drops in levels or shimmering distant textures with the pack on.
 
+
+## 2026-10-29 — Options menu in the game's own style; Options buttons in the pause and map menus; category volumes
+What I did:
+- **F10 opens an options menu drawn with the game's own art** (`runtime/src/product/nsmbw_options_menu.cpp`, `nsmbw_menu_draw.cpp`, `nsmbw_menu_art.cpp`). The pause window frame, the button frames, the yellow corner cursor and the fonts are read from the player's extracted disc (`Layout/pauseMenu/pauseMenu.arc`, `Layout/select_cursor`, `EU/<lang>/Font`). The colours, sizes and animation curves come from the same files' `.brlyt` / `.brlan`. A *Hermite key* is a (frame, value, slope) point; the curve between two keys is a cubic that passes through both with those slopes, which is how nw4r layouts animate. So the window scales in and out over 8 frames like the pause window, buttons grow on focus and squash on a press, and the cursor pulses on the game's 65-frame loop. Shift+F10 still opens the old ImGui bar.
+  - Tabs: Graphics (display mode, resolution, frame interpolation, HD pack, bloom), Audio (Master, Music, Sound effects, Menu sounds), Controls (per-player controller picker, then rebinding), Advanced (show FPS, skip draws while compiling, copy filter, audio mixing thread).
+  - The menu plays the game's own sounds (SE_SYS_CURSOR / DECIDE / BACK / INVALID) by calling `SndAudioMgr::startSystemSe` (0x801954C0) from the input poll on channel 0 (`nsmbw_kpad_overrides.cpp`).
+  - Select / Back prompts use the menu bindings' glyphs. The yellow note line only appears when something matters, such as a restart being needed or no controller. The two-line descriptions were removed at the developer's request.
+- **A real third button, "Options", in the in-course pause menu and the world-map menu.**
+  - Layout side (`runtime/src/product/nsmbw_layout_patch.cpp`): at startup the pause and map archives are read from the disc, the Exit (or Save) button's pane subtree is cloned under new names, a group and renamed animation tracks are added, the window is grown, and the patched archive is written to `<AppData>/generated/`. A new DVD hook (`runtime/include/dvd_generated_files.h`) serves it in place of the disc file.
+  - Game side (`projects/nsmbw/native/nsmbw_pause_options.cpp`, `nsmbw_map_options.cpp`): the functions that pick a button's animation or cursor pane by arithmetic on a two- or four-button layout are replaced, so they know the extra button. Most are structural copies with `EDIT` lines. The cursor steps in screen order.
+  - Pressing Options plays the button's hit animation, then the menu's out animation (so it can't be seen behind the options menu), then the options menu's in animation. Closing reverses it through the game's own open state.
+  - Pause: Continue / Options / Exit; the window grows 70 units and is recentred. Map: Star Coins / Add/Drop / Save / Options / Title Screen; the window sits between the screen top and the game's Back hint.
+- **Music / Sound effects / Menu sounds sliders now work** (`projects/nsmbw/native/nsmbw_sound_volumes.cpp`; issues.md). There is no Voices slider: NSMBW plays voices on the effect players, so they can't be separated.
+- **Controller picker per player** (`nsmbw_controls.cpp`): "Auto" or a specific pad, saved as `controller =` / `p2.controller =` in `nsmbw_controls.ini`.
+- **Menu keys made consistent:** the menu context's keyboard defaults are now Z / Enter (confirm) and X / Backspace (back), so the first key, the one the prompts show, matches the X / Z the game's own screens show. Saved lists still at the old default order are migrated once.
+- **6x / 8x with frame interpolation:** the inherited WiiCompiled rule that blocks them was removed, then restored the same day after the developer measured 8x at 180 fps running badly. It now carries that evidence in a comment.
+
+What broke / what I didn't expect:
+- The layout patch never applied on its first run. It was registered after `DVDInit_8015EA1C()`, which publishes the file table, so the hook was called too late.
+- A patched archive larger than the disc file kept the disc file's offset, so absolute reads past its old end would land in the next file (issues.md, general).
+- The first sound-volume attempt assumed the decomp headers' SoundPlayer size and found nothing. NSMBW's nw4r version uses 0x64-byte players, which a search validated against the brsar's playable-sound counts found it.
+- Positioning the taller map window took four rounds of screenshots. Moving the Back hint put it against the screen bottom, scaling the window to 94% was rejected, and moving the window up by the whole extra height touched the top. The final split is the window 22 units below the top and 5 units above the hint.
+
+What I learned:
+- A layout file can be extended without touching the game's loader: the loader reads whatever panes, groups and animation tracks are in the archive, so cloning and renaming is enough on the data side. The code side only has to stop assuming the button count.
+- When the guest picks an animation by `base + index`, adding a button means registering its animations *after* all the originals and redirecting only the functions that do the arithmetic.
+
+What's next:
+- Developer check on screen: the map window's final position, the lighter outlines, the prompts inside the window, and the migrated X / Z keys (all built, not yet seen).
+- File-select gear button: investigated only. The layout has free space top right, but no gear art exists on the disc, and the file-select input would need its own button or cursor changes.

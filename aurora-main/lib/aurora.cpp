@@ -2109,6 +2109,11 @@ void aurora_set_texture_replacements_enabled(bool enabled) {
 }
 bool aurora_get_texture_replacements_enabled() { return aurora::gfx::texture_replacement::enabled(); }
 bool aurora_texture_replacements_available() { return aurora::g_config.allowTextureReplacements; }
+bool aurora_texture_replacement_rgba8(const void* gxData, uint32_t width, uint32_t height, uint32_t format,
+                                      void (*receive)(void* user, uint32_t width, uint32_t height, const void* rgba8),
+                                      void* user) {
+  return aurora::gfx::texture_replacement::replacement_rgba8(gxData, width, height, format, receive, user);
+}
 namespace aurora::gx::fifo {
 extern std::atomic<uint64_t> g_fifoDrainWaitNanos;
 extern std::atomic<uint64_t> g_fifoDrainWaitMaxNanos;

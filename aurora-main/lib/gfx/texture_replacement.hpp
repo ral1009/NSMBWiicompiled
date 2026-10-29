@@ -11,6 +11,10 @@ void register_tlut(const GXTlutObj* obj, const void* data, GXTlutFmt format, uin
 void load_tlut(const GXTlutObj* obj, uint32_t idx) noexcept;
 std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept;
 std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept;
+// See aurora_texture_replacement_rgba8 (gfx.h).
+bool replacement_rgba8(const void* gxData, uint32_t width, uint32_t height, uint32_t format,
+                       void (*receive)(void* user, uint32_t width, uint32_t height, const void* rgba8),
+                       void* user) noexcept;
 // Live on/off switch. The pack index and palette mirrors are built whenever
 // g_config.allowTextureReplacements is set at init; this only decides whether find_replacement
 // returns them. revision() changes on every switch so gx can drop textures it already resolved.

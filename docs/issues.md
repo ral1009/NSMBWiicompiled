@@ -640,6 +640,26 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: each segment starts on a 32-query boundary, and every pass stores its own query index (`gpu_timing` in `aurora-main/lib/gfx/common.cpp`). Verified: two normal timing runs with no errors and the same per-pass breakdown as before the fix. The condition that made Dawn report the error was not reproduced again, so the fix is checked by construction, not by a before/after of the error.
 - Scope: General (diagnostic only; `AURORA_GPU_TIMING` is off for players).
 
+## 2026-10-29 — options menu work
+
+### Music, Sound effects, Voices and Menu sounds sliders did nothing
+- Symptom: only Master changed the volume; the other F10 sliders were saved but had no audible effect (developer, 2026-10-28).
+- Root cause: the category volumes live in `runtime/src/music_attenuation.cpp`, which reaches the game through Mario Kart Wii's sound-manager address and MKW's 11 sound players. NSMBW doesn't build it, so its setters were no-op stubs in `nsmbw_runtime_shims.cpp`. Master worked because it is applied at the host audio output, not in the game.
+- Fix: `projects/nsmbw/native/nsmbw_sound_volumes.cpp` follows NSMBW's own chain: `SndAudioMgr::sInstance` (0x8042A768), then the SoundArchivePlayer at +0x5BC, then 22 players of 0x64 bytes from +0x40. It scales each player's volume (+0x2C) by category: Music players 16-21, Menu players 0/1/11, Effects the rest. The layout is found by search and is only accepted if each player's playable-sound count matches `wii_mj2d_sound.brsar`. Verified: a quiet run logged the layout and the scaled volumes at 0.3 / 0.6 / 0.5, and the developer confirmed the sliders by ear. There is no Voices slider: voices share the effect players.
+- Scope: NSMBW-specific (the class is general: a shared-runtime feature bound to MKW addresses).
+
+### A replacement file larger than the disc file kept the disc file's extent
+- Symptom: none seen in play. Found while serving the patched pause-menu archive, which is larger than the original.
+- Root cause: `BuildAndPublishRuntimeFst` gave every runtime entry that replaces a disc file that file's physical offset. When the replacement is larger, its tail overlaps the next file's extent, and absolute disc reads there would resolve to the wrong file.
+- Fix: a replacement larger than the disc file keeps no disc offset and gets a synthetic extent, like a newly created file (`runtime/src/hle/storage/dvd.cpp`). Verified: both patched archives were served and the menus loaded them.
+- Scope: General (DVD HLE; it also applies to Riivolution file replacements).
+
+### Menu back / confirm keys differed between our menus and the game's
+- Symptom: some prompts showed Backspace for Back and others showed X (developer screenshots, 2026-10-29).
+- Root cause: the menu context's default keyboard lists were `enter, z` and `backspace, x`. Prompts show the first key, while the game's own screens draw the Wii button that the gameplay bindings (Z / X) map to.
+- Fix: the defaults are now `z, enter` and `x, backspace`, and saved lists still in the old default order are swapped once (`runtime/src/product/nsmbw_controls.cpp`). Built, not yet checked on screen.
+- Scope: NSMBW-specific.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -673,3 +693,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Seed pipeline cache coverage (2026-10-16): only W1-era scenes were collected; levels in later worlds still compile some pipelines on first visit. Merge caches from longer play sessions with `merge_pipeline_cache.py`.
 - Full-target resolve snapshots (2026-10-25): cropped for sampled/converted copies; MKW's depth-of-field chain, which the upstream comment says needed them, is untested with the crop (`NSMBW_FULL_RESOLVE_SNAPSHOT=1` to compare).
 - GPU timer resolve alignment (2026-10-26): why Dawn reported the unaligned offset despite `skip_validation` in one run (after an injected out-of-memory error) is unexplained.
+- Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.
