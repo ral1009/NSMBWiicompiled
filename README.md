@@ -121,7 +121,7 @@ Buttons are bound to **actions, separately for courses, the world map and menus*
 ## Changes to the game
 
 - **Exit** in the pause menu works in every course, cleared or not (enemy courses excepted, as in the original). `projects/nsmbw/native/nsmbw_pause_exit.cpp`.
-- **Options** is a third button in the pause menu (Continue / Options / Exit) and the world-map menu. It opens the options menu, which F10 also opens: graphics, audio volumes per category, a controller per player with rebinding, and advanced switches, drawn with the game's own window, buttons, cursor, fonts and sounds. The layouts are patched from the player's disc at startup (`runtime/src/product/nsmbw_layout_patch.cpp`); Shift+F10 opens the older settings bar. `projects/nsmbw/native/nsmbw_pause_options.cpp`, `nsmbw_map_options.cpp`.
+- **Options** is a third button in the pause menu (Continue / Options / Exit) and the world-map menu. It opens the options menu, which F10 also opens: graphics, audio volumes per category, a controller per player with rebinding, and advanced switches, drawn with the game's own window, buttons, cursor, fonts and sounds. The layouts are patched from the player's disc at startup (`runtime/src/product/nsmbw_layout_patch.cpp`); It also opens by itself once, before the title screen, on an install's first launch. Shift+F10 opens the older settings bar. `projects/nsmbw/native/nsmbw_pause_options.cpp`, `nsmbw_map_options.cpp`.
 - **Save** on the world-map menu is always a full save. The original offers only Quick Save (save and quit to the title) until the final boss is beaten. The saved "final boss beaten" flag itself is untouched. `projects/nsmbw/native/nsmbw_wm_full_save.cpp`.
 
 ## Controller button glyphs

@@ -10,6 +10,7 @@
 #include "nsmbw_menu_draw.h"
 
 #include "memory.h"
+#include "runtime_config.h"
 #include "settings_overlay.h"
 
 #include <SDL3/SDL_events.h>
@@ -21,6 +22,8 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <initializer_list>
 #include <iterator>
@@ -722,8 +725,40 @@ void DrawBindings(const draw::Canvas& c) {
 // played its own decide sound.
 std::atomic<bool> g_openFromPause{false};
 
+// First launch: the menu opens by itself once, at startup before the title screen, so a new player
+// sees the settings before playing (developer request, 2026-10-29). "Once" is a marker file next
+// to nsmbw_controls.ini, written when the menu opens. The game is held behind it like any other
+// open (SetGameStopped): in a 2026-10-29 run the boot scene made no progress until the menu was
+// closed, and the title loaded right after. No pause sound: the game's sound archive may not be loaded yet this
+// early. Scripted test runs (NSMBW_AUTO_PRESS_SELFTEST) never get it, since their presses would
+// land in the menu; NSMBW_FIRST_LAUNCH_OPTIONS=1 forces it.
+void OpenOnFirstLaunch() {
+    static bool done = false;
+    static float firstFrame = -1;
+    if (done) return;
+    const auto marker = RuntimeConfigFile::ApplicationDataDirectory() / "options_menu_shown";
+    static const bool forced = std::getenv("NSMBW_FIRST_LAUNCH_OPTIONS") != nullptr;
+    if (!forced) {
+        std::error_code ec;
+        if (std::getenv("NSMBW_AUTO_PRESS_SELFTEST") != nullptr || std::filesystem::exists(marker, ec)) {
+            done = true;
+            return;
+        }
+    }
+    // Half a second after the window's first frame, so the in-animation isn't lost to start-up hitches.
+    const float now = draw::Now();
+    if (firstFrame < 0) firstFrame = now;
+    if (now - firstFrame < 30) return;
+    done = true;
+    std::error_code ec;
+    std::filesystem::create_directories(marker.parent_path(), ec);
+    std::ofstream(marker) << "The options menu opened by itself on this install's first launch.\n";
+    Open("first launch", false);
+}
+
 void Draw() noexcept {
     if (!g.open && g_openFromPause.exchange(false)) Open("pause menu", true);
+    if (!g.open) OpenOnFirstLaunch();
     if (!g.open) {
         ClearHeldIfReleased();
         return;
