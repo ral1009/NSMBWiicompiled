@@ -224,9 +224,10 @@ Each item was checked against the code on 2026-09-26. None of it starts until th
 Work that has been decided on but parked. Remove an item when it is done and note it in the progress log.
 
 - **Confirm the seed shader list on the Iris Xe laptop** (2026-10-16). Put `initial_pipeline_cache.db` next to the exe, move `nsmbw_data\Cache` aside, then run `run_with_logging.bat`. Expect "Seeded pipeline cache ... 398 rows merged", "Pipeline prewarm finished", and no multi-second freeze on the first world-map visit.
-- **Measure GPU cost per render pass** (2026-10-16). Add GPU timing (Dawn timestamp queries) to find which pass dominates on integrated GPUs above 1x: EFB copies, the scaled tile cache or the presenter. Laptop evidence: 10 fps after a render-scale increase, and "Presenter fell behind" at 180 FPS. Do this before the uncapped / any-refresh interpolation work, which adds GPU load.
 - **Native AX audio routines** (2026-10-16, low priority). 96% of audio time is NSMBW's own AX library running as translated code (guest AI callback: ~31 ms/s, about 93 us per 3 ms block; host join+push ~1 ms/s). Rewriting the hot routines natively saves at most ~3% of a core on a game thread that is 74-86% idle, so it is only worth it if a slow CPU ever becomes the limit. Needs a bit-exact PCM comparison before and after.
 - **Grow the seed shader list** (2026-10-16). It only covers W1-era scenes. Merge caches from play sessions through W2-W9, towers, castles and airships with `projects/nsmbw/tools/merge_pipeline_cache.py`.
+- **Animations freeze after a resolution change in a level** (developer report, 2026-10-31; for a future release). Changing the render scale while in a level freezes the animation of coins, item boxes and similar animated tiles. Not investigated yet. A first guess, unchecked: those tiles are animated by copying each frame into the tileset atlas (EFB copies, see the 2026-10-17 copy-target work), and a scale change rebuilds the copy targets, so the atlas may keep sampling a stale copy.
+- **Shader cache** (developer, 2026-10-31; for a future release). The scope is not written down yet; related open items are "Grow the seed shader list" above and confirming the seed on the laptop.
 
 ## 6. Progress log
 
@@ -1103,3 +1104,4 @@ What's next:
 
 ## 2026-10-31 — Release v0.2.0
 - Version 0.2.0 in the exe's version resource (`runtime/cmake/NsmbwProduct.cmake`) and the package name (`package_nsmbw.ps1`). Contents since v0.1.0 include the options menu, the Options buttons, category volumes, the first-launch menu and the performance work from 2026-10-16 to 10-26. `PLAYING.txt` now describes the options menu and the new menu keys.
+- Two-controller play has been tested by the developer (reported 2026-10-31), closing the open item from 2026-10-11.

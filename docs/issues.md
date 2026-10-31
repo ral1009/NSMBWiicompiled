@@ -559,7 +559,7 @@ The recurring classes, for reference (details in CLAUDE.md):
 ### Second controller never joined (multiplayer impossible)
 - **Symptom:** with two controllers, both moved Mario; no second player could join.
 - **Root cause:** the input HLE was built for one Wii Remote. `_wpdcb` was seeded for channel 0 only, so `WPADProbe` reported channels 1-3 as having no controller. `WPADGetInfoAsync` and the `KPADRead` override (0x801ED500) answered only channel 0, with one global hold/shake/tilt state. And `nsmbw_controls.cpp`'s `ActivePads()` merged every gamepad into that one remote. (`mPad`'s 0x8042A758, which the old code set to 1, is a polling interval in `beginPad` 0x8016F360, not a player count; it was left at 1.)
-- **Fix:** player N = the Nth connected gamepad (the overlay's port-0 pad first), and the keyboard belongs to player 0 (`NsmbwControlsReadWpad/ReadTilt(chan)`, `NsmbwControlsPlayerCount`). `KPADRead` keeps per-channel state (`nsmbw_kpad_overrides.cpp`). `NsmbwWpadSetConnectedCount` marks channels below the player count connected and the rest disconnected each frame, and `WPADGetInfoAsync` answers those channels with LED = 1<<chan (`nsmbw_wpad_overrides.cpp`). Verified so far: single player still boots to a level (`connected remotes: 0 -> 1`). Not yet verified: a second controller joining.
+- **Fix:** player N = the Nth connected gamepad (the overlay's port-0 pad first), and the keyboard belongs to player 0 (`NsmbwControlsReadWpad/ReadTilt(chan)`, `NsmbwControlsPlayerCount`). `KPADRead` keeps per-channel state (`nsmbw_kpad_overrides.cpp`). `NsmbwWpadSetConnectedCount` marks channels below the player count connected and the rest disconnected each frame, and `WPADGetInfoAsync` answers those channels with LED = 1<<chan (`nsmbw_wpad_overrides.cpp`). Verified so far: single player still boots to a level (`connected remotes: 0 -> 1`). A second controller joining was verified later by the developer (reported 2026-10-31).
 - **Scope:** Unconfirmed (needs a two-controller test). The class is general: per-channel SDK state faked for channel 0 only.
 
 ## 2026-10-12 — button glyphs
@@ -687,7 +687,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
   - The template's example `nand_root = "D:\\WiiNand"` fails if its `#` is removed.
   - (Fixed 2026-09-29, `bb9c79b`) `ResetPersistentStateForCleanRun` reset the window/video keys to 640x480 windowed on every launch; now only for test runs (`NSMBW_AUTO_PRESS_SELFTEST` or `NSMBW_RESET_WINDOW=1`).
   - `PLAYING.txt` documents all four; each should be fixed in code before a release.
-- Multiplayer (2026-10-11, `7dc53c3`): a second controller joining is untested.
+- (Resolved 2026-10-31) Multiplayer (2026-10-11, `7dc53c3`): two controllers tested by the developer.
 - Glyph downscaling and keycap icons (2026-10-12, `812ad7d`): not re-checked on screen.
 - Tilt direction: flipped after the developer found it reversed on a platform (2026-09-28); the flipped direction on screen is not yet re-confirmed.
 - Seed pipeline cache coverage (2026-10-16): only W1-era scenes were collected; levels in later worlds still compile some pipelines on first visit. Merge caches from longer play sessions with `merge_pipeline_cache.py`.

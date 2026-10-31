@@ -18,7 +18,7 @@ Verified with screenshots (the evidence for each row is in the progress log):
 | Title screen (logo, hills, ground tiles, circle-wipe transition) | renders; sky colour not yet confirmed, Mario / "PRESS 2" not yet checked |
 | File Selection (cards, Erase/Copy, Free Mode / Coin Battle, background) | renders correctly |
 | Intro cutscene | plays to the end, including the item-rain section, without crashing |
-| Input | keyboard and SDL gamepads, bound per context (see Controls). One Wii Remote per connected gamepad, up to 4 players (2026-10-11); single player verified, a second controller joining **not yet verified** |
+| Input | keyboard and SDL gamepads, bound per context (see Controls). One Wii Remote per connected gamepad, up to 4 players (2026-10-11); single player and two controllers verified (developer, by 2026-10-31) |
 | Audio | AX/DSP frames now run, so sound-driven game logic advances; audible output not yet verified |
 | World map | renders and runs; enter a level with **2** (A opens the map's free-look mode) |
 | Levels (1-1, 1-2, 1-Tower, 1-Castle) | sky, tiles, Mario, enemies, bosses and background all render; playable with keyboard input; tilesets swap correctly between levels (2026-09-21) |
@@ -107,7 +107,7 @@ Dolphin custom-texture packs work unchanged. A release build's first launch offe
 
 NSMBW is played with a keyboard or any SDL gamepad; there is no Wii Remote support, so the boot goes straight to the title screen (the strap warning and "Hold the Wii Remote sideways" screens are skipped; `NSMBW_SHOW_BOOT_SCREENS=1` keeps them).
 
-Buttons are bound to **actions, separately for courses, the world map and menus** (F10 → Controller settings → NSMBW controls): Jump and Confirm are both the Wii Remote's 2 button to the game, but they can sit on different buttons. Click a slot and press the button or key to bind it; right-click clears it. Bindings are saved in `%LOCALAPPDATA%\WiiCompiled\nsmbw_controls.ini`. Each connected gamepad is its own Wii Remote (player N = Nth pad, up to 4); the keyboard is player 1's. Multiplayer with two pads is not yet tested. Defaults:
+Buttons are bound to **actions, separately for courses, the world map and menus** (F10 → Controller settings → NSMBW controls): Jump and Confirm are both the Wii Remote's 2 button to the game, but they can sit on different buttons. Click a slot and press the button or key to bind it; right-click clears it. Bindings are saved in `%LOCALAPPDATA%\WiiCompiled\nsmbw_controls.ini`. Each connected gamepad is its own Wii Remote (player N = Nth pad, up to 4, or a specific pad picked per player in the options menu's Controls tab); the keyboard is player 1's. Two-controller play has been tested by the developer. Defaults:
 
 | | Gamepad | Keyboard |
 |---|---|---|
