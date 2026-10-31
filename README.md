@@ -1,157 +1,125 @@
 # NSMBWiicompiled
 
-A native PC port of *New Super Mario Bros. Wii* (NSMBW, PAL v1) via **static recompilation** — the same technique [WiiCompiled](https://github.com/patchzyy/Wiicompiled) uses for Mario Kart Wii, applied to a different game. No emulator, no interpreter, no JIT: the game's PowerPC code is translated once, ahead of time, into real, compilable C++, and rendered through [aurora](https://github.com/encounter/aurora).
+**New Super Mario Bros. Wii as a native Windows game.** Play in high resolution and widescreen, at up to 180 fps, with keyboard or any gamepad, Dolphin HD texture packs and up to four players. No emulator needed.
 
-This is a student side project, built with AI assistance, and doubles as a from-scratch education in C, PowerPC, and the recompilation toolchain. See [`CLAUDE.md`](CLAUDE.md) for the working norms and [`docs/MASTER_PLAN.md`](docs/MASTER_PLAN.md) for the full phase plan, learning curriculum, and dated progress log — that file is the single source of truth on scope and status; this README just summarizes it.
+<p align="center">
+  <img src="docs/images/hero.png" alt="World 1-1 in widescreen at high resolution" width="800">
+</p>
 
-**You need your own legally dumped PAL NSMBW disc.** Nothing here works without it, and no Nintendo assets, code or data are bundled — translation runs locally against your own disc image.
+**[Download the latest release](https://github.com/ral1009/NSMBWiicompiled/releases/latest)**
 
-## Status: v0.2.0 released — options menu in the game's style (2026-10-31); v0.1.0 was the playable, no-setup first launch (2026-10-12)
+> [!IMPORTANT]
+> This download contains no game assets: no levels, graphics, music or sound. You need your own copy of the game, dumped from the **PAL disc (SMNP01), revision 1**. The US disc will not work. Please don't ask for game files.
 
-Release builds ask for your disc image on first launch, extract it with the bundled DolphinTool, and optionally install a Dolphin HD texture pack. The table below is the per-stage evidence from the earlier bring-up; later work (controls, glyphs, interpolation, HD packs, release packaging) is in the sections further down and in the progress log.
+## Contents
+- [System requirements](#system-requirements)
+- [How to install](#how-to-install)
+- [Features](#features)
+- [Controls](#controls)
+- [Known issues](#known-issues)
+- [FAQ](#faq)
+- [Building from source](#building-from-source)
+- [Credits](#credits)
 
-Verified with screenshots (the evidence for each row is in the progress log):
+## System requirements
+- Windows 10 or 11, 64-bit
+- A CPU with AVX2: Intel Haswell (2013) or newer, or any AMD Ryzen
+- A GPU with Direct3D 12 or Vulkan; integrated graphics work (see [FAQ](#faq))
+- About 1 GB of free space
+- Your own dump of the PAL disc as `.rvz`, `.iso` or `.wbfs`. Dolphin's [ripping guide](https://dolphin-emu.org/docs/guides/ripping-games/) explains how to dump a disc from a Wii.
 
-| Stage | State |
-| --- | --- |
-| Boot, Wii Strap screen, "save data has been created" dialog | renders correctly |
-| Title screen (logo, hills, ground tiles, circle-wipe transition) | renders; sky colour not yet confirmed, Mario / "PRESS 2" not yet checked |
-| File Selection (cards, Erase/Copy, Free Mode / Coin Battle, background) | renders correctly |
-| Intro cutscene | plays to the end, including the item-rain section, without crashing |
-| Input | keyboard and SDL gamepads, bound per context (see Controls). One Wii Remote per connected gamepad, up to 4 players (2026-10-11); single player and two controllers verified (developer, by 2026-10-31) |
-| Audio | AX/DSP frames now run, so sound-driven game logic advances; audible output not yet verified |
-| World map | renders and runs; enter a level with **2** (A opens the map's free-look mode) |
-| Levels (1-1, 1-2, 1-Tower, 1-Castle) | sky, tiles, Mario, enemies, bosses and background all render; playable with keyboard input; tilesets swap correctly between levels (2026-09-21) |
-| Save data | `wiimj2d.sav` is kept between runs and loaded at boot, so a started file resumes at the map without replaying the intro (`NSMBW_RESET_SAVE=1` wipes it) |
+## How to install
+1. Download the zip from the [releases page](https://github.com/ral1009/NSMBWiicompiled/releases/latest) and extract all of it into its own folder.
+2. Run `NSMBWCompiled.exe`.
+3. Pick your disc image when asked. It is extracted once into a `disc` folder next to the game, which takes a few seconds. You can also pick a folder you already extracted with Dolphin.
+4. Optionally, pick a Dolphin HD texture pack folder to install it.
+5. The options menu opens before the title screen the first time, so you can set resolution, frame rate and controls before playing. Press **F10** to open it again at any time.
 
-## How this differs from decompilation
+Later launches go straight to the game.
 
-- **Recompilation is the deliverable.** WiiCompiled's translator pipeline (PowerPC decode → IR/SSA lift → C++ emit → native compile) produces the actual playable build.
-- **[NSMBW-Decomp](https://github.com/NSMBW-Community/NSMBW-Decomp) is reference material, not the goal.** Its symbol maps and verified source are used as ground truth to make the recompilation correct; this project isn't trying to extend or finish that decomp itself. Its licence terms need confirming before any release that incorporates its code.
+## Features
 
-## Repository layout
+### An options menu that looks like it belongs
+Press **F10**, or choose **Options** in the pause menu or the world-map menu. The menu uses the game's own windows, buttons, fonts, animations and sounds.
 
-| Path | What it is |
-| --- | --- |
-| `translator/` | The game-agnostic PowerPC → C++ translator (decoder, IR/SSA lifter, emitter), from WiiCompiled; NSMBW added the multi-module shard emitter |
-| `runtime/` | Shared runtime: HLE implementations of Wii SDK calls (GX, OS, audio, input, DVD, etc.) plus NSMBW-specific product code (`runtime/src/product/nsmbw_product.cpp`). NSMBW-only branches are `#ifdef MKW_RUNTIME_PRODUCT_NSMBW` |
-| `aurora-main/` | Vendored [aurora](https://github.com/encounter/aurora) — GX-to-modern-GPU (D3D12/Vulkan/OpenGL via Dawn/WebGPU) compatibility layer, with env-gated NSMBW diagnostics in `lib/gx/command_processor.cpp` |
-| `projects/nsmbw/` | NSMBW's manifest (`nsmbw.yml`), per-REL manifests (`nsmbw-d_*.yml`, linked by `modules.txt`), `function_map.txt` (real NSMBW addresses; also seeds translation), native overrides (`native/*.cpp`, each commented with the evidence for its binding — files ending `_diag.cpp` are diagnostics, not fixes), and `tools/` (`run_nsmbw.ps1` timed run + screenshots, `shot.ps1`, `ppm2png.ps1`) |
-| `projects/mkwii/` | The original Mario Kart Wii project this was forked alongside, kept for reference |
-| `docs/MASTER_PLAN.md` | Project scope, phase breakdown, learning curriculum, and the dated progress log |
-| `docs/issues.md` | Every bug fixed so far: Symptom / Root cause / Fix / Scope (general runtime bug vs NSMBW-specific vs unconfirmed) |
+| | |
+|---|---|
+| ![The options menu](docs/images/options.png) | ![The pause menu with its Options button](docs/images/pause.png) |
 
-## Building
+- **Graphics:** windowed, borderless or fullscreen; resolution from native up to 8x; frame interpolation; HD textures; bloom
+- **Audio:** separate volumes for music, sound effects and menu sounds
+- **Controls:** pick which controller each player uses, and rebind any button
+- **Advanced:** FPS counter and a few performance switches
 
-Prerequisites (from `translator/README.md`): .NET 8 SDK, CMake ≥ 3.16, Ninja, Clang/LLVM (LLVM-MinGW targeting `x86-64-v3` is the tested path; MSVC is not), and a checkout of NSMBW-Decomp *inside* this directory (`NSMBW-Decomp/`, gitignored) holding `original/wiimj2d.dol` and the four `original/*.rel` files from your own dump — the manifests read `NSMBW-Decomp/original/`.
+### High resolution and widescreen
+Render at up to 8x the Wii's resolution, in 16:9. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120 or 180 fps on high-refresh monitors.
 
-There's no packaged one-command build yet. From the repo root:
+### HD texture packs
+Dolphin texture packs for NSMBW work without changes. Install one during setup, or later by copying it into the game folder, and switch it on or off in the options menu while you play. Tested with *NSMBW HD v2.81* and nymo642's [HD HUD Tweaks](https://gamebanana.com/mods/480785). No packs are included; download them from their authors.
 
-```bash
-# 1. Translate main.dol (start = the DOL entry point) and each REL (start = its _prolog).
-dotnet run --project translator/src/Translator.Cli -- translate-recursive 0x80004050 \
-  --project projects/nsmbw/nsmbw.yml --outdir build/nsmbw/functions \
-  --output-metadata build/nsmbw/base_translation_output.json --threads 8
-# repeat per REL with --project projects/nsmbw/nsmbw-<rel>.yml,
-# --outdir build/nsmbw-<rel>/functions, --output-metadata build/nsmbw-<rel>/base_translation_output.json
+![HD texture pack on the world map](docs/images/hdpack.png)
 
-# 2. One combined data initialiser for main.dol + all four RELs.
-dotnet run --project translator/src/Translator.Cli -- generate-nsmbw-data-init \
-  --project projects/nsmbw/nsmbw.yml \
-  --rel-projects projects/nsmbw/nsmbw-d_basesNP.yml,projects/nsmbw/nsmbw-d_en_bossNP.yml,projects/nsmbw/nsmbw-d_enemiesNP.yml,projects/nsmbw/nsmbw-d_profileNP.yml
+### Keyboard, gamepads and multiplayer
+- Every SDL-supported gamepad works: Xbox, PlayStation, Switch Pro and most others.
+- Buttons are bound separately for levels, the world map and menus, so jump and confirm can sit on different buttons.
+- On-screen button prompts show the buttons you actually press, for the controller you last used.
+- Each connected gamepad is a player, up to four, and the keyboard is player 1.
 
-# 3. Build-shard manifest. Rerun whenever a PPC_NATIVE_OVERRIDE is added or removed under
-#    projects/nsmbw/native/, or the build crashes with missing_target at that address.
-dotnet run --project translator/src/Translator.Cli -- emit-nsmbw-build-shards \
-  --project projects/nsmbw/nsmbw.yml --modules-file projects/nsmbw/modules.txt \
-  --native-source-dir projects/nsmbw/native
+### Small changes to the game
+- **Exit** in the pause menu works in any course, even one you haven't cleared yet.
+- **Save** on the world map always saves fully and keeps playing. The original only offers Quick Save until the final boss is beaten.
+- The Wii Remote strap and "hold the remote sideways" screens are skipped.
 
-# 4. Configure once, then build.
-cmake -S runtime -B build_nsmbw -G Ninja -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_NSMBW=ON \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++   # LLVM-MinGW on PATH
-cmake --build build_nsmbw --target NSMBWCompiled
-```
-
-Step 1 also has to be re-run when a guest function that is only reachable through a function pointer is added to `function_map.txt` (symptom: `missing_target - guest address 0x... was called but is not translated`).
-
-Run it with the helper, which captures the stderr log and periodic window screenshots:
-
-```powershell
-.\projects\nsmbw\tools\run_nsmbw.ps1 -Tag test -Seconds 120 -ShotEvery 10 -EnvVars @('NSMBW_AUTO_PRESS_SELFTEST=1')
-```
-
-Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene changes appear as `createRoot(profile=0x..)` lines (0 BOOT, 3 world map, 5 title *and* levels, 6/7 course-in, 8 cutscene, 10 file select). The NAND save (`%LOCALAPPDATA%\WiiCompiled\NAND\title\00010004\534d4e50\wiimj2d.sav`) is kept between runs so a started file resumes at the world map; `NSMBW_RESET_SAVE=1` deletes it at launch, and the window config is still reset unless `NSMBW_KEEP_STATE=1`. With the self-test presses on, a resumed save gets from boot to 1-1 in about 30 seconds.
-
-### Running a build on another PC
-
-```powershell
-.\projects\nsmbw\tools\package_nsmbw.ps1
-```
-
-This writes `dist\NSMBWCompiled-<commit>.zip`, which contains everything the exe loads from its own folder:
-- `NSMBWCompiled.exe`
-- the 8 DLLs it imports that Windows doesn't ship: SDL3, Dawn, the two DirectX shader compiler DLLs, libc++, libunwind, libpng and zlib
-- `dsp_coef.bin`, the audio mixer's resampling table
-- `wii_bootstrap\`, the files a fresh emulated NAND is seeded with
-- `PLAYING.txt`, setup instructions for the player
-
-The player still needs their own PAL disc (SMNP01, revision 1). Release builds (`build_release\`, configured with `-DNSMBW_RELEASE=ON`; zip `dist\NSMBWCompiled-v<version>-<commit>.zip`, version set in `package_nsmbw.ps1` and `runtime/cmake/NsmbwProduct.cmake`) also ship `DolphinTool.exe`, ask for the disc image on first launch, then offer to install an HD texture pack; dev builds still need `dvd_root` in `%LOCALAPPDATA%\WiiCompiled\Config.toml` pointing at an extracted disc. Release builds have no console window and log to `nsmbw_data\NSMBWCompiled.log`. They also need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU.
-
-Test a package from a folder **outside** this repo. When a file is missing next to the exe, the runtime looks for it in `runtime/assets/` by walking up from the working directory, so inside the checkout a missing file goes unnoticed.
-
-## HD textures (Dolphin texture packs)
-
-Dolphin custom-texture packs work unchanged. A release build's first launch offers to install one (pick the pack folder; it finds `SMN` inside, copies it and turns the option on; `NSMBW_SETUP_TEXTURES=<dir>` is the test hook). By hand: copy the pack's `SMN` folder (the one Dolphin expects in `Load\Textures\`) into `build_nsmbw\nsmbw_data\texture_replacements\`, then tick **Graphics → HD texture pack** in the F10 menu (or set `texture_replacements = true` under `[video]` in `%LOCALAPPDATA%\WiiCompiled\Config.toml`). The checkbox switches the pack on and off while the game runs. Tested with the full *NSMBW HD v2.81 (DDS)* pack and with [nymo's HD HUD Tweaks](https://gamebanana.com/mods/480785) by **nymo642**. Packs contain Nintendo-derived art, so none are included in this repository; download them from their authors.
+<p align="center">
+  <img src="docs/images/worldmap.png" alt="The world-map menu with its Options button" width="600">
+</p>
 
 ## Controls
 
-NSMBW is played with a keyboard or any SDL gamepad; there is no Wii Remote support, so the boot goes straight to the title screen (the strap warning and "Hold the Wii Remote sideways" screens are skipped; `NSMBW_SHOW_BOOT_SCREENS=1` keeps them).
+Defaults; change them in **Options → Controls**.
 
-Buttons are bound to **actions, separately for courses, the world map and menus** (F10 → Controller settings → NSMBW controls): Jump and Confirm are both the Wii Remote's 2 button to the game, but they can sit on different buttons. Click a slot and press the button or key to bind it; right-click clears it. Bindings are saved in `%LOCALAPPDATA%\WiiCompiled\nsmbw_controls.ini`. Each connected gamepad is its own Wii Remote (player N = Nth pad, up to 4, or a specific pad picked per player in the options menu's Controls tab); the keyboard is player 1's. Two-controller play has been tested by the developer. Defaults:
-
-| | Gamepad | Keyboard |
+| Action | Gamepad | Keyboard |
 |---|---|---|
-| Jump / Confirm | South (A / Cross) | Z, Space / Z, Enter |
-| Run, fireball / Back | West / East | X / X, Backspace |
-| Spin jump | Shoulders | C |
+| Jump / confirm | A (Cross) | Z or Space; Enter in menus |
+| Run, fireball / back | X / B (Square / Circle) | X; Backspace in menus |
+| Spin jump | Shoulder buttons | C |
 | Pause | Start | = or Esc |
-| Move | D-pad, left stick | Arrows |
-| Tilt remote (tilt lifts, remote wire; courses only) | Right stick left / right (proportional) | A / D |
+| Move | D-pad, left stick | Arrow keys |
+| Tilt (tilting platforms) | Right stick left / right | A / D |
+| Options menu | | F10 |
 
-## Changes to the game
+## Known issues
+- **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
+- **Changing the resolution inside a level freezes animated tiles** such as coins and item boxes.
+- **6x and 8x are not available with frame interpolation on**, because they ran badly on the hardware tested.
+- **No Wii Remote support.** Use a keyboard or gamepad.
+- Only the PAL disc, revision 1, is supported.
 
-- **Exit** in the pause menu works in every course, cleared or not (enemy courses excepted, as in the original). `projects/nsmbw/native/nsmbw_pause_exit.cpp`.
-- **Options** is a third button in the pause menu (Continue / Options / Exit) and the world-map menu. It opens the options menu, which F10 also opens: graphics, audio volumes per category, a controller per player with rebinding, and advanced switches, drawn with the game's own window, buttons, cursor, fonts and sounds. The layouts are patched from the player's disc at startup (`runtime/src/product/nsmbw_layout_patch.cpp`); It also opens by itself once, before the title screen, on an install's first launch. Shift+F10 opens the older settings bar. `projects/nsmbw/native/nsmbw_pause_options.cpp`, `nsmbw_map_options.cpp`.
-- **Save** on the world-map menu is always a full save. The original offers only Quick Save (save and quit to the title) until the final boss is beaten. The saved "final boss beaten" flag itself is untouched. `projects/nsmbw/native/nsmbw_wm_full_save.cpp`.
+## FAQ
 
-## Controller button glyphs
+#### Is this an emulator?
+No. The game's code was translated ahead of time into a normal Windows program (static recompilation), the same approach as [WiiCompiled](https://github.com/patchzyy/Wiicompiled) for Mario Kart Wii. The game's assets still come from your disc.
 
-Button prompts ("Press (2) to Start", the (2) on the controller screen, Erase/Copy on file select, the map's Menu/Items hints) show the button you actually press, for the device you last used (Xbox, PlayStation, Switch or keyboard) and for the current context's bindings. **F10 → Controller settings → Button icons** pins one set or keeps the original Wii icons. The icons are [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0), built into the executable, and work with or without a texture pack. Keyboard keys with long names (Backspace, Enter, Shift, Space, Tab) are drawn as symbol keycaps (`projects/nsmbw/tools/draw_key_icons.py`), and without a pack the glyphs are downscaled with multi-sample averaging so thin outlines stay smooth (not yet re-checked on screen). `NSMBW_GLYPH_TEST=xbox|playstation|switch|keyboard` pins a set for testing; `NSMBW_LOG_GLYPHS=1` logs each change.
+#### Why doesn't my US copy work?
+The port is built against the PAL release (SMNP01, revision 1). Other versions have different code, so they would need their own port.
 
-## Debugging notes worth knowing before touching this code
+#### Where are my saves and settings?
+In `%LOCALAPPDATA%\WiiCompiled\`: settings in `Config.toml`, controls in `nsmbw_controls.ini`, and the save in `NAND\title\00010004\534d4e50\wiimj2d.sav`. To keep everything inside the game folder instead, put an empty file named `portable.txt` next to `NSMBWCompiled.exe`. Saves and settings then go to a `UserData` folder there.
 
-Three bug classes account for almost every fix so far (full write-ups in `CLAUDE.md`):
+#### It runs slowly on my laptop. What should I change?
+Lower the resolution first. On an Intel Iris Xe laptop, 1x and 1.5x hold 180 fps with frame interpolation, 2x holds 120 and 4x holds 60. Keep the game window in front, since a covered window can run noticeably slower.
 
-- **Dead override at MKW's address.** An SDK function is natively overridden at *Mario Kart Wii's* address in the shared runtime, so it's silently dead for NSMBW — symptoms look like rendering/logic bugs, but the function ran as translated code with no host-side effect. Check `projects/nsmbw/function_map.txt` for NSMBW's real addresses before suspecting the host implementation.
-- **Inlined leaf.** The translator inlines small leaf functions into their callers, which bypasses a native override bound at that leaf's address. If a bound function's HLE never logs a call, check the generated shards for `inline leaf 0x<addr>`; handle the effect at a level the translator can't inline away (an SPR write, an MMIO register).
-- **Override drops guest-side bookkeeping.** A native override replaces an SDK function *including* its stores to guest globals that other, still-translated SDK code reads later (`GXBeginDisplayList`, `GXLoadTexObj`). Read the translated body before binding and mirror those stores.
+#### Something broke. Where is the log?
+`nsmbw_data\NSMBWCompiled.log` next to the game. Include it if you [open an issue](https://github.com/ral1009/NSMBWiicompiled/issues).
 
-All diagnostics are off unless their environment variable is set:
+## Building from source
+You don't need to build anything to play. To build the port yourself or work on it, see [docs/BUILDING.md](docs/BUILDING.md).
 
-| Variable | Shows |
-| --- | --- |
-| `NSMBW_LOG_STATE_CHANGES=1` | every scene state-machine transition by name (`dScGameSetup_c::StateID_...`) |
-| `NSMBW_LOG_IDLE_THREADS=1` | thread states when the scheduler idles, plus the sleeping thread's call chain |
-| `NSMBW_LOG_DRAW_TEXGEN=<profile>` (+ `_TICK=<min VI tick>`, `_MINVP=<min viewport height>`, `_MAX=<draws>`) | per draw: VI tick, bound texture, texgen, TEV, blend, alpha test, fog, cull, projection, viewport/scissor, SU scale |
-| `NSMBW_LOG_TEXFMT=<profile>` | each `GXLoadTexObj` (format, size, filter) interleaved with raw draws |
-| `NSMBW_DUMP_TEXTURES=<dir>` (+ `NSMBW_DUMP_TEXTURES_SCENE=<profile>`) | decoded textures as PPM/PGM (`projects/nsmbw/tools/ppm2png.ps1` converts) |
-| `NSMBW_LOG_FIFO_DESYNC=1` | ring of recent raw-FIFO draws, dumped when the parser loses sync |
-| `NSMBW_LOG_DISPLAY_LIST=1` | each guest `GXBeginDisplayList` / `GXEndDisplayList` with byte counts |
-| `NSMBW_AUTO_PRESS_SELFTEST=1`, `NSMBW_AUTO_PRESS_TICKS=<n>` | synthesise a press every 60 ticks (for the first `n` ticks): A everywhere except the world map, where it taps right once and then presses 2 |
-| `NSMBW_LOG_NAND=1` | every `IOS_Open/Read/Write/Seek/Close/Ioctl/Ioctlv` on the NAND with path, size and result |
-| `NSMBW_LOG_INPUT=1` | each change in the keyboard sample handed to `KPADRead` (WPAD hold/trig/release bits, raw PAD bits, SDL scancodes down) |
-| `NSMBW_GPU_PEEK*`, `NSMBW_TEST_TRIANGLE`, other `NSMBW_LOG_*` / `NSMBW_DUMP_*` | older GX bring-up probes; see the source for each |
+## Credits
+- [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the Mario Kart Wii recompilation this port is built on
+- [aurora](https://github.com/encounter/aurora), which draws the game's graphics on modern GPUs
+- The [NSMBW decompilation project](https://github.com/NSMBW-Community/NSMBW-Decomp), used as a reference
+- [Dolphin](https://github.com/dolphin-emu/dolphin)'s `DolphinTool`, which extracts your disc image (GPLv2+)
+- Button prompt art: [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0)
 
-## License
-
-Licensed under [GPL-3.0](LICENSE), inherited from WiiCompiled. Third-party components (aurora, and anything else bundled or linked) are listed with their own licenses in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md). No Nintendo assets, code, or data of any kind are shipped here.
+This is a student project, made with AI assistance. Licensed under [GPL-3.0](LICENSE); third-party licenses are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
