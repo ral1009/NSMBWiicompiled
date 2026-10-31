@@ -1098,4 +1098,5 @@ What I learned:
 
 What's next:
 - Developer check on screen: the map window's final position, the lighter outlines, the prompts inside the window, and the migrated X / Z keys (all built, not yet seen).
+- Iris Xe laptop on `fde1606` (developer report, 2026-10-31), steady frame rates by render scale: 4x 60 fps, 2x 120 fps, 1.5x and 1x 180 fps. The interpolation target used at each scale wasn't stated. For comparison, 2026-10-16: about 30 fps at 1x with interpolation off, falling over time, before the texture-leak fix. The first-launch options menu was not reported on.
 - File-select gear button: investigated only. The layout has free space top right, but no gear art exists on the disc, and the file-select input would need its own button or cursor changes.
