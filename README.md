@@ -6,7 +6,7 @@ This is a student side project, built with AI assistance, and doubles as a from-
 
 **You need your own legally dumped PAL NSMBW disc.** Nothing here works without it, and no Nintendo assets, code or data are bundled — translation runs locally against your own disc image.
 
-## Status: v0.1.0 released — playable, no-setup first launch (2026-10-12)
+## Status: v0.2.0 released — options menu in the game's style (2026-10-31); v0.1.0 was the playable, no-setup first launch (2026-10-12)
 
 Release builds ask for your disc image on first launch, extract it with the bundled DolphinTool, and optionally install a Dolphin HD texture pack. The table below is the per-stage evidence from the earlier bring-up; later work (controls, glyphs, interpolation, HD packs, release packaging) is in the sections further down and in the progress log.
 
@@ -95,7 +95,7 @@ This writes `dist\NSMBWCompiled-<commit>.zip`, which contains everything the exe
 - `wii_bootstrap\`, the files a fresh emulated NAND is seeded with
 - `PLAYING.txt`, setup instructions for the player
 
-The player still needs their own PAL disc (SMNP01, revision 1). Release builds (`build_release\`, configured with `-DNSMBW_RELEASE=ON`; zip `dist\NSMBWCompiled-v0.1.0-<commit>.zip`) also ship `DolphinTool.exe`, ask for the disc image on first launch, then offer to install an HD texture pack; dev builds still need `dvd_root` in `%LOCALAPPDATA%\WiiCompiled\Config.toml` pointing at an extracted disc. Release builds have no console window and log to `nsmbw_data\NSMBWCompiled.log`. They also need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU.
+The player still needs their own PAL disc (SMNP01, revision 1). Release builds (`build_release\`, configured with `-DNSMBW_RELEASE=ON`; zip `dist\NSMBWCompiled-v<version>-<commit>.zip`, version set in `package_nsmbw.ps1` and `runtime/cmake/NsmbwProduct.cmake`) also ship `DolphinTool.exe`, ask for the disc image on first launch, then offer to install an HD texture pack; dev builds still need `dvd_root` in `%LOCALAPPDATA%\WiiCompiled\Config.toml` pointing at an extracted disc. Release builds have no console window and log to `nsmbw_data\NSMBWCompiled.log`. They also need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU.
 
 Test a package from a folder **outside** this repo. When a file is missing next to the exe, the runtime looks for it in `runtime/assets/` by walking up from the working directory, so inside the checkout a missing file goes unnoticed.
 

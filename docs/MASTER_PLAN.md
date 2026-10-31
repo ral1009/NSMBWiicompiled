@@ -1100,3 +1100,6 @@ What's next:
 - Developer check on screen: the map window's final position, the lighter outlines, the prompts inside the window, and the migrated X / Z keys (all built, not yet seen).
 - Iris Xe laptop on `fde1606` (developer report, 2026-10-31), steady frame rates by render scale: 4x 60 fps, 2x 120 fps, 1.5x and 1x 180 fps. The interpolation target used at each scale wasn't stated. For comparison, 2026-10-16: about 30 fps at 1x with interpolation off, falling over time, before the texture-leak fix. The first-launch options menu was not reported on.
 - File-select gear button: investigated only. The layout has free space top right, but no gear art exists on the disc, and the file-select input would need its own button or cursor changes.
+
+## 2026-10-31 — Release v0.2.0
+- Version 0.2.0 in the exe's version resource (`runtime/cmake/NsmbwProduct.cmake`) and the package name (`package_nsmbw.ps1`). Contents since v0.1.0 include the options menu, the Options buttons, category volumes, the first-launch menu and the performance work from 2026-10-16 to 10-26. `PLAYING.txt` now describes the options menu and the new menu keys.

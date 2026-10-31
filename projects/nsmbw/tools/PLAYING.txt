@@ -30,19 +30,21 @@ HD TEXTURES (optional)
    1. Find the pack's "SMN" folder (the one Dolphin wants in Load\Textures\).
    2. Copy it to  nsmbw_data\texture_replacements\SMN  in this folder
       (create texture_replacements if it isn't there; nsmbw_data appears after the first run).
-   3. In the game press F10 > Graphics > tick "HD texture pack". It switches live, and the
-      setting is saved.
+   3. In the game open Options (F10) > Graphics > "HD texture pack" and turn it on. It switches
+      live, and the setting is saved.
 
 CONTROLS (keyboard defaults; any SDL gamepad also works)
-   Jump / confirm ..... Z, Space / Enter        Run, fireball / back ... X / Backspace
+   Jump / confirm ..... Z, Space / Z, Enter     Run, fireball / back ... X / X, Backspace
    Spin jump .......... C                       Pause .................. = or Esc
    Move ............... arrow keys
    Tilt the remote .... A / D (gamepad: right stick) - steers tilting platforms
-   F10 opens the settings menu, including rebinding (Controller settings > NSMBW controls).
+   F10 opens the options menu: graphics, volumes, a controller per player and rebinding.
+   It also opens by itself before the title screen the first time you play.
    Multiplayer: each connected controller is its own player (up to 4); the keyboard is player 1.
 
 PAUSE MENU
-   Exit works in any course, even one you haven't cleared.
+   Exit works in any course, even one you haven't cleared. Options (also on the world-map
+   menu) opens the options menu.
 
 SAVE DATA
    Menu (=) > Save on the world map always saves fully and keeps playing - no Quick Save,

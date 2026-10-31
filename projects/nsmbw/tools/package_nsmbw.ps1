@@ -22,7 +22,7 @@
 # disc picker, nsmbw_disc_setup.cpp) and ships DolphinTool.exe from dolphin_tool\ (gitignored; copy
 # it out of an official Dolphin x64 release together with Dolphin's license) to extract the disc.
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.2.0",
     [string]$OutDir = "",
     [switch]$Private,
     [string]$DiscDir = "",        # -Private: extracted disc (sys\ + files\); default NSMBW-Files
