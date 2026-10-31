@@ -1105,3 +1105,12 @@ What's next:
 ## 2026-10-31 — Release v0.2.0
 - Version 0.2.0 in the exe's version resource (`runtime/cmake/NsmbwProduct.cmake`) and the package name (`package_nsmbw.ps1`). Contents since v0.1.0 include the options menu, the Options buttons, category volumes, the first-launch menu and the performance work from 2026-10-16 to 10-26. `PLAYING.txt` now describes the options menu and the new menu keys.
 - Two-controller play has been tested by the developer (reported 2026-10-31), closing the open item from 2026-10-11.
+
+## 2026-10-31 — Release v0.2.1
+What I did:
+- Fixed the options menu's Select / Back ignoring the menu bindings. Its handlers had a fixed layout while its prompts showed the bindings, so swapping confirm and back made them disagree (issues.md). Bound controls now win, unbound ones keep the fixed layout, and Esc always goes back.
+- Version 0.2.1 in the exe's version resource and the package name.
+
+What's next:
+- The README rewrite (player-focused, with technical content moved to `docs/BUILDING.md`) is written but uncommitted, waiting for the developer's screenshots in `docs/images/`.
+- A controller shortcut for the options menu (Back + Start was proposed) is not started.

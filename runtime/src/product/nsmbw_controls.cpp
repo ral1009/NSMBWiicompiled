@@ -521,6 +521,41 @@ std::string GamepadGlyphFor(uint32_t wpadBit) {
     return "";
 }
 
+std::string MenuActionForButton(uint32_t pad, int button) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    // The player this pad drives; player 1's bindings for a pad nobody uses.
+    size_t player = 0;
+    const auto devices = ResolveLocked();
+    for (size_t p = 0; p < kPlayers; ++p) {
+        if (devices[p].pad != nullptr && SDL_GetGamepadID(devices[p].pad) == pad) {
+            player = p;
+            break;
+        }
+    }
+    const auto& defs = ActionsFor(Context::Menu);
+    for (size_t i = 0; i < defs.size(); ++i) {
+        for (const auto& name : g_bindings[player][size_t(Context::Menu)][i].pad) {
+            const PadControl* c = name.empty() ? nullptr : FindPad(name);
+            if (c != nullptr && c->kind == PadKind::Button && c->id == button) return defs[i].id;
+        }
+    }
+    return "";
+}
+
+std::string MenuActionForKey(int scancode) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    const std::string name = KeyToName(SDL_Scancode(scancode));
+    const auto& defs = ActionsFor(Context::Menu);
+    for (size_t i = 0; i < defs.size(); ++i) {
+        for (const auto& k : g_bindings[0][size_t(Context::Menu)][i].key) {
+            if (k == name) return defs[i].id;
+        }
+    }
+    return "";
+}
+
 std::string MenuPromptGlyph(const char* action, bool key) {
     std::lock_guard lock(g_mutex);
     LoadLocked();

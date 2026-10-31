@@ -288,8 +288,8 @@ if(MKW_BUILD_NSMBW)
     set(NSMBW_ICON "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/branding/nsmbw.ico")
     if(WIN32 AND EXISTS "${NSMBW_ICON}")
         enable_language(RC)
-        set(NSMBW_VERSION_COMMA "0,2,0,0")
-        set(NSMBW_VERSION_DOT "0.2.0")
+        set(NSMBW_VERSION_COMMA "0,2,1,0")
+        set(NSMBW_VERSION_DOT "0.2.1")
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_resources.rc"
 "1 ICON \"${NSMBW_ICON}\"
 1 VERSIONINFO

@@ -25,6 +25,11 @@ std::string KeyGlyphFor(uint32_t wpadBit);
 // The same for player 1's menu action `action` ("confirm", "back"), whatever the context: the
 // options menu's prompts, so they show the keys the game's own menus show.
 std::string MenuPromptGlyph(const char* action, bool key);
+// The menu action ("confirm", "back", "a", ...) a gamepad button (SDL_GamepadButton, on the pad
+// with that SDL_JoystickID; the bindings of the player that pad drives) or a key (SDL_Scancode,
+// player 1's bindings) is bound to; empty when unbound. The options menu's Select / Back follow it.
+std::string MenuActionForButton(uint32_t pad, int button);
+std::string MenuActionForKey(int scancode);
 
 // What drives player `chan` (0..3) right now, for the options menu: the gamepad's name,
 // "Keyboard", "Keyboard + <pad>", or empty when nothing does.

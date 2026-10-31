@@ -660,6 +660,14 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: the defaults are now `z, enter` and `x, backspace`, and saved lists still in the old default order are swapped once (`runtime/src/product/nsmbw_controls.cpp`). Built, not yet checked on screen.
 - Scope: NSMBW-specific.
 
+## 2026-10-31 — options menu
+
+### Options menu Select / Back ignored the menu bindings
+- Symptom: after binding menu confirm and back to other buttons, the options menu's Select and Back were swapped against its own prompts (developer report).
+- Root cause: the options menu's key and gamepad handlers had a fixed layout (gamepad south = Select, east = Back; Enter/Z/Space = Select, Esc/Backspace/X = Back), while its prompts are drawn from the menu bindings (`MenuPromptGlyph`), so any rebinding made the two disagree.
+- Fix: a control bound to menu confirm selects and one bound to back goes back, using the bindings of the player the pad drives (player 1's for keys). Unbound controls keep the fixed layout, and Esc always goes back (`nsmbw_controls::MenuActionForButton` / `MenuActionForKey`, `runtime/src/product/nsmbw_options_menu.cpp`). Confirmed fixed by the developer.
+- Scope: NSMBW-specific.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.

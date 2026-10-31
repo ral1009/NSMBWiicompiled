@@ -436,10 +436,24 @@ bool Dispatch(Cmd cmd, const char* why) {
     return g_screen == Screen::Options ? OptionsCommand(cmd, why) : BindingsCommand(cmd, why);
 }
 
+// Select and Back follow the menu bindings (Options > Controls), the ones the Select / Back
+// prompts and the game's own menus use: a control bound to confirm selects and one bound to back
+// goes back, whatever the built-in layout below says. Until 2026-10-31 the menu only had the
+// built-in layout, so after swapping confirm and back the prompts and the buttons disagreed
+// (developer report). Unbound controls keep the built-in meaning; Esc always goes back.
+bool FromMenuBinding(const std::string& action, Cmd& cmd) {
+    if (action == "confirm") cmd = Cmd::Select;
+    else if (action == "back") cmd = Cmd::Back;
+    else return false;
+    return true;
+}
+
 void OnKey(const SDL_KeyboardEvent& k) {
     Cmd cmd;
     bool once = true; // ignores key repeat (movement repeats while held)
-    switch (k.scancode) {
+    const bool bound = k.scancode != SDL_SCANCODE_ESCAPE &&
+                       FromMenuBinding(nsmbw_controls::MenuActionForKey(k.scancode), cmd);
+    if (!bound) switch (k.scancode) {
     case SDL_SCANCODE_UP: case SDL_SCANCODE_W: cmd = Cmd::Up; once = false; break;
     case SDL_SCANCODE_DOWN: case SDL_SCANCODE_S: cmd = Cmd::Down; once = false; break;
     case SDL_SCANCODE_LEFT: case SDL_SCANCODE_A: cmd = Cmd::Left; once = false; break;
@@ -458,7 +472,7 @@ void OnKey(const SDL_KeyboardEvent& k) {
 
 void OnButton(const SDL_GamepadButtonEvent& b) {
     Cmd cmd;
-    switch (SDL_GamepadButton(b.button)) {
+    if (!FromMenuBinding(nsmbw_controls::MenuActionForButton(b.which, b.button), cmd)) switch (SDL_GamepadButton(b.button)) {
     case SDL_GAMEPAD_BUTTON_DPAD_UP: cmd = Cmd::Up; break;
     case SDL_GAMEPAD_BUTTON_DPAD_DOWN: cmd = Cmd::Down; break;
     case SDL_GAMEPAD_BUTTON_DPAD_LEFT: cmd = Cmd::Left; break;
