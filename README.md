@@ -3,7 +3,7 @@
 **New Super Mario Bros. Wii as a native Windows game.** Play in high resolution and widescreen, at up to 180 fps, with keyboard or any gamepad, Dolphin HD texture packs and up to four players. No emulator needed.
 
 <p align="center">
-  <img src="docs/images/hero.png" alt="World 1-1 in widescreen at high resolution" width="800">
+  <img src="docs/images/hero.jpg" alt="The title screen in widescreen at high resolution" width="800">
 </p>
 
 **[Download the latest release](https://github.com/ral1009/NSMBWiicompiled/releases/latest)**
@@ -44,11 +44,13 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 
 | | |
 |---|---|
-| ![The options menu](docs/images/options.png) | ![The pause menu with its Options button](docs/images/pause.png) |
+| ![The options menu](docs/images/options.jpg) | ![The world-map menu with its Options button](docs/images/map-menu.jpg) |
+
+**Save** in that world-map menu always does a full save and lets you keep playing, at any point in the game. The original only offers Quick Save, which quits to the title screen, until you beat the final boss.
 
 - **Graphics:** windowed, borderless or fullscreen; resolution from native up to 8x; frame interpolation; HD textures; bloom
 - **Audio:** separate volumes for music, sound effects and menu sounds
-- **Controls:** pick which controller each player uses, and rebind any button
+- **Controls:** pick which controller each player uses, and rebind any button, including to combinations such as L + R
 - **Advanced:** FPS counter and a few performance switches
 
 ### High resolution and widescreen
@@ -57,22 +59,27 @@ Render at up to 8x the Wii's resolution, in 16:9. The game logic still runs at 6
 ### HD texture packs
 Dolphin texture packs for NSMBW work without changes. Install one during setup, or later by copying it into the game folder, and switch it on or off in the options menu while you play. Tested with *NSMBW HD v2.81* and nymo642's [HD HUD Tweaks](https://gamebanana.com/mods/480785). No packs are included; download them from their authors.
 
-![HD texture pack on the world map](docs/images/hdpack.png)
+![World 1-1 with the HD texture pack](docs/images/hd-1-1.jpg)
 
 ### Keyboard, gamepads and multiplayer
 - Every SDL-supported gamepad works: Xbox, PlayStation, Switch Pro and most others.
-- Buttons are bound separately for levels, the world map and menus, so jump and confirm can sit on different buttons.
+- Buttons are bound separately for levels, the world map and menus, so jump and confirm can sit on different buttons. A binding can also be a combination: hold the buttons together when binding.
 - On-screen button prompts show the buttons you actually press, for the controller you last used.
-- Each connected gamepad is a player, up to four, and the keyboard is player 1.
+- Each connected gamepad is a player, up to four, and the keyboard is player 1. Other players can share the keyboard too: set their controller to Keyboard and give them keys of their own.
+
+![Mario and Luigi playing together](docs/images/coop.jpg)
 
 ### Small changes to the game
 - **Exit** in the pause menu works in any course, even one you haven't cleared yet.
 - **Save** on the world map always saves fully and keeps playing. The original only offers Quick Save until the final boss is beaten.
 - The Wii Remote strap and "hold the remote sideways" screens are skipped.
 
-<p align="center">
-  <img src="docs/images/worldmap.png" alt="The world-map menu with its Options button" width="600">
-</p>
+### Screenshots
+
+| | |
+|---|---|
+| ![A lava level](docs/images/volcano.jpg) | ![Course clear with two players](docs/images/course-clear.jpg) |
+| ![The World 4 map](docs/images/world-map.jpg) | ![A forest level](docs/images/forest.jpg) |
 
 ## Controls
 
@@ -86,7 +93,8 @@ Defaults; change them in **Options → Controls**.
 | Pause | Start | = or Esc |
 | Move | D-pad, left stick | Arrow keys |
 | Tilt (tilting platforms) | Right stick left / right | A / D |
-| Options menu | | F10 |
+| Options menu | Back + Start (- and +) | F10 |
+| Switch options tab | LB / RB | Q / E |
 
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
