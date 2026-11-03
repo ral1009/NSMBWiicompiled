@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aurora/event.h>
+#include <SDL3/SDL_events.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +13,9 @@
 // Remote button the game expects in that context. See nsmbw_controls.cpp.
 namespace nsmbw_controls {
 
-enum class Context { Gameplay, Map, Menu };
+// Options is the options menu's own actions (open / close it, switch tabs); it is never the
+// current context.
+enum class Context { Gameplay, Map, Menu, Options };
 
 Context CurrentContext() noexcept;
 const char* ContextName(Context context) noexcept;
@@ -30,6 +33,11 @@ std::string MenuPromptGlyph(const char* action, bool key);
 // player 1's bindings) is bound to; empty when unbound. The options menu's Select / Back follow it.
 std::string MenuActionForButton(uint32_t pad, int button);
 std::string MenuActionForKey(int scancode);
+// The options menu action ("open", "tab_prev", "tab_next") this SDL event completes, or empty.
+// Call it once for every event, ups included: it follows which controls are held, and an action
+// counts when the event presses the last control of one of its bindings. Keys use player 1's
+// bindings, a pad those of the player it drives.
+std::string OptionsActionFor(const SDL_Event& e);
 
 // What drives player `chan` (0..3) right now, for the options menu: the gamepad's name,
 // "Keyboard", "Keyboard + <pad>", or empty when nothing does.
@@ -37,8 +45,8 @@ std::string PlayerControllerName(uint32_t chan);
 
 // Which controller drives each player, chosen in the options menu and saved in
 // nsmbw_controls.ini. "auto" (the default) takes the next free gamepad, and player 1 on auto
-// also gets the keyboard unless another player chose it; "keyboard"; "none"; or a specific
-// gamepad, "pad:<SDL GUID>:<name>".
+// also gets the keyboard; "keyboard" (any player; each reads their own keys, so players can share
+// it); "none"; or a specific gamepad, "pad:<SDL GUID>:<name>".
 struct ControllerChoice {
     std::string id;    // the saved value
     std::string label; // "Automatic", "Keyboard", the pad's name, "None"
@@ -54,7 +62,8 @@ void SetControllerChoice(uint32_t chan, const std::string& id);
 constexpr size_t kBindSlots = 2; // two controls per action; either one triggers it
 struct BoundAction {
     std::string label;                      // "Jump", "Run / fireball"
-    std::string pads[kBindSlots];           // glyph names: "south", "left_shoulder", "dpad", "lstick"; "" unbound
+    std::string pads[kBindSlots];           // glyph names: "south", "left_shoulder", "dpad", "lstick", or a
+                                            // combination joined with '+' ("back+start"); "" unbound
     std::string keys[kBindSlots];           // key names: "z", "space", "up"; "" unbound
 };
 std::vector<BoundAction> Bindings(uint32_t player, Context context);

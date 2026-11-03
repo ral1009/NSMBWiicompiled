@@ -1114,3 +1114,22 @@ What I did:
 What's next:
 - The README rewrite (player-focused, with technical content moved to `docs/BUILDING.md`) is written but uncommitted, waiting for the developer's screenshots in `docs/images/`.
 - A controller shortcut for the options menu (Back + Start was proposed) is not started.
+
+## 2026-10-31 (later) — Combination bindings, rebindable options keys, shared keyboard
+What I did:
+- **Combination bindings** (`runtime/src/product/nsmbw_controls.cpp`). Any binding slot can hold up to three controls joined with `+`, for example `left_shoulder+right_shoulder` or `back+start`, and is down while all of them are. In the options menu's rebind screen you hold the controls together and the binding is stored when they are all released, in one fixed order so `start+back` and `back+start` are the same. Combinations show as their glyphs side by side.
+  - A control that is part of any combination waits 3 frames (50 ms) before it counts on its own. Without this, pressing - a frame before + sends - alone to the game, which opens Select World on the map. A *grace period* like this is the usual way games stop a chord's first button from firing by itself.
+  - After a combination, its controls stay silent until released, so letting go of one button first doesn't fire the other's own action.
+  - Combinations of the options menu's own actions also count, so Back + Start never reaches the game as - and +.
+- **Rebindable options keys.** A fourth bindings context, Options, holds "Open / close options" (F10; Back + Start on a gamepad), "Previous tab" (Q; LB) and "Next tab" (E; RB). Plain F10 is no longer handled by `settings_overlay.cpp`; it is only the default of that binding. Shift+F10 still opens the old bar. Page Up / Page Down / Tab remain fixed extras for the tabs.
+- **Players 2-4 can use the keyboard.** Every player's rebind screen has keyboard slots. Players 2-4 have no default keys, and player 1 on Automatic keeps the keyboard when another player picks it, so players share it on keys of their own. The copies of player 1's keys that players 2-4 carried (never read before) are cleared on load.
+
+What broke / what I didn't expect:
+- Back + Start sometimes opened and closed the menu at once (issues.md): two press events in one batch both saw both buttons held.
+- Players 2-4's rebind screen looked empty on the right because it hid the keyboard column; giving them the keyboard removed the reason for hiding it.
+
+What I learned:
+- To decide which event completed a chord, track held controls through the events themselves. The live state answers "is it held now", not "was it held before this event".
+
+What's next:
+- Developer confirmed: combinations, the options keys, the + / - fix and two players sharing the keyboard.

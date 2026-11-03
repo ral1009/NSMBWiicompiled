@@ -41,6 +41,9 @@ CONTROLS (keyboard defaults; any SDL gamepad also works)
    F10 opens the options menu: graphics, volumes, a controller per player and rebinding.
    It also opens by itself before the title screen the first time you play.
    Multiplayer: each connected controller is its own player (up to 4); the keyboard is player 1.
+   Players can share the keyboard: set a player's controller to Keyboard and bind their own keys.
+   Gamepad: Back + Start (- and +) opens the options menu; LB / RB (Q / E) switch its tabs.
+   Any binding can be a combination: hold the buttons together while binding.
 
 PAUSE MENU
    Exit works in any course, even one you haven't cleared. Options (also on the world-map

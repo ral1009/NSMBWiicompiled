@@ -668,6 +668,14 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: a control bound to menu confirm selects and one bound to back goes back, using the bindings of the player the pad drives (player 1's for keys). Unbound controls keep the fixed layout, and Esc always goes back (`nsmbw_controls::MenuActionForButton` / `MenuActionForKey`, `runtime/src/product/nsmbw_options_menu.cpp`). Confirmed fixed by the developer.
 - Scope: NSMBW-specific.
 
+## 2026-10-31 — combination bindings
+
+### Back + Start opened and closed the options menu at once
+- Symptom: pressing - and + together sometimes opened the options menu and closed it again immediately (developer report).
+- Root cause: the "open" binding was checked on each button's press event against SDL's live state. When both buttons went down in the same instant, both events arrived in one batch with both buttons already held in the live state, so each event completed the combination: the first opened the menu, the second closed it.
+- Fix: `nsmbw_controls::OptionsActionFor` follows which controls are held through the press and release events themselves, and an action counts only on the event that presses the last control of a binding. Controls SDL no longer reports as down are dropped, in case a release was missed. Confirmed by the developer.
+- Scope: NSMBW-specific (the class, using live input state to judge which event completed a chord, is general).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.

@@ -1158,11 +1158,12 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         }
         controller_mapping_wizard::HandleSdlEvent(ev->sdl);
         if (IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
-            // With a product menu, plain F10 opens that and Shift+F10 the bar; one at a time.
+            // With a product menu, Shift+F10 opens the bar; plain F10 is left to the product, which
+            // opens its menu with its own (rebindable) key. One at a time.
             const bool shift = (ev->sdl.key.mod & SDL_KMOD_SHIFT) != 0;
             if (g_productMenu.setOpen != nullptr && !shift) {
+                // NSMBW's "open options" binding (default F10, nsmbw_controls.cpp) opens the menu.
                 SetTopBarVisible(false);
-                g_productMenu.setOpen(!ProductMenuOpen());
             } else {
                 if (g_productMenu.setOpen != nullptr) g_productMenu.setOpen(false);
                 SetTopBarVisible(!g_topBarVisible);

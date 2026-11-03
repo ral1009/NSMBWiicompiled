@@ -19,6 +19,15 @@
 // before it; d_info.hpp). The game-stop word is read by isGameStop (func_800B3B50) as
 // [r13 - 22360] with r13 = SDA base 0x8042F980 (nsmbw.yml) -> 0x8042A228.
 //
+// A binding is one control or a combination of up to three joined with '+' ("back+start",
+// "left_shoulder+right_shoulder"), which is down while every part is. A control that is part of a
+// combination is held back for kComboGraceFrames before it counts on its own, so pressing the
+// combination's buttons a frame apart doesn't also send the first one alone (- a frame before +
+// would open Select World on the map), and after a combination it stays silent until released.
+//
+// Options (Context::Options) holds the options menu's own actions: open / close it and switch its
+// tabs. It is never the current context; the options menu asks for those actions by event.
+//
 // Gamepads are read straight from SDL (the pad assigned to port 0 in the overlay, or every
 // connected pad when none is), and the keyboard from SDL's key state, so the overlay's GC-PAD
 // button mapping no longer applies to NSMBW. Bindings are saved to nsmbw_controls.ini next to
@@ -47,7 +56,9 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -150,6 +161,9 @@ constexpr KeyName kKeyNames[] = {
     {SDL_SCANCODE_LEFTBRACKET, "left_bracket"}, {SDL_SCANCODE_RIGHTBRACKET, "right_bracket"},
     {SDL_SCANCODE_DELETE, "delete"}, {SDL_SCANCODE_INSERT, "insert"}, {SDL_SCANCODE_HOME, "home"},
     {SDL_SCANCODE_END, "end"}, {SDL_SCANCODE_PAGEUP, "page_up"}, {SDL_SCANCODE_PAGEDOWN, "page_down"},
+    {SDL_SCANCODE_F1, "f1"}, {SDL_SCANCODE_F2, "f2"}, {SDL_SCANCODE_F3, "f3"}, {SDL_SCANCODE_F4, "f4"},
+    {SDL_SCANCODE_F5, "f5"}, {SDL_SCANCODE_F6, "f6"}, {SDL_SCANCODE_F7, "f7"}, {SDL_SCANCODE_F8, "f8"},
+    {SDL_SCANCODE_F9, "f9"}, {SDL_SCANCODE_F10, "f10"}, {SDL_SCANCODE_F11, "f11"}, {SDL_SCANCODE_F12, "f12"},
 };
 
 std::string KeyToName(SDL_Scancode code) {
@@ -226,10 +240,22 @@ const std::vector<ActionDef> kMenuActions = {
     {"right", "Right", kScreenRight, {"dpad_right", "lstick_right"}, {"right", nullptr}},
 };
 
+// The options menu's own actions; they produce no Wii button. Back + Start (the - and + buttons)
+// opens it from a gamepad: the game uses neither combination, and the combination grace keeps the
+// two from reaching the game one at a time.
+const std::vector<ActionDef> kOptionsActions = {
+    {"open", "Open / close options", kNoWpadBit, {"back+start", nullptr}, {"f10", nullptr}},
+    {"tab_prev", "Previous tab", kNoWpadBit, {"left_shoulder", nullptr}, {"q", nullptr}},
+    {"tab_next", "Next tab", kNoWpadBit, {"right_shoulder", nullptr}, {"e", nullptr}},
+};
+
+constexpr std::array<Context, 4> kAllContexts = {Context::Gameplay, Context::Map, Context::Menu, Context::Options};
+
 const std::vector<ActionDef>& ActionsFor(Context c) {
     switch (c) {
     case Context::Gameplay: return kGameplayActions;
     case Context::Map: return kMapActions;
+    case Context::Options: return kOptionsActions;
     default: return kMenuActions;
     }
 }
@@ -240,10 +266,11 @@ struct Binding {
 };
 
 std::mutex g_mutex; // bindings are read on the guest thread, edited from the overlay
-// Per player (Wii Remote channel 0..3), per context, per action. Only player 1's keys are read:
-// the keyboard belongs to player 1.
+// Per player (Wii Remote channel 0..3), per context, per action. A player's keys are read when the
+// keyboard is one of their devices (ResolveLocked); players 2-4 have no default keys, so several
+// players can share the keyboard on keys of their own.
 constexpr size_t kPlayers = 4;
-std::array<std::array<std::vector<Binding>, 3>, kPlayers> g_bindings;
+std::array<std::array<std::vector<Binding>, kAllContexts.size()>, kPlayers> g_bindings;
 // Each player's controller choice from the options menu: "auto", "keyboard", "none" or
 // "pad:<SDL GUID>:<name>" (the name is kept so a disconnected pad can still be shown).
 std::array<std::string, kPlayers> g_controller{"auto", "auto", "auto", "auto"};
@@ -257,10 +284,23 @@ struct Capture {
     size_t slot = 0;
     bool key = false;
     uint32_t player = 0;
-    // The options menu's capture: Esc cancels and Delete clears the slot, for keys and buttons alike.
-    // (The F10 bar's older capture binds Esc to the first slot and clears the second with it.)
+    // The options menu's capture: Esc cancels and Delete clears the slot, for keys and buttons alike,
+    // and holding several controls binds the combination (it ends when all are released).
+    // (The F10 bar's older capture takes the first press, binds Esc to the first slot and clears the
+    // second with it.)
     bool optionsMenu = false;
+    std::vector<std::string> pressed; // every control pressed so far, in press order
+    std::set<std::string> held;       // those still down
 } g_capture;
+
+// Per player: how many frames each combination member has been down (ReadWpad runs once per frame
+// per player), and the members a combination used, silent until released.
+constexpr int kComboGraceFrames = 3; // 50 ms at 60 Hz
+struct ComboState {
+    std::map<std::string, int> downFrames;
+    std::set<std::string> latched;
+};
+std::array<ComboState, kPlayers> g_combo;
 
 std::filesystem::path SavePath() { return RuntimeConfigFile::ApplicationDataDirectory() / "nsmbw_controls.ini"; }
 
@@ -271,7 +311,7 @@ void SetDefaults(uint32_t player, Context c) {
     for (size_t i = 0; i < defs.size(); ++i) {
         for (size_t s = 0; s < kMaxBinds; ++s) {
             b[i].pad[s] = defs[i].pad[s] ? defs[i].pad[s] : "";
-            b[i].key[s] = defs[i].key[s] ? defs[i].key[s] : "";
+            b[i].key[s] = defs[i].key[s] && player == 0 ? defs[i].key[s] : "";
         }
     }
 }
@@ -289,13 +329,14 @@ std::string Join(const std::array<std::string, kMaxBinds>& v) {
 void Save() {
     std::ofstream f(SavePath());
     if (!f) return;
-    f << "# NSMBW controls, edited from the options menu. <context>.<action>.pad / .key = up to two names.\n";
+    f << "# NSMBW controls, edited from the options menu. <context>.<action>.pad / .key = up to two\n";
+    f << "# bindings, each a control name or a combination joined with + (back+start).\n";
     f << "# Player 1 has no prefix (the format before per-player bindings); players 2-4 use p2. .. p4.\n";
     f << "# controller = auto | keyboard | none | pad:<SDL GUID>:<name>\n";
     for (uint32_t p = 0; p < kPlayers; ++p) {
         const std::string prefix = p == 0 ? "" : "p" + std::to_string(p + 1) + ".";
         f << prefix << "controller = " << g_controller[p] << '\n';
-        for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) {
+        for (Context c : kAllContexts) {
             const auto& defs = ActionsFor(c);
             for (size_t i = 0; i < defs.size(); ++i) {
                 const auto& b = g_bindings[p][size_t(c)][i];
@@ -310,7 +351,7 @@ void LoadLocked() {
     if (g_loaded) return;
     g_loaded = true;
     for (uint32_t p = 0; p < kPlayers; ++p) {
-        for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) SetDefaults(p, c);
+        for (Context c : kAllContexts) SetDefaults(p, c);
     }
     std::array<bool, kPlayers> saved{}; // the file has lines for this player
     std::ifstream f(SavePath());
@@ -338,7 +379,7 @@ void LoadLocked() {
             continue;
         }
         saved[player] = true;
-        for (Context c : {Context::Gameplay, Context::Map, Context::Menu}) {
+        for (Context c : kAllContexts) {
             const auto& defs = ActionsFor(c);
             for (size_t i = 0; i < defs.size(); ++i) {
                 const std::string base = std::string(ContextName(c)) + '.' + defs[i].id;
@@ -361,6 +402,17 @@ void LoadLocked() {
     // A file from before per-player bindings: players 2-4 start with player 1's buttons.
     for (uint32_t p = 1; p < kPlayers; ++p) {
         if (!saved[p]) g_bindings[p] = g_bindings[0];
+    }
+    // Until 2026-10-31 the keyboard was player 1's alone, and players 2-4 carried copies of player
+    // 1's keys that nothing read. A key list identical to player 1's is such a copy: it is cleared,
+    // or a player sharing the keyboard would move with player 1. (A player 2 deliberately bound to
+    // exactly player 1's keys would also be cleared; sharing those keys can't work anyway.)
+    for (uint32_t p = 1; p < kPlayers; ++p) {
+        for (size_t c = 0; c < kAllContexts.size(); ++c) {
+            for (size_t i = 0; i < g_bindings[p][c].size(); ++i) {
+                if (g_bindings[p][c][i].key == g_bindings[0][c][i].key) g_bindings[p][c][i].key = {};
+            }
+        }
     }
     // Menu confirm / back keys still at the old default order (Enter / Backspace first) take the
     // new one; a list someone changed is left alone.
@@ -386,6 +438,65 @@ bool PadControlDown(SDL_Gamepad* pad, const PadControl& c) {
     const bool trigger = c.id == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || c.id == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
     const int threshold = trigger ? kTriggerThreshold : kStickThreshold;
     return c.kind == PadKind::AxisPositive ? v >= threshold : v <= -threshold;
+}
+
+std::vector<std::string> Parts(const std::string& binding) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start <= binding.size()) {
+        const size_t plus = binding.find('+', start);
+        out.push_back(binding.substr(start, plus - start));
+        if (plus == std::string::npos) break;
+        start = plus + 1;
+    }
+    return out;
+}
+bool IsCombo(const std::string& binding) { return binding.find('+') != std::string::npos; }
+
+bool PadPartDown(SDL_Gamepad* pad, const std::string& part) {
+    const PadControl* c = FindPad(part);
+    return pad != nullptr && c != nullptr && PadControlDown(pad, *c);
+}
+bool KeyPartDown(const bool* keys, int numKeys, const std::string& part) {
+    const SDL_Scancode code = NameToKey(part);
+    return keys != nullptr && code != SDL_SCANCODE_UNKNOWN && code < numKeys && keys[code];
+}
+// Every part down. An empty binding is never down.
+bool PadBindingDown(SDL_Gamepad* pad, const std::string& binding) {
+    if (binding.empty()) return false;
+    for (const auto& part : Parts(binding)) {
+        if (!PadPartDown(pad, part)) return false;
+    }
+    return true;
+}
+bool KeyBindingDown(const bool* keys, int numKeys, const std::string& binding) {
+    if (binding.empty()) return false;
+    for (const auto& part : Parts(binding)) {
+        if (!KeyPartDown(keys, numKeys, part)) return false;
+    }
+    return true;
+}
+
+// A combination in one order, so "start+back" and "back+start" are the same binding: gamepad
+// controls in kPadControls order, keys with Shift / Ctrl / Alt first and then by name.
+std::string CanonicalCombo(std::vector<std::string> parts, bool key) {
+    auto rank = [key](const std::string& part) {
+        if (key) {
+            if (part == "shift" || part == "ctrl" || part == "alt") return 0;
+            return 1;
+        }
+        for (size_t i = 0; i < std::size(kPadControls); ++i) {
+            if (part == kPadControls[i].name) return int(i);
+        }
+        return int(std::size(kPadControls));
+    };
+    std::stable_sort(parts.begin(), parts.end(), [&](const std::string& a, const std::string& b) {
+        const int ra = rank(a), rb = rank(b);
+        return ra != rb ? ra < rb : (key && a < b);
+    });
+    std::string out;
+    for (const auto& part : parts) out += (out.empty() ? "" : "+") + part;
+    return out;
 }
 
 // Connected pads in player order: the pad assigned to port 0 in the overlay first (if any), then
@@ -426,8 +537,8 @@ std::string ChoiceName(const std::string& choice) {
 // What drives each player this frame. Explicit choices are served first: a chosen pad is the first
 // connected pad with that GUID that no earlier player took (two identical pads share a GUID, so
 // those follow connection order). Then each "auto" player takes the next free pad in OrderedPads
-// order. The keyboard goes to every player who chose it, or, when nobody did, to an "auto"
-// player 1, which is how it worked before the choice existed.
+// order. The keyboard goes to every player who chose it, and to player 1 on "auto"; players read
+// their own keys, so sharing it works as long as their keys differ (players 2-4 start with none).
 struct Device {
     bool keyboard = false;
     SDL_Gamepad* pad = nullptr;
@@ -440,12 +551,8 @@ std::array<Device, kPlayers> ResolveLocked() {
         free.erase(free.begin() + std::ptrdiff_t(i));
         return p;
     };
-    bool keyboardChosen = false;
     for (uint32_t p = 0; p < kPlayers; ++p) {
-        if (g_controller[p] == "keyboard") {
-            out[p].keyboard = true;
-            keyboardChosen = true;
-        }
+        if (g_controller[p] == "keyboard") out[p].keyboard = true;
         const std::string guid = ChoiceGuid(g_controller[p]);
         if (guid.empty()) continue;
         for (size_t i = 0; i < free.size(); ++i) {
@@ -457,7 +564,7 @@ std::array<Device, kPlayers> ResolveLocked() {
     }
     for (uint32_t p = 0; p < kPlayers; ++p) {
         if (g_controller[p] != "auto") continue;
-        if (p == 0 && !keyboardChosen) out[p].keyboard = true;
+        if (p == 0) out[p].keyboard = true;
         if (!free.empty()) out[p].pad = take(0);
     }
     return out;
@@ -472,9 +579,33 @@ std::string GlyphNameForPad(const std::string& name) {
 }
 
 std::string PadLabel(const std::string& name) {
-    if (const PadControl* c = FindPad(name)) return c->label;
-    return name;
+    std::string out;
+    for (const auto& part : Parts(name)) {
+        const PadControl* c = FindPad(part);
+        out += (out.empty() ? "" : " + ") + std::string(c != nullptr ? c->label : part.c_str());
+    }
+    return out;
 }
+
+// A combination's glyph names joined with '+' ("back+start", "left_shoulder+right_shoulder").
+std::string GlyphNameForBinding(const std::string& binding) {
+    std::string out;
+    for (const auto& part : Parts(binding)) out += (out.empty() ? "" : "+") + GlyphNameForPad(part);
+    return out;
+}
+
+// For a one-glyph prompt: the first single control in the list, else the first combination's
+// first part.
+const std::string* PromptBinding(const std::array<std::string, kMaxBinds>& list) {
+    for (const auto& b : list) {
+        if (!b.empty() && !IsCombo(b)) return &b;
+    }
+    for (const auto& b : list) {
+        if (!b.empty()) return &b;
+    }
+    return nullptr;
+}
+std::string FirstPart(const std::string& binding) { return Parts(binding).front(); }
 
 } // namespace
 
@@ -514,9 +645,7 @@ std::string GamepadGlyphFor(uint32_t wpadBit) {
     const auto& defs = ActionsFor(c);
     for (size_t i = 0; i < defs.size(); ++i) {
         if (defs[i].wpad != wpadBit) continue;
-        for (const auto& p : g_bindings[0][size_t(c)][i].pad) {
-            if (!p.empty()) return GlyphNameForPad(p);
-        }
+        if (const std::string* b = PromptBinding(g_bindings[0][size_t(c)][i].pad)) return GlyphNameForPad(FirstPart(*b));
     }
     return "";
 }
@@ -536,7 +665,7 @@ std::string MenuActionForButton(uint32_t pad, int button) {
     const auto& defs = ActionsFor(Context::Menu);
     for (size_t i = 0; i < defs.size(); ++i) {
         for (const auto& name : g_bindings[player][size_t(Context::Menu)][i].pad) {
-            const PadControl* c = name.empty() ? nullptr : FindPad(name);
+            const PadControl* c = name.empty() || IsCombo(name) ? nullptr : FindPad(name);
             if (c != nullptr && c->kind == PadKind::Button && c->id == button) return defs[i].id;
         }
     }
@@ -563,8 +692,8 @@ std::string MenuPromptGlyph(const char* action, bool key) {
     for (size_t i = 0; i < defs.size(); ++i) {
         if (std::strcmp(defs[i].id, action) != 0) continue;
         const Binding& b = g_bindings[0][size_t(Context::Menu)][i];
-        for (const auto& name : key ? b.key : b.pad) {
-            if (!name.empty()) return key ? name : GlyphNameForPad(name);
+        if (const std::string* name = PromptBinding(key ? b.key : b.pad)) {
+            return key ? FirstPart(*name) : GlyphNameForPad(FirstPart(*name));
         }
     }
     return "";
@@ -577,8 +706,8 @@ std::string KeyGlyphFor(uint32_t wpadBit) {
     const auto& defs = ActionsFor(c);
     for (size_t i = 0; i < defs.size(); ++i) {
         if (defs[i].wpad != wpadBit) continue;
-        for (const auto& k : g_bindings[0][size_t(c)][i].key) {
-            if (k.empty()) continue;
+        if (const std::string* b = PromptBinding(g_bindings[0][size_t(c)][i].key)) {
+            const std::string k = FirstPart(*b);
             // A d-pad prompt bound to an arrow key shows the whole arrow cluster.
             if (k == "up" || k == "down" || k == "left" || k == "right") return "arrows";
             return k;
@@ -587,12 +716,59 @@ std::string KeyGlyphFor(uint32_t wpadBit) {
     return "";
 }
 
+// The options menu's capture: every control pressed while it waits joins the binding, which is
+// stored once they are all released (one control, or a combination of up to three).
+void CaptureCombo(const SDL_Event& e) {
+    std::string down, up;
+    std::vector<std::string> upAll; // an axis back near the centre releases both directions
+    if (g_capture.key) {
+        if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) down = KeyToName(e.key.scancode);
+        if (e.type == SDL_EVENT_KEY_UP) up = KeyToName(e.key.scancode);
+    } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        for (const auto& c : kPadControls) {
+            if (c.kind == PadKind::Button && c.id == e.gbutton.button) {
+                (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? down : up) = c.name;
+            }
+        }
+    } else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+        for (const auto& c : kPadControls) {
+            if (c.kind == PadKind::Button || c.id != e.gaxis.axis) continue;
+            const bool positive = c.kind == PadKind::AxisPositive;
+            if (e.gaxis.value > 20000 ? positive : e.gaxis.value < -20000 && !positive) down = c.name;
+            else if (e.gaxis.value > -8000 && e.gaxis.value < 8000) upAll.push_back(c.name);
+        }
+    }
+    if (!down.empty() && !g_capture.held.count(down)) {
+        g_capture.held.insert(down);
+        if (g_capture.pressed.size() < 3 &&
+            std::find(g_capture.pressed.begin(), g_capture.pressed.end(), down) == g_capture.pressed.end()) {
+            g_capture.pressed.push_back(down);
+        }
+    }
+    if (!up.empty()) upAll.push_back(up);
+    bool released = false;
+    for (const auto& name : upAll) released |= g_capture.held.erase(name) > 0;
+    if (!released || !g_capture.held.empty() || g_capture.pressed.empty()) return;
+    auto& b = g_bindings[g_capture.player][size_t(g_capture.context)][g_capture.action];
+    (g_capture.key ? b.key : b.pad)[g_capture.slot] = CanonicalCombo(g_capture.pressed, g_capture.key);
+    g_capture.active = false;
+    Save();
+}
+
 void HandleEvents(const AuroraEvent* events) noexcept {
     std::lock_guard lock(g_mutex);
     if (!g_capture.active) return;
     for (const AuroraEvent* ev = events; ev != nullptr && ev->type != AURORA_NONE; ++ev) {
         if (ev->type != AURORA_SDL_EVENT) continue;
         const SDL_Event& e = ev->sdl;
+        // Esc cancels and Delete clears, but only as the first key: once something is held they
+        // can be part of a combination.
+        if (g_capture.optionsMenu && !(g_capture.pressed.empty() && e.type == SDL_EVENT_KEY_DOWN &&
+                                       (e.key.scancode == SDL_SCANCODE_ESCAPE || e.key.scancode == SDL_SCANCODE_DELETE))) {
+            CaptureCombo(e);
+            if (!g_capture.active) return;
+            continue;
+        }
         std::string captured;
         if (g_capture.optionsMenu && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
             (e.key.scancode == SDL_SCANCODE_ESCAPE || e.key.scancode == SDL_SCANCODE_DELETE)) {
@@ -602,7 +778,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             }
             captured = ""; // Delete: clear the slot
         } else if (g_capture.key && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-            if (e.key.scancode == SDL_SCANCODE_F10) continue;
+            if (e.key.scancode == SDL_SCANCODE_F10 && !g_capture.optionsMenu) continue; // the F10 bar's own key
             captured = e.key.scancode == SDL_SCANCODE_ESCAPE && g_capture.slot > 0 ? "" : KeyToName(e.key.scancode);
         } else if (!g_capture.key && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
             for (const auto& c : kPadControls) {
@@ -697,7 +873,7 @@ std::vector<BoundAction> Bindings(uint32_t player, Context context) {
         }
         const auto& b = g_bindings[player][size_t(context)][i];
         for (size_t s = 0; s < kBindSlots && s < kMaxBinds; ++s) {
-            a.pads[s] = b.pad[s].empty() ? "" : GlyphNameForPad(b.pad[s]);
+            a.pads[s] = b.pad[s].empty() ? "" : GlyphNameForBinding(b.pad[s]);
             a.keys[s] = b.key[s];
         }
         out.push_back(std::move(a));
@@ -705,11 +881,89 @@ std::vector<BoundAction> Bindings(uint32_t player, Context context) {
     return out;
 }
 
+std::string OptionsActionFor(const SDL_Event& e) {
+    std::lock_guard lock(g_mutex);
+    LoadLocked();
+    // What is held, per device (0 = keyboard, else the pad's SDL id + 1), as seen through events.
+    // A combination counts only on the event that completes it. Checking SDL's live state instead
+    // let - and + pressed in the same instant complete Back + Start twice, once per button's event,
+    // so the menu opened and closed at once (developer report, 2026-10-31).
+    static std::map<uint32_t, std::set<std::string>> held;
+    std::string pressed;
+    uint32_t device = 0;
+    SDL_Gamepad* pad = nullptr;
+    if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) {
+        if (e.key.repeat) return "";
+        const std::string name = KeyToName(e.key.scancode);
+        if (e.type == SDL_EVENT_KEY_UP) {
+            held[0].erase(name);
+            return "";
+        }
+        pressed = name;
+    } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        device = uint32_t(e.gbutton.which) + 1;
+        std::string name;
+        for (const auto& c : kPadControls) {
+            if (c.kind == PadKind::Button && c.id == e.gbutton.button) name = c.name;
+        }
+        if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+            held[device].erase(name);
+            return "";
+        }
+        pressed = name;
+        pad = SDL_GetGamepadFromID(e.gbutton.which);
+    } else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+        device = uint32_t(e.gaxis.which) + 1;
+        // A stick direction or trigger is held past 20000 and released back inside 8000.
+        for (const auto& c : kPadControls) {
+            if (c.kind == PadKind::Button || c.id != e.gaxis.axis) continue;
+            const bool positive = c.kind == PadKind::AxisPositive;
+            const bool past = positive ? e.gaxis.value > 20000 : e.gaxis.value < -20000;
+            if (past && !held[device].count(c.name)) pressed = c.name;
+            else if (!past && e.gaxis.value > -8000 && e.gaxis.value < 8000) held[device].erase(c.name);
+        }
+        pad = SDL_GetGamepadFromID(e.gaxis.which);
+    }
+    if (pressed.empty()) return "";
+    auto& down = held[device];
+    if (down.count(pressed)) return ""; // already held: no new press
+    down.insert(pressed);
+    if (g_capture.active) return "";
+    // A release can be missed (the window lost focus): drop anything SDL no longer reports down.
+    int numKeys = 0;
+    const bool* keys = device == 0 ? SDL_GetKeyboardState(&numKeys) : nullptr;
+    for (auto it = down.begin(); it != down.end();) {
+        const bool live = *it == pressed || (device == 0 ? KeyPartDown(keys, numKeys, *it) : PadPartDown(pad, *it));
+        it = live ? std::next(it) : down.erase(it);
+    }
+    // Keys use player 1's bindings, a pad those of the player it drives.
+    size_t player = 0;
+    if (pad != nullptr) {
+        const auto devices = ResolveLocked();
+        for (size_t p = 0; p < kPlayers; ++p) {
+            if (devices[p].pad == pad) player = p;
+        }
+    }
+    const auto& defs = ActionsFor(Context::Options);
+    for (size_t i = 0; i < defs.size(); ++i) {
+        const Binding& b = g_bindings[player][size_t(Context::Options)][i];
+        for (const auto& binding : device == 0 ? b.key : b.pad) {
+            if (binding.empty()) continue;
+            const auto parts = Parts(binding);
+            if (std::find(parts.begin(), parts.end(), pressed) == parts.end()) continue;
+            bool all = true;
+            for (const auto& part : parts) all &= down.count(part) > 0;
+            if (all) return defs[i].id;
+        }
+    }
+    return "";
+}
+
 void StartCapture(uint32_t player, Context context, size_t action, bool key, size_t slot) {
     std::lock_guard lock(g_mutex);
     LoadLocked();
     if (player >= kPlayers || action >= ActionsFor(context).size() || slot >= kMaxBinds) return;
-    g_capture = Capture{true, context, action, slot, key, player, true};
+    g_capture = Capture{true, context, action, slot, key, player, true, {}, {}};
 }
 
 bool Capturing() noexcept {
@@ -824,23 +1078,59 @@ extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
     const auto& defs = ActionsFor(c);
     const auto& binds = g_bindings[chan < kPlayers ? chan : 0][size_t(c)];
     const Device device = chan < kPlayers ? ResolveLocked()[chan] : Device{};
-    std::vector<SDL_Gamepad*> pads;
-    if (device.pad != nullptr) pads.push_back(device.pad);
     int numKeys = 0;
     const bool* keys = device.keyboard ? SDL_GetKeyboardState(&numKeys) : nullptr;
+
+    // Controls that are part of a combination, in this context or the options menu's (Back + Start
+    // must not leak - and + to the game). "p:" pad / "k:" key names.
+    auto& combo = g_combo[chan < kPlayers ? chan : 0];
+    std::set<std::string> members;
+    auto collect = [&](const std::vector<Binding>& list) {
+        for (const auto& b : list) {
+            for (const auto& name : b.pad) {
+                if (!IsCombo(name)) continue;
+                for (const auto& part : Parts(name)) members.insert("p:" + part);
+                if (PadBindingDown(device.pad, name)) {
+                    for (const auto& part : Parts(name)) combo.latched.insert("p:" + part);
+                }
+            }
+            for (const auto& name : b.key) {
+                if (!IsCombo(name)) continue;
+                for (const auto& part : Parts(name)) members.insert("k:" + part);
+                if (KeyBindingDown(keys, numKeys, name)) {
+                    for (const auto& part : Parts(name)) combo.latched.insert("k:" + part);
+                }
+            }
+        }
+    };
+    collect(binds);
+    collect(g_bindings[chan < kPlayers ? chan : 0][size_t(Context::Options)]);
+    for (const auto& m : members) {
+        const bool isDown = m[0] == 'p' ? PadPartDown(device.pad, m.substr(2)) : KeyPartDown(keys, numKeys, m.substr(2));
+        if (isDown) {
+            ++combo.downFrames[m];
+        } else {
+            combo.downFrames.erase(m);
+            combo.latched.erase(m);
+        }
+    }
+    // A single control counts unless it is a combination member that is still in its grace frames
+    // or was used by a combination and not yet released.
+    auto singleCounts = [&](const std::string& m) {
+        if (!members.count(m)) return true;
+        return !combo.latched.count(m) && combo.downFrames[m] >= kComboGraceFrames;
+    };
 
     uint32_t out = 0;
     for (size_t i = 0; i < defs.size(); ++i) {
         bool down = false;
         for (const auto& name : binds[i].pad) {
-            const PadControl* control = name.empty() ? nullptr : FindPad(name);
-            for (SDL_Gamepad* p : pads) {
-                if (control != nullptr && PadControlDown(p, *control)) down = true;
-            }
+            if (IsCombo(name)) down |= PadBindingDown(device.pad, name);
+            else if (PadBindingDown(device.pad, name) && singleCounts("p:" + name)) down = true;
         }
         for (const auto& name : binds[i].key) {
-            const SDL_Scancode code = name.empty() ? SDL_SCANCODE_UNKNOWN : NameToKey(name);
-            if (code != SDL_SCANCODE_UNKNOWN && keys != nullptr && code < numKeys && keys[code]) down = true;
+            if (IsCombo(name)) down |= KeyBindingDown(keys, numKeys, name);
+            else if (KeyBindingDown(keys, numKeys, name) && singleCounts("k:" + name)) down = true;
         }
         if (down) out |= defs[i].wpad;
     }
@@ -869,10 +1159,15 @@ extern "C" float NsmbwControlsReadTilt(uint32_t chan) {
     auto amount = [&](const Binding& b) {
         float best = 0.0f;
         for (const auto& name : b.key) {
-            const SDL_Scancode code = name.empty() ? SDL_SCANCODE_UNKNOWN : NameToKey(name);
-            if (code != SDL_SCANCODE_UNKNOWN && keys != nullptr && code < numKeys && keys[code]) best = 1.0f;
+            if (KeyBindingDown(keys, numKeys, name)) best = 1.0f;
         }
         for (const auto& name : b.pad) {
+            if (IsCombo(name)) {
+                for (SDL_Gamepad* p : pads) {
+                    if (PadBindingDown(p, name)) best = 1.0f;
+                }
+                continue;
+            }
             const PadControl* control = name.empty() ? nullptr : FindPad(name);
             if (control == nullptr) continue;
             for (SDL_Gamepad* p : pads) {

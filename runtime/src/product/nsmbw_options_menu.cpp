@@ -223,19 +223,21 @@ Screen g_screen = Screen::Options;
 
 // The bindings screen ("Player N buttons"), opened by a player's Rebind button.
 using nsmbw_controls::Context;
-constexpr std::array<const char*, 3> kBindTabs = {"In a course", "World map", "Menus"};
-constexpr std::array<Context, 3> kBindContexts = {Context::Gameplay, Context::Map, Context::Menu};
+constexpr std::array<const char*, 4> kBindTabs = {"Course", "World map", "Menus", "Options"};
+constexpr std::array<Context, 4> kBindContexts = {Context::Gameplay, Context::Map, Context::Menu, Context::Options};
 constexpr int kBindRowsShown = 6;
 struct BindState {
     uint32_t player = 0;
     int tab = 0;
     int row = 0;
-    int slot = 0;   // 0-1 controller, 2-3 keyboard (player 1 only: the keyboard is player 1's)
+    int slot = 0;   // 0-1 controller, 2-3 keyboard
     int scroll = 0; // first row shown
     bool capturing = false;
 } g_bind;
 
-int BindSlots() { return g_bind.player == 0 ? 4 : 2; }
+// Every player has keyboard slots: players can share the keyboard on keys of their own (players 2-4
+// pick Keyboard as their controller; until 2026-10-31 only player 1 had keyboard slots).
+int BindSlots() { return 4; }
 
 // Set when a menu opened from the pause window has finished closing; the pause input handler
 // (nsmbw_pause_options.cpp) takes it on the game thread and plays the window's open animation.
@@ -459,8 +461,8 @@ void OnKey(const SDL_KeyboardEvent& k) {
     case SDL_SCANCODE_LEFT: case SDL_SCANCODE_A: cmd = Cmd::Left; once = false; break;
     case SDL_SCANCODE_RIGHT: case SDL_SCANCODE_D: cmd = Cmd::Right; once = false; break;
     case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: case SDL_SCANCODE_Z: case SDL_SCANCODE_SPACE: cmd = Cmd::Select; break;
-    case SDL_SCANCODE_Q: case SDL_SCANCODE_PAGEUP: cmd = Cmd::TabPrev; break;
-    case SDL_SCANCODE_E: case SDL_SCANCODE_PAGEDOWN: case SDL_SCANCODE_TAB: cmd = Cmd::TabNext; break;
+    case SDL_SCANCODE_PAGEUP: cmd = Cmd::TabPrev; break; // Q / E: the tab bindings (HandleEvents)
+    case SDL_SCANCODE_PAGEDOWN: case SDL_SCANCODE_TAB: cmd = Cmd::TabNext; break;
     case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_BACKSPACE: case SDL_SCANCODE_X: cmd = Cmd::Back; break;
     case SDL_SCANCODE_DELETE: cmd = Cmd::Clear; break;
     case SDL_SCANCODE_R: cmd = Cmd::Reset; break;
@@ -481,8 +483,6 @@ void OnButton(const SDL_GamepadButtonEvent& b) {
     case SDL_GAMEPAD_BUTTON_EAST: cmd = Cmd::Back; break;
     case SDL_GAMEPAD_BUTTON_WEST: cmd = Cmd::Clear; break;
     case SDL_GAMEPAD_BUTTON_NORTH: cmd = Cmd::Reset; break;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: cmd = Cmd::TabPrev; break;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: cmd = Cmd::TabNext; break;
     case SDL_GAMEPAD_BUTTON_START: cmd = Cmd::Exit; break;
     default: return;
     }
@@ -545,6 +545,17 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     for (const AuroraEvent* ev = events; ev != nullptr && ev->type != AURORA_NONE; ++ev) {
         if (ev->type != AURORA_SDL_EVENT) continue;
         const SDL_Event& e = ev->sdl;
+        // The "open / close options" binding (Options > Controls > Options tab; default F10, and
+        // Back + Start on a gamepad), replacing the F10 that settings_overlay used to handle.
+        const std::string action = nsmbw_controls::OptionsActionFor(e);
+        if (action == "open" && !g.closing && !g.afterPress) {
+            SetOpen(!g.open);
+            continue;
+        }
+        if ((action == "tab_prev" || action == "tab_next") && g.open && !g.closing && !g.afterPress) {
+            Dispatch(action == "tab_prev" ? Cmd::TabPrev : Cmd::TabNext, "tab binding");
+            continue;
+        }
         if (!g.open || g.closing || g.afterPress) {
             if (e.type == SDL_EVENT_KEY_UP && e.key.scancode == g.heldKey) g.heldKey = SDL_SCANCODE_UNKNOWN;
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.which == g.heldPad && e.gbutton.button == g.heldButton) {
@@ -665,14 +676,40 @@ void DrawOptions(const draw::Canvas& c) {
     DrawPrompts(c, kPromptY, {MenuPrompt("Select", "confirm"), MenuPrompt("Back", "back")});
 }
 
-// One binding slot: the control's glyph, a dash when empty, or its name when there's no glyph.
+// One control of a slot: its glyph, or its name when there's no glyph (F keys: "F10").
+void DrawControl(const draw::Canvas& c, const std::string& name, bool key, float x, float y, float size) {
+    if (const ImTextureID tex = nsmbw_button_glyphs::ControlTexture(name.c_str(), key); tex != ImTextureID{}) {
+        c.Image(tex, x, y, size);
+        return;
+    }
+    std::string text = name;
+    if (key && text.size() >= 2 && text[0] == 'f' && text[1] >= '1' && text[1] <= '9') text[0] = 'F';
+    c.Text(text, x, y, size * 0.6f, {.outline = true});
+}
+
+// One binding slot: the control's glyph, a dash when empty; a combination ("back+start") is its
+// glyphs side by side, smaller, so it still fits the slot's 50 units.
 void DrawSlot(const draw::Canvas& c, const std::string& name, bool key, float x, float y) {
     if (name.empty()) {
         c.Text("-", x, y, 17, {.white = Rgb(150, 160, 170), .outline = true});
-    } else if (const ImTextureID tex = nsmbw_button_glyphs::ControlTexture(name.c_str(), key); tex != ImTextureID{}) {
-        c.Image(tex, x, y, 22);
-    } else {
-        c.Text(name, x, y, 13, {.outline = true});
+        return;
+    }
+    std::vector<std::string> parts;
+    for (size_t start = 0;;) {
+        const size_t plus = name.find('+', start);
+        parts.push_back(name.substr(start, plus - start));
+        if (plus == std::string::npos) break;
+        start = plus + 1;
+    }
+    if (parts.size() == 1) {
+        DrawControl(c, name, key, x, y, 22);
+        return;
+    }
+    const float size = parts.size() == 2 ? 17.0f : 14.0f, step = size + 1;
+    float px = x - step * float(parts.size() - 1) / 2;
+    for (const auto& part : parts) {
+        DrawControl(c, part, key, px, y, size);
+        px += step;
     }
 }
 
@@ -693,7 +730,7 @@ void DrawBindings(const draw::Canvas& c) {
 
     const draw::TextStyle header{.white = Rgb(200, 215, 230), .outline = true};
     c.Text("Controller", 70, 58, 15, header);
-    if (g_bind.player == 0) c.Text("Keyboard", 205, 58, 15, header);
+    c.Text("Keyboard", 205, 58, 15, header);
     if (n > kBindRowsShown) {
         draw::TextStyle count = header;
         count.align = Align::Right;
