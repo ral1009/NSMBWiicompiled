@@ -676,6 +676,15 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: `nsmbw_controls::OptionsActionFor` follows which controls are held through the press and release events themselves, and an action counts only on the event that presses the last control of a binding. Controls SDL no longer reports as down are dropped, in case a release was missed. Confirmed by the developer.
 - Scope: NSMBW-specific (the class, using live input state to judge which event completed a chord, is general).
 
+## 2026-11-05 — 8-1 smoke invisible
+
+### The killing smoke in 8-1 was never drawn
+- Symptom: in 8-1 the smoke that chases the player and kills on contact could not be seen; Mario died standing still with nothing near him.
+- Root cause: bug class 2 + 3 together, through stale translated output. The smoke (`EN_CLOUD`, sprite 234, type 5 from settings `0x52`, textures `wny_mist.9/.10/.11` in `env_mist.arc`) is drawn by raw GX in `func_80008C50`. That function ends its setup with `GXSetDither`. `func_80008C50.cpp` was generated on 2026-09-20 and `GXSetDither` was bound natively on 2026-09-23, so the file still held `inline leaf 0x801C90D0`, which re-sends the guest's own stale `cmode0` (BP 0x41). The draw log showed the quads in the right place (x=267, y=-696) with `blend type=0 colorUpdate=0 alphaUpdate=0`. Adding an override only regenerates the shard manifest; the translator's inline block list is applied only when a function is translated.
+- Fix: re-translated into a scratch folder and replaced only the 11 functions in the generated shards that still inlined a bound NSMBW function: `GXSetDither` in 0x80007DE0, 0x80008C50, 0x8000A3D0, 0x8000D930, 0x8000E060, 0x802D32D0, and `GXInitTlutObj` (0x801C7660) in 0x801826E0, 0x8023E4D0, 0x80245C80, 0x8029C960, 0x802B4D80. This changes files under the gitignored `build/` only, so there is no source diff and no commit carries it: a machine with older `build/` output needs the same re-translation, and `build_release` needs a rebuild.
+- Verified: same draws now log `blend type=1 src=4 dst=5 colorUpdate=1`; screenshots show the crimson smoke following from the left through a played run of 8-1; developer confirmed on screen. Regression run (title, file select, a level, world map, a bonus room) looks normal in stills, no `missing_target`. Not checked: the palette textures the `GXInitTlutObj` callers load, and animated tiles in motion (stills only).
+- Scope: General class (any override added after translation stays bypassed at call sites already inlined). The binding and the smoke are NSMBW-specific.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -683,7 +692,8 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Render-scale cap at 4x in `ResetPersistentStateForCleanRun` may read config before it is loaded (2026-09-26 entry); untested with 8x saved.
 - Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.
 
-- Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed.
+- Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed. Two suspects (0x8000A3D0, 0x802D32D0) stopped inlining the guest `GXSetDither` on 2026-11-05; the sky has not been re-checked since.
+- Stale translated output (2026-11-05): `build/` is older than many overrides, and a full re-translation would drop 359 non-overridden functions from the output (25 of them in the current build), so only the 11 flagged functions were replaced. Whether those 359 are safe to lose is unproven.
 - Item boxes untextured (2026-09-23 report): cause found and fixed 2026-09-26 (native-readback blit clamp, only above 1x). World 2 map ground black: fixed 2026-09-27 (palette objects).
 - (superseded) Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.

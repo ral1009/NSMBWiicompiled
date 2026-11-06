@@ -225,7 +225,7 @@ Work that has been decided on but parked. Remove an item when it is done and not
 
 - **Confirm the seed shader list on the Iris Xe laptop** (2026-10-16). Put `initial_pipeline_cache.db` next to the exe, move `nsmbw_data\Cache` aside, then run `run_with_logging.bat`. Expect "Seeded pipeline cache ... 398 rows merged", "Pipeline prewarm finished", and no multi-second freeze on the first world-map visit.
 - **Native AX audio routines** (2026-10-16, low priority). 96% of audio time is NSMBW's own AX library running as translated code (guest AI callback: ~31 ms/s, about 93 us per 3 ms block; host join+push ~1 ms/s). Rewriting the hot routines natively saves at most ~3% of a core on a game thread that is 74-86% idle, so it is only worth it if a slow CPU ever becomes the limit. Needs a bit-exact PCM comparison before and after.
-- **Grow the seed shader list** (2026-10-16). It only covers W1-era scenes. Merge caches from play sessions through W2-W9, towers, castles and airships with `projects/nsmbw/tools/merge_pipeline_cache.py`.
+- **Grow the seed shader list** (2026-10-16; partly done 2026-11-02 for v0.2.2). The developer's play cache was merged in: 398 -> 1,532 recipes (1,529 GX + 3 clear), from levels in several worlds the developer played without stutter. Levels nobody has played on the dev build are still missing. Not yet measured: how much longer the background prewarm takes on a first launch, especially on the Iris Xe laptop, now that it compiles four times as many recipes.
 - **Animations freeze after a resolution change in a level** (developer report, 2026-10-31; for a future release). Changing the render scale while in a level freezes the animation of coins, item boxes and similar animated tiles. Not investigated yet. A first guess, unchecked: those tiles are animated by copying each frame into the tileset atlas (EFB copies, see the 2026-10-17 copy-target work), and a scale change rebuilds the copy targets, so the atlas may keep sampling a stale copy.
 - **Shader cache** (developer, 2026-10-31; for a future release). The scope is not written down yet; related open items are "Grow the seed shader list" above and confirming the seed on the laptop.
 
@@ -1133,3 +1133,30 @@ What I learned:
 
 What's next:
 - Developer confirmed: combinations, the options keys, the + / - fix and two players sharing the keyboard.
+
+## 2026-11-02 — Seed shader list grown from a play session (for v0.2.2)
+What I did:
+- The developer reported no stutter while playing, so their cache (`build_nsmbw/nsmbw_data/Cache/pipeline_cache.db`) had recipes for every scene they visited. It held 1,529 GX recipes against the seed's 395, with the seed a subset of it and every row at the current `GXPipelineConfigVersion` 19. `merge_pipeline_cache.py` merged it into `projects/nsmbw/assets/pipeline/initial_pipeline_cache.db`: 398 -> 1,532 rows, 1.6 MB -> 6.3 MB. A *recipe* is the GX state a shader is built from, not compiled GPU code, so it works on any GPU; the compiled shaders (`dawn_cache.db`) are per-machine and can't be shipped.
+
+What's next:
+- Measure the first-launch prewarm time with the bigger seed (a portable copy with an empty `nsmbw_data/Cache`), on this PC and ideally the laptop, before releasing v0.2.2. The version number itself is not bumped yet.
+
+## 2026-11-05 — 8-1 smoke visible: translated code older than the GXSetDither binding
+What I did:
+- Identified the smoke by parsing `Stage/08-01.arc`'s sprite list and mapping sprite IDs through the table at 0x8030A340: one `EN_CLOUD` (sprite 234) at x=336, settings `0x52`. Its constructor registers an `m3d::proc_c` (a draw callback object) whose draw slots call raw GX in `func_80008C50`.
+- Logged its draws with `NSMBW_ARM_ON_TEX=64x64:3`. The quads were in the right place but had `blend type=0 colorUpdate=0 alphaUpdate=0`, so nothing was written to the screen.
+- Replaced 11 stale translated functions (list in `docs/issues.md`), regenerated the shards and rebuilt. Same log line now reads `blend type=1 src=4 dst=5 colorUpdate=1`.
+- Developer confirmed the smoke on screen in 8-1. A regression run (title, file select, a level, map, a bonus room) looks normal in stills.
+
+What broke:
+- Yesterday's theory was wrong: I took 12 other 64x64 IA8 textures, drawn along the whole level, for the smoke and suspected its position maths. Those draws belong to something else. What exposed it: `func_80008C50` binds three textures to maps 0-2, and only one set in the log did that, with `.9` 0x10200 past `.11` as in the file.
+- During reproduction one run was started with `run_nsmbw.ps1`, which uses the real save. It could not be stopped early and ran its 75 s; the save's timestamp did not change. Test runs now use a portable copy.
+
+What I learned:
+- "Inlining" means the translator pastes a small function's body into its caller. The inliner does skip overridden functions, but only when a function is translated. An override added later does not reach callers that were translated earlier, and regenerating the shard manifest does not change them.
+- Comparing `inline leaf 0x<addr>` in the generated shards against the override list finds these directly. After this fix three remain (0x8016EAB0, 0x80173DE0, 0x801A0870), in overrides from shared runtime files. Whether those three matter for NSMBW was not checked.
+- A full re-translation is not automatically safe: it would drop 359 non-overridden functions from the output, 25 of them in the current build.
+
+What's next:
+- Re-check the darker-sky item: two of its suspects no longer inline the guest `GXSetDither`.
+- Decide on a full re-translation. `build_release` needs a rebuild before v0.2.2 carries this fix.
