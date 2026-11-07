@@ -18,6 +18,9 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <future>
+#include <string>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -527,6 +530,7 @@ void evict_replacement_cache_if_needed() noexcept {
 }
 
 void start_prefetch() noexcept;
+void restart_all_patch_jobs() noexcept;
 
 void build_index() noexcept {
   if (!g_config.allowTextureReplacements) {
@@ -585,6 +589,9 @@ void build_index() noexcept {
   }
 
   Log.info("Indexed {} texture replacements", s_replacementIndex.size());
+  // NSMBW hands over its icon patches before this index exists, so their prebuild found no pack
+  // file to start from; start it again now that the pack can be looked up.
+  restart_all_patch_jobs();
   // NSMBW sets the pack's on/off state before aurora_initialize builds this index, so set_enabled
   // saw an empty index; start the prefetch here when the pack is already on.
   if (s_enabled.load(std::memory_order_relaxed)) {
@@ -728,6 +735,161 @@ void cache_replacement(const RuntimeTextureKey& key, const gfx::TextureHandle& h
   evict_replacement_cache_if_needed();
 }
 
+// ---- Per-scene preload (aurora_texture_preload_scene) ----
+// Pack files are loaded the first time a texture is drawn. NSMBW's title loads 33 of them (44 MB,
+// uncompressed BGRA) as its logo and text appear: ~40 ms of reads and ~20 ms of uploads in the
+// frames right after the iris wipe opened, a visible stutter (2026-11-07). The product names each
+// scene as it is created, while the screen is still black from the previous scene's fade-out, and
+// every pack file the scene then loads on demand is recorded under that name. The next time the
+// scene starts, its recorded files are loaded before its first frame instead: the black screen
+// lasts a little longer and the scene runs without the loads.
+//   Lists: "<scene>\t<pack file name>" per line. A seed ships next to the exe
+//   (initial_texture_preload.txt, read-only); what this machine learns is appended to
+//   <cache>/texture_preload.txt. Names not in the installed pack are skipped, so a different pack
+//   just preloads less. All of this runs on the game (GX) thread.
+constexpr const char* kSeedPreloadName = "initial_texture_preload.txt";
+constexpr const char* kLearnedPreloadName = "texture_preload.txt";
+constexpr size_t kMaxPreloadThreads = 8;
+
+absl::flat_hash_map<std::string, std::vector<std::string>> s_scenePreloads;
+absl::flat_hash_set<std::string> s_scenePreloadEntries; // "<scene>\t<file>", to append each once
+bool s_scenePreloadsRead = false;
+std::string s_currentScene;
+std::FILE* s_learnedPreloadFile = nullptr;
+
+void read_preload_list(const std::filesystem::path& path) noexcept {
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const size_t tab = line.find('\t');
+    if (tab == std::string::npos || tab == 0 || tab + 1 == line.size()) {
+      continue;
+    }
+    if (s_scenePreloadEntries.insert(line).second) {
+      s_scenePreloads[line.substr(0, tab)].push_back(line.substr(tab + 1));
+    }
+  }
+}
+
+void read_preload_lists() noexcept {
+  if (s_scenePreloadsRead) {
+    return;
+  }
+  s_scenePreloadsRead = true;
+  std::filesystem::path seed = kSeedPreloadName;
+  if (g_config.resourcesPath != nullptr && g_config.resourcesPath[0] != '\0') {
+    seed = fs_path_from_string(g_config.resourcesPath) / kSeedPreloadName;
+  }
+  read_preload_list(seed);
+  const size_t seeded = s_scenePreloadEntries.size();
+  read_preload_list(fs_path_from_string(g_config.cachePath) / kLearnedPreloadName);
+  Log.info("Texture preload lists: {} scenes, {} files ({} from the seed)", s_scenePreloads.size(),
+           s_scenePreloadEntries.size(), seeded);
+}
+
+// Called once per on-demand pack load (a cache miss), so each scene's list only grows by files
+// its preload did not already cover.
+void record_scene_load(const std::filesystem::path& file) noexcept {
+  if (s_currentScene.empty()) {
+    return;
+  }
+  const std::string name = fs_path_to_string(file.filename());
+  std::string entry = s_currentScene + '\t' + name;
+  if (!s_scenePreloadEntries.insert(entry).second) {
+    return;
+  }
+  s_scenePreloads[s_currentScene].push_back(name);
+  if (s_learnedPreloadFile == nullptr) {
+    const auto path = fs_path_from_string(g_config.cachePath) / kLearnedPreloadName;
+#if defined(_WIN32)
+    s_learnedPreloadFile = _wfopen(path.c_str(), L"ab");
+#else
+    s_learnedPreloadFile = std::fopen(path.c_str(), "ab");
+#endif
+    if (s_learnedPreloadFile == nullptr) {
+      return;
+    }
+  }
+  entry += '\n';
+  std::fwrite(entry.data(), 1, entry.size(), s_learnedPreloadFile);
+  std::fflush(s_learnedPreloadFile);
+}
+
+void preload_scene(const char* scene) noexcept {
+  s_currentScene = scene != nullptr ? scene : "";
+  if (s_currentScene.empty() || !enabled() || s_replacementIndex.empty()) {
+    return;
+  }
+  read_preload_lists();
+  const auto list = s_scenePreloads.find(s_currentScene);
+  if (list == s_scenePreloads.end()) {
+    return;
+  }
+
+  struct Work {
+    RuntimeTextureKey key;
+    const ReplacementIndexEntry* entry;
+    std::optional<ConvertedTexture> texture;
+  };
+  std::vector<Work> work;
+  for (const auto& name : list->second) {
+    const auto key = parse_replacement_filename(name);
+    if (!key.has_value() || s_replacementCache.contains(*key) || s_failedKeys.contains(*key)) {
+      continue;
+    }
+    const auto entry = s_replacementIndex.find(*key);
+    if (entry != s_replacementIndex.end()) {
+      work.push_back(Work{.key = *key, .entry = &entry->second});
+    }
+  }
+  if (work.empty()) {
+    return;
+  }
+
+  // Reads and DDS parsing in parallel; GPU uploads stay on this thread, as on demand.
+  const auto start = std::chrono::steady_clock::now();
+  std::atomic<size_t> next{0};
+  const auto readSome = [&] {
+    for (size_t i = next.fetch_add(1); i < work.size(); i = next.fetch_add(1)) {
+      work[i].texture = load_replacement(*work[i].entry);
+    }
+  };
+  const size_t threadCount =
+      std::min({kMaxPreloadThreads, work.size(), static_cast<size_t>(std::max(1u, std::thread::hardware_concurrency()))});
+  std::vector<std::thread> threads;
+  for (size_t i = 1; i < threadCount; ++i) {
+    threads.emplace_back(readSome);
+  }
+  readSome();
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  const auto read = std::chrono::steady_clock::now();
+  uint64_t bytes = 0;
+  size_t loaded = 0;
+  for (auto& item : work) {
+    if (!item.texture.has_value()) {
+      s_failedKeys.insert(item.key);
+      continue;
+    }
+    bytes += item.texture->data.size();
+    cache_replacement(item.key, upload_converted(fmt::format("TextureReplacement {}", format_replacement_filename(item.key)),
+                                                 &*item.texture));
+    item.texture.reset();
+    ++loaded;
+  }
+  const auto done = std::chrono::steady_clock::now();
+  Log.info("texture_replacement: preloaded {} pack files ({:.1f} MB) for scene '{}' in {:.1f} ms (read {:.1f} ms on {} "
+           "threads, upload {:.1f} ms)",
+           loaded, static_cast<double>(bytes) / (1024.0 * 1024.0), s_currentScene,
+           std::chrono::duration<double, std::milli>(done - start).count(),
+           std::chrono::duration<double, std::milli>(read - start).count(), threadCount,
+           std::chrono::duration<double, std::milli>(done - read).count());
+}
+
 bool dump_editable_texture_dds(const RuntimeTextureKey& key, const GXTexObj_& obj) noexcept {
   const ArrayRef<uint8_t> texData{static_cast<const uint8_t*>(obj.data), UINT32_MAX};
   const uint32_t texWidth = obj.width();
@@ -770,6 +932,10 @@ bool report_missing_key(const RuntimeTextureKey& key, const GXTexObj_& obj) noex
 void initialize() noexcept { build_index(); }
 
 void shutdown() noexcept {
+  if (s_learnedPreloadFile != nullptr) {
+    std::fclose(s_learnedPreloadFile);
+    s_learnedPreloadFile = nullptr;
+  }
   s_replacementIndex.clear();
   s_indexShapes.clear();
   s_replacementCache.clear();
@@ -879,6 +1045,10 @@ absl::flat_hash_map<RuntimeTextureKey, std::vector<TexturePatch>> s_patches;
 absl::flat_hash_set<uint64_t> s_patchShapes; // under s_patchMutex, like s_patches
 std::atomic<bool> s_hasPatches{false};
 std::atomic<uint32_t> s_patchGeneration{0};
+// The generation each texture's patch list was last set at. Per texture: set_patches is called once
+// per patched texture, so a global value moved on under the others and their prebuilt results
+// never matched (2026-11-07). Under s_patchMutex.
+absl::flat_hash_map<RuntimeTextureKey, uint32_t> s_patchKeyGeneration;
 // Decoded images keyed by the caller's PNG buffer, which must stay alive (embedded data).
 absl::flat_hash_map<const uint8_t*, std::shared_ptr<const PatchImage>> s_patchImages;
 // GX thread only.
@@ -905,6 +1075,8 @@ std::shared_ptr<const PatchImage> decode_patch_image(const uint8_t* png, size_t 
   return image;
 }
 
+void restart_patch_job_locked(const RuntimeTextureKey& patchKey, uint32_t generation) noexcept;
+
 void set_patches(uint64_t hash, uint32_t width, uint32_t height, uint32_t format, const AuroraTexturePatch* patches,
                  size_t count) noexcept {
   std::vector<TexturePatch> list;
@@ -925,7 +1097,9 @@ void set_patches(uint64_t hash, uint32_t width, uint32_t height, uint32_t format
     s_patchShapes.insert(texture_shape(k.width, k.height, k.format));
   }
   s_hasPatches.store(!s_patches.empty(), std::memory_order_relaxed);
-  s_patchGeneration.fetch_add(1, std::memory_order_relaxed);
+  const uint32_t generation = s_patchGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+  s_patchKeyGeneration[key] = generation;
+  restart_patch_job_locked(key, generation);
   // Same flush as the pack toggle: every texture gx already resolved may now be stale.
   s_revision.fetch_add(1, std::memory_order_release);
 }
@@ -1048,29 +1222,23 @@ void apply_patches(ConvertedTexture& base, uint32_t nativeWidth, uint32_t native
   }
 }
 
-std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GXTexObj_& obj, bool packOn) noexcept {
-  std::vector<TexturePatch> patches;
-  uint32_t generation = 0;
-  {
-    std::lock_guard lock(s_patchMutex);
-    const auto it = s_patches.find(make_patch_key(key.textureHash, key.width, key.height, key.format));
-    if (it == s_patches.end()) {
-      return std::nullopt;
-    }
-    patches = it->second;
-    generation = s_patchGeneration.load(std::memory_order_relaxed);
-  }
+// The CPU half of a patched texture: load the base (pack file, else the original guest texture),
+// upscale an original base, draw the patches. Pure CPU work, so it can run on a worker thread.
+// Building NSMBW's button-icon font (pack base 2048x2048) took 24-31 ms; done on the game thread
+// when the title's text first drew, it was a third of an 86 ms frame (2026-11-07).
+struct PatchBuildResult {
+  std::optional<ConvertedTexture> texture;
+  bool baseFromPack = false;
+  bool needsOriginal = false; // the pack base can't be patched and no guest bytes were given
+};
 
-  const auto* packEntry = packOn ? find_replacement_path(key) : nullptr;
-  const bool fromPack = packEntry != nullptr;
-  if (const auto it = s_patchedCache.find(key);
-      it != s_patchedCache.end() && it->second.generation == generation && it->second.fromPack == fromPack) {
-    return it->second.handle;
-  }
-
+PatchBuildResult build_patched_texture(const RuntimeTextureKey& key, const std::filesystem::path* packPath,
+                                       const uint8_t* original, size_t originalSize,
+                                       const std::vector<TexturePatch>& patches) noexcept {
+  PatchBuildResult result;
   std::optional<ConvertedTexture> base;
-  if (fromPack) {
-    base = load_replacement(*packEntry);
+  if (packPath != nullptr) {
+    base = load_replacement(ReplacementIndexEntry{*packPath});
     // A block-compressed pack texture can't be written to, so patch the original instead. Found
     // with NSMBW's bubble arrow, whose pack copy is format 62 and whose only patch erases it.
     if (base.has_value() && base->format != wgpu::TextureFormat::RGBA8Unorm &&
@@ -1078,25 +1246,25 @@ std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GX
       base.reset();
     }
   }
-  const bool baseFromPack = base.has_value();
+  result.baseFromPack = base.has_value();
   if (!base.has_value()) {
-    const u32 dataSize = GXGetTexBufferSize(static_cast<u16>(obj.width()), static_cast<u16>(obj.height()),
-                                            obj.format(), false, 0);
-    base = convert_texture(obj.format(), obj.width(), obj.height(), 1,
-                           {static_cast<const uint8_t*>(obj.data), dataSize});
+    if (original == nullptr) {
+      result.needsOriginal = true;
+      return result;
+    }
+    base = convert_texture(key.format, key.width, key.height, 1, {original, originalSize});
   }
   if (base->format != wgpu::TextureFormat::RGBA8Unorm && base->format != wgpu::TextureFormat::BGRA8Unorm) {
     Log.warn("texture_replacement: cannot patch {} (base format {} is not 8-bit RGBA)",
              format_replacement_filename(key), static_cast<uint32_t>(base->format));
-    return std::nullopt;
+    return result;
   }
   if (base->mips != 1) {
     // Patching only the top level would leave the unpatched icons in the smaller mips.
     Log.warn("texture_replacement: cannot patch {} (base has {} mips)", format_replacement_filename(key), base->mips);
-    return std::nullopt;
+    return result;
   }
-
-  if (!baseFromPack) {
+  if (!result.baseFromPack) {
     // Upscale so the smallest patch rectangle gets >= 128 texels (Kenney's "Double" glyphs are
     // 128 px), capped at 2048 px per side.
     uint32_t minSide = UINT32_MAX;
@@ -1112,10 +1280,123 @@ std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GX
     }
   }
   apply_patches(*base, key.width, key.height, patches);
-  auto handle = upload_converted(fmt::format("PatchedTexture {}", format_replacement_filename(key)), &*base);
+  result.texture = std::move(base);
+  return result;
+}
+
+// A patched texture built ahead of time on a worker thread. set_patches starts one at boot and on
+// every icon-set change, long before the texture is next drawn, so find_patched normally only
+// uploads the result. Keyed like s_patches, under s_patchMutex.
+struct PatchJob {
+  uint32_t generation = 0;
+  bool fromPack = false;
+  std::shared_future<PatchBuildResult> result;
+};
+absl::flat_hash_map<RuntimeTextureKey, PatchJob> s_patchJobs;
+// The original guest bytes of each patched texture, saved at its first build. The key includes
+// their hash, so they never change; with them a rebuild that has no pack base (the icons switch
+// with the input context) can also run ahead of time. Under s_patchMutex.
+absl::flat_hash_map<RuntimeTextureKey, std::vector<uint8_t>> s_patchOriginals;
+
+// Under s_patchMutex.
+void start_patch_job_locked(const RuntimeTextureKey& patchKey, const std::vector<TexturePatch>& patches,
+                            uint32_t generation) noexcept {
+  const bool packOn = g_config.allowTextureReplacements && s_enabled.load(std::memory_order_relaxed);
+  const auto* packEntry = packOn ? find_replacement_path(patchKey) : nullptr;
+  std::optional<std::filesystem::path> packPath;
+  if (packEntry != nullptr) {
+    packPath = packEntry->path;
+  }
+  std::vector<uint8_t> originalBytes;
+  if (const auto it = s_patchOriginals.find(patchKey); it != s_patchOriginals.end()) {
+    originalBytes = it->second;
+  } else if (!packPath.has_value()) {
+    return; // nothing to build from until the guest draws the texture once
+  }
+  std::packaged_task<PatchBuildResult()> task(
+      [patchKey, patches, packPath = std::move(packPath), originalBytes = std::move(originalBytes)] {
+        return build_patched_texture(patchKey, packPath ? &*packPath : nullptr,
+                                     originalBytes.empty() ? nullptr : originalBytes.data(), originalBytes.size(),
+                                     patches);
+      });
+  s_patchJobs[patchKey] =
+      PatchJob{.generation = generation, .fromPack = packEntry != nullptr, .result = task.get_future().share()};
+  std::thread(std::move(task)).detach();
+}
+
+// Under s_patchMutex: drops the job for an older patch set and starts one for the current set.
+void restart_patch_job_locked(const RuntimeTextureKey& patchKey, uint32_t generation) noexcept {
+  s_patchJobs.erase(patchKey);
+  if (const auto it = s_patches.find(patchKey); it != s_patches.end()) {
+    start_patch_job_locked(patchKey, it->second, generation);
+  }
+}
+
+void restart_all_patch_jobs() noexcept {
+  std::lock_guard lock(s_patchMutex);
+  for (const auto& [patchKey, patches] : s_patches) {
+    restart_patch_job_locked(patchKey, s_patchKeyGeneration[patchKey]);
+  }
+}
+
+std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GXTexObj_& obj, bool packOn) noexcept {
+  const RuntimeTextureKey patchKey = make_patch_key(key.textureHash, key.width, key.height, key.format);
+  std::vector<TexturePatch> patches;
+  uint32_t generation = 0;
+  std::optional<PatchJob> job;
+  {
+    std::lock_guard lock(s_patchMutex);
+    const auto it = s_patches.find(patchKey);
+    if (it == s_patches.end()) {
+      return std::nullopt;
+    }
+    patches = it->second;
+    generation = s_patchKeyGeneration[patchKey];
+    if (const auto jt = s_patchJobs.find(patchKey); jt != s_patchJobs.end()) {
+      job = jt->second;
+    }
+  }
+
+  const auto* packEntry = packOn ? find_replacement_path(key) : nullptr;
+  const bool fromPack = packEntry != nullptr;
+  if (const auto it = s_patchedCache.find(key);
+      it != s_patchedCache.end() && it->second.generation == generation && it->second.fromPack == fromPack) {
+    return it->second.handle;
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  const u32 dataSize =
+      GXGetTexBufferSize(static_cast<u16>(obj.width()), static_cast<u16>(obj.height()), obj.format(), false, 0);
+  const auto* original = static_cast<const uint8_t*>(obj.data);
+  // The job's shared state (kept alive by `job`) owns a prebuilt result; a build here owns `local`.
+  PatchBuildResult local;
+  const PatchBuildResult* built = nullptr;
+  if (job.has_value() && job->generation == generation && job->fromPack == fromPack) {
+    const auto& result = job->result.get(); // normally finished long ago; else waits for the rest
+    if (!result.needsOriginal) {
+      built = &result;
+    }
+  }
+  const bool prebuilt = built != nullptr;
+  if (!prebuilt) {
+    local = build_patched_texture(key, fromPack ? &packEntry->path : nullptr, original, dataSize, patches);
+    built = &local;
+  }
+  if (!built->baseFromPack && original != nullptr) {
+    std::lock_guard lock(s_patchMutex);
+    if (!s_patchOriginals.contains(patchKey)) {
+      s_patchOriginals.emplace(patchKey, std::vector<uint8_t>(original, original + dataSize));
+    }
+  }
+  if (!built->texture.has_value()) {
+    return std::nullopt;
+  }
+  auto handle = upload_converted(fmt::format("PatchedTexture {}", format_replacement_filename(key)), &*built->texture);
   s_patchedCache[key] = PatchedTexture{.generation = generation, .fromPack = fromPack, .handle = handle};
-  Log.info("texture_replacement: patched {} ({} rects, base {})", format_replacement_filename(key), patches.size(),
-           baseFromPack ? "pack" : "original");
+  Log.info("texture_replacement: patched {} ({} rects, base {} {}x{}, {}) - {:.1f} ms on the game thread",
+           format_replacement_filename(key), patches.size(), built->baseFromPack ? "pack" : "original",
+           built->texture->width, built->texture->height, prebuilt ? "prebuilt" : "built here",
+           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
   return handle;
 }
 
@@ -1173,6 +1454,7 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   cache_replacement(key, handle);
   // Once per load (cache hits return above), so a run shows which pack files actually matched.
   Log.info("texture_replacement: loaded {}", fs_path_to_string(path->path.filename()));
+  record_scene_load(path->path);
   return handle;
 }
 
@@ -1220,6 +1502,7 @@ std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept {
 void set_enabled(bool enabled) noexcept {
   if (s_enabled.exchange(enabled, std::memory_order_relaxed) != enabled) {
     s_revision.fetch_add(1, std::memory_order_release);
+    restart_all_patch_jobs(); // the patched textures' base switches between pack and original
   }
   if (enabled && g_config.allowTextureReplacements) {
     start_prefetch();

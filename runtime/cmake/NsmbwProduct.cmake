@@ -268,6 +268,15 @@ if(MKW_BUILD_NSMBW)
         add_custom_command(TARGET NSMBWCompiled POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${NSMBW_PIPELINE_SEED}" "$<TARGET_FILE_DIR:NSMBWCompiled>/initial_pipeline_cache.db")
     endif()
+    # Seed list of the HD-pack files each scene uses (aurora_texture_preload_scene; grow it with
+    # projects/nsmbw/tools/merge_texture_preload.py). With it, a first launch already loads the
+    # title's 44 MB of pack textures while the screen is black instead of stuttering as the logo
+    # appears (86 ms frame, 2026-11-07).
+    set(NSMBW_TEXTURE_PRELOAD_SEED "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/assets/textures/initial_texture_preload.txt")
+    if(EXISTS "${NSMBW_TEXTURE_PRELOAD_SEED}")
+        add_custom_command(TARGET NSMBWCompiled POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${NSMBW_TEXTURE_PRELOAD_SEED}" "$<TARGET_FILE_DIR:NSMBWCompiled>/initial_texture_preload.txt")
+    endif()
     set(NSMBW_WII_BOOTSTRAP_SOURCE_DIR "${MKW_RUNTIME_SOURCE_DIR}/assets/wii")
     if(NOT EXISTS "${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}/shared2/wc24")
         message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${NSMBW_WII_BOOTSTRAP_SOURCE_DIR}")

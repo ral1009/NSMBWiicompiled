@@ -1,0 +1,85 @@
+nsmbw p5 mode2 w0-39	tex1_256x512_09d8672fe3256f8a_1.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_dde2e0ec38e66a50_5.dds
+nsmbw p5 mode2 w0-39	tex1_64x64_a771b7fdf2a1d41d_14.dds
+nsmbw p5 mode2 w0-39	tex1_64x64_9a1391ada7a63f5f_14.dds
+nsmbw p5 mode2 w0-39	tex1_256x128_fe09049d5c09ae28_5.dds
+nsmbw p5 mode2 w0-39	tex1_96x64_bbe7509e3e35e964_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_50c409eaa89c5315_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_cd46f39453e878ae_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_70691e9061a86403_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_a87cce18809f25a2_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_7feb9586c99d2650_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_d6b85807b7ba08fd_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_73785a87bf8e5cf0_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_ac673c8aa5ffa47a_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_016d777bfaf1ff26_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_d7af89a8b0745ecd_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_bdafb664ed96161c_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_19250c536d0795a0_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_983f3e37ea17a455_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_ddef9009c7ad9303_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_554cbdc93844a838_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_7d422a28722dcf87_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_dd48a045d67885bb_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_097a12f87bcb9ec8_5.dds
+nsmbw p5 mode2 w0-39	tex1_32x32_f8db273cf9d4af8a_5.dds
+nsmbw p5 mode2 w0-39	tex1_630x260_1f7ee57460ab59c3_5.dds
+nsmbw p5 mode2 w0-39	tex1_1024x32_fa761815e65a1276_2.dds
+nsmbw p5 mode2 w0-39	tex1_1024x32_19ea219303d72035_2.dds
+nsmbw p5 mode2 w0-39	tex1_1024x32_957f10f30c8370e8_2.dds
+nsmbw p5 mode2 w0-39	tex1_64x1024_b4d1c0d1dc819295_2.dds
+nsmbw p5 mode2 w0-39	tex1_64x1024_6e996fd6bdee3560_2.dds
+nsmbw p5 mode2 w0-39	tex1_64x1024_120ff92d6d812255_2.dds
+nsmbw p5 mode2 w0-39	tex1_64x1024_9457382c69876290_2.dds
+nsmbw p10	tex1_134x28_ad467916830ac175_5.dds
+nsmbw p10	tex1_64x1024_12376a56e7830821_2.dds
+nsmbw p10	tex1_32x32_060d494750eda6a1_2.dds
+nsmbw p10	tex1_220x32_b752eefb23335d45_0.dds
+nsmbw p10	tex1_24x24_11d21bc1f872ede6_2.dds
+nsmbw p10	tex1_24x24_eca86f0f351536a2_2.dds
+nsmbw p10	tex1_24x24_340024aa955bb4c9_2.dds
+nsmbw p10	tex1_68x48_0553e43062c1192f_5.dds
+nsmbw p10	tex1_40x40_46541b328cd1823d_2.dds
+nsmbw p10	tex1_64x1024_f52e6b29d16cb36a_2.dds
+nsmbw p10	tex1_48x48_5079f304d85b25a7_5.dds
+nsmbw p10	tex1_75x50_b9f0b06dfbfcc454_2.dds
+nsmbw p10	tex1_64x1024_e5a410ab764e1885_2.dds
+nsmbw p10	tex1_24x24_76453461d7de3735_2.dds
+nsmbw p10	tex1_64x1024_c6b1603f9832a45f_2.dds
+nsmbw p10	tex1_40x40_c0a98239855df300_5.dds
+nsmbw p10	tex1_36x36_e0ec71c51e6ec85d_5.dds
+nsmbw p10	tex1_350x120_8c0eeda4cbf24bed_0.dds
+nsmbw p10	tex1_62x74_9a19f58d206fbed7_3.dds
+nsmbw p10	tex1_350x120_ed83ae3cb0b7e6ef_2.dds
+nsmbw p10	tex1_110x120_71166487de70a5f4_0.dds
+nsmbw p10	tex1_42x50_91fe020b869a588a_3.dds
+nsmbw p10	tex1_42x65_dcaf727cffe9de8c_3.dds
+nsmbw p10	tex1_110x120_7cc65d35478741c9_2.dds
+nsmbw p10	tex1_39x48_dbf1e7956697fc7f_3.dds
+nsmbw p10	tex1_36x36_dcd64f08a2cec227_5.dds
+nsmbw p3 w0	tex1_64x64_a0e59bae8e11b70d_14.dds
+nsmbw p3 w0	tex1_32x32_5f9ad0f662ac4567_14.dds
+nsmbw p3 w0	tex1_128x64_b0d89a7eb766bb41_5.dds
+nsmbw p3 w0	tex1_48x48_26db60045247d0ae_5.dds
+nsmbw p3 w0	tex1_48x68_f05c6484b6e38620_5.dds
+nsmbw p3 w0	tex1_16x16_5fcf490c5e0e9945_5.dds
+nsmbw p3 w0	tex1_165x60_b707598675954dae_5.dds
+nsmbw p3 w0	tex1_64x64_a97b72eff3e2aa21_2.dds
+nsmbw p3 w0	tex1_64x64_c3c780f8ad95961a_3.dds
+nsmbw p3 w0	tex1_64x64_052a5cd816952ed1_3.dds
+nsmbw p3 w0	tex1_64x64_322c9d4a6a15d991_3.dds
+nsmbw p3 w0	tex1_64x64_3dff8dffa6db325f_3.dds
+nsmbw p3 w0	tex1_64x64_7496bf357294226c_3.dds
+nsmbw p3 w0	tex1_64x64_27670ea443316c17_3.dds
+nsmbw p3 w0	tex1_64x64_537ca4b7998b0973_3.dds
+nsmbw p3 w0	tex1_64x64_87c8b9541326aa6e_3.dds
+nsmbw p3 w0	tex1_64x64_c7bf557d8e51b5af_3.dds
+nsmbw p7	tex1_46x55_0918d3d2f95615ef_5.dds
+nsmbw p7	tex1_48x48_cac05a42c436e6bc_5.dds
+nsmbw p7	tex1_48x48_15dcc304eb801267_5.dds
+nsmbw p5 mode0 w0-0	tex1_512x462_a8748e793db2455a_1.dds
+nsmbw p5 mode0 w0-0	tex1_40x40_3253772d5bbdad72_5.dds
+nsmbw p5 mode0 w0-0	tex1_34x34_55c02cb2fd5d0488_2.dds
+nsmbw p5 mode0 w0-0	tex1_512x64_21be73464bbd4e3a_2.dds
+nsmbw p5 mode0 w0-0	tex1_256x580_759593bd5c28766c_1.dds
+nsmbw p5 mode0 w0-0	tex1_256x580_3642c5a8efbbcdc9_3.dds

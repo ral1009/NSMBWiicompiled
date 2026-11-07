@@ -55,6 +55,8 @@
 #include "abi_bridge.h"
 #include "memory.h"
 
+#include <aurora/gfx.h>
+
 #include <cstdio>
 
 namespace {
@@ -66,6 +68,34 @@ constexpr uint32_t kParaAddr = 0x8042A328u;
 constexpr uint32_t kSceneInvalid = 0x2EEu;
 constexpr uint32_t kDBaseCreateRootAddr = 0x8006C6C0u;
 constexpr uint32_t kGroupTypeScene = 1u;
+// dInfo_c::m_startGameInfo (NSMBW-Decomp syms.txt); StartGameInfo_s has mGameMode at +8 (u32),
+// mWorld1 at +12 and mLevel1 at +13 (d_info.hpp).
+constexpr uint32_t kStartGameInfoAddr = 0x80315E90u;
+
+// Names the new scene for aurora's HD-pack preload (aurora_texture_preload_scene). This runs once
+// the previous scene has faded out, so the preload's file loads lengthen the black screen instead
+// of stalling the new scene once it is visible: the title loaded 33 pack files (44 MB) just after
+// its iris wipe opened, an 86 ms frame (2026-11-07). STAGE (5) is both the title and every course,
+// so it is keyed by game mode, world and level. The world map's art differs per world; it is keyed
+// by the start info's world, i.e. the world of the last course started (the title demo's world 0 on
+// the first visit after the title), which is the map's world except on that first visit.
+void PreloadSceneTextures(uint32_t profile) {
+    char key[64];
+    uint32_t mode = 0;
+    uint32_t worldLevel = 0;
+    Memory::TryRead32(kStartGameInfoAddr + 8u, mode);
+    Memory::TryRead32(kStartGameInfoAddr + 12u, worldLevel);
+    const uint32_t world = (worldLevel >> 24) & 0xFFu;
+    const uint32_t level = (worldLevel >> 16) & 0xFFu;
+    if (profile == 5u) {
+        std::snprintf(key, sizeof(key), "nsmbw p5 mode%u w%u-%u", mode, world, level);
+    } else if (profile == 3u) {
+        std::snprintf(key, sizeof(key), "nsmbw p3 w%u", world);
+    } else {
+        std::snprintf(key, sizeof(key), "nsmbw p%u", profile);
+    }
+    aurora_texture_preload_scene(key);
+}
 }
 
 // Exposed so other diagnostics (gx_texture.cpp's pane-identity survey) can gate on "which
@@ -209,6 +239,7 @@ extern "C" uint32_t CreateNextScene_Diag_800E1ED0()
     Memory::Write16(kNextSceneAddr, static_cast<uint16_t>(kSceneInvalid));
     Memory::Write8(kOtherSceneFlgAddr, 1);
 
+    PreloadSceneTextures(nextScene);
     return newScene;
 }
 

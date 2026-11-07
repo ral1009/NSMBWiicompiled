@@ -70,7 +70,7 @@ Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene
 This writes `dist\NSMBWCompiled-v<version>-<commit>.zip` from the release build (`build_release\`, configured with `-DNSMBW_RELEASE=ON`). The version is set in `package_nsmbw.ps1` and `runtime/cmake/NsmbwProduct.cmake`. The zip holds everything the exe loads from its own folder:
 - `NSMBWCompiled.exe`
 - the DLLs it imports that Windows doesn't ship: SDL3, Dawn, the two DirectX shader compiler DLLs, libc++, libunwind, libpng and zlib
-- `dsp_coef.bin` (the audio mixer's resampling table), `initial_pipeline_cache.db` (the starting shader list), `DolphinTool.exe` and its licenses
+- `dsp_coef.bin` (the audio mixer's resampling table), `initial_pipeline_cache.db` (the starting shader list), `initial_texture_preload.txt` (which HD-pack files each scene loads, so they are loaded before the scene fades in), `DolphinTool.exe` and its licenses
 - `wii_bootstrap\`, the files a fresh emulated NAND is seeded with
 - `PLAYING.txt`, setup instructions for the player
 

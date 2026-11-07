@@ -120,6 +120,13 @@ typedef struct AuroraTexturePatch {
 void aurora_set_texture_patches(uint64_t textureHash, uint32_t width, uint32_t height, uint32_t format,
                                 const AuroraTexturePatch* patches, size_t count);
 
+// Names the scene that is starting (any stable string; "" = none) and loads, before returning, the
+// pack files earlier runs recorded for it. Every pack file loaded on demand afterwards is recorded
+// under this name (<cache>/texture_preload.txt, plus a read-only seed initial_texture_preload.txt
+// in the resources path). Call it on the GX thread while the screen is black, e.g. at a scene
+// change: the load then lengthens the black instead of stalling the visible scene.
+void aurora_texture_preload_scene(const char* scene);
+
 // Guest-RAM write tracking. `generation` changes whenever guest RAM covering a host range was
 // written (or returns AURORA_GUEST_WRITE_UNTRACKED); `notify` reports writes aurora made itself.
 #define AURORA_GUEST_WRITE_UNTRACKED UINT64_MAX

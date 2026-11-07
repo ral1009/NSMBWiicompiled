@@ -2128,6 +2128,9 @@ void aurora_set_texture_patches(uint64_t textureHash, uint32_t width, uint32_t h
                                 const AuroraTexturePatch* patches, size_t count) {
   aurora::gfx::texture_replacement::set_patches(textureHash, width, height, format, patches, count);
 }
+void aurora_texture_preload_scene(const char* scene) {
+  aurora::gfx::texture_replacement::preload_scene(scene);
+}
 void aurora_set_background_input(bool value) {
   aurora::g_config.allowJoystickBackgroundEvents = value;
   aurora::window::set_background_input(value);

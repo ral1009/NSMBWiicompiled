@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -710,6 +711,18 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         stats[2].fetch_add(endUs, std::memory_order_relaxed);
         if (produceUs > stats[3].load(std::memory_order_relaxed)) stats[3].store(produceUs, std::memory_order_relaxed);
         if (endUs > stats[4].load(std::memory_order_relaxed)) stats[4].store(endUs, std::memory_order_relaxed);
+        // NSMBW_LOG_LONG_FRAMES=<ms>: one line per frame whose production took at least <ms>,
+        // stamped with time since the first paced frame, so a single hitch can be lined up with
+        // the log lines around it (NSMBW_LOG_INTERP only gives a per-2 s count and max).
+        static const long longFrameUs = [] {
+            const char* v = std::getenv("NSMBW_LOG_LONG_FRAMES");
+            return v != nullptr && *v != '\0' ? std::strtol(v, nullptr, 10) * 1000L : 0L;
+        }();
+        static const Clock::time_point firstFrame = s_prevFrameDone;
+        if (longFrameUs > 0 && produceUs >= static_cast<uint64_t>(longFrameUs)) {
+            std::fprintf(stderr, "[vi] long frame: %.1f ms production at t=%.3f s (retraces %u)\n", produceUs / 1000.0,
+                         std::chrono::duration<double>(endFrameStart - firstFrame).count(), retracesElapsedForStats);
+        }
     }
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);

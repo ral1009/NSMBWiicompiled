@@ -1221,3 +1221,27 @@ Not tested: Auto (window size), coins by eye (only `?` blocks were measured; all
 What's next:
 - Developer confirms on screen with a normal play session, including coins.
 - Remove the line from the README's Known issues in the release that ships this; the current release still has the bug.
+
+## 2026-11-07 — Title screen stutter: HD textures preloaded while the screen is black
+What I did:
+- Measured the stutter with a new switch, `NSMBW_LOG_LONG_FRAMES=<ms>` (`runtime/src/hle/vi.cpp`): one line per frame whose production took at least that long, timestamped, so a single hitch can be lined up with the log lines around it. With the HD pack, the frame just after the title's logo and text appeared took 64-86 ms in every run. The lines right before it were 33 `texture_replacement: loaded ...` and one `patched tex1_256x256_7b53229a3b86fede_5.dds`.
+- Broke that frame down with temporary timers: patching the button-icon font 24-31 ms (the HD base is 2048x2048), reading 33 pack files about 40 ms, uploading them about 20 ms (44 MB in total, because every pack file is uncompressed BGRA). With the pack off, the frame was 25 ms, mostly the font patch on a 1024x1024 upscaled base.
+- A screenshot burst showed what is on screen: the title opens with an iris wipe on the level background, and the logo and prompt appear after it. So the loads happened in a visible scene; a hitch while the screen is black would not show, because the game's fades count frames, not time.
+- Fix 1, per-scene preload (your suggestion of a longer black screen): NSMBW names each scene in `createNextScene`, which runs after the previous scene has faded out. aurora records every pack file that scene then loads on demand, and the next time the scene starts it loads those files first: reads on 8 threads, uploads on the game thread, about 25-30 ms for the title. A seed list ships with the exe, so a first launch on another PC already has the title, file select, 1-1, the W1 map and the course-in screen.
+- Fix 2, the icon font is built on a worker thread when its patch list is set, so the title's first draw only uploads it (3-4 ms). This first failed to match: the patch lists are set one texture at a time and each call bumped one shared counter, so the font's prebuilt copy was always one or two generations old. Each texture now has its own generation.
+- Details and evidence in `docs/issues.md` ("The title stuttered as its logo and text appeared").
+
+What broke / what I didn't expect:
+- The worst frames were not where I first looked. A 6-second watchdog dump lands in the same 2-second window, but `NSMBW_LOG_LONG_FRAMES` put the hitch before it.
+- The context-dependent icons were costing ~25 ms on every map <-> level switch too, not only at the title; the prebuild fixed those as well.
+- Taking screenshots during a run causes long frames of its own (PrintWindow), so the burst was only used for what is on screen, not for timing.
+
+What I learned:
+- *Preloading* (concept): doing the expensive part of a load before anything needs it, at a moment when a pause is invisible (here, the black between scenes). It needs to know in advance what will be needed; the recorded list per scene is that knowledge.
+- A global "something changed" counter is fine for invalidating a cache but wrong for matching one result to one input: other inputs move it too.
+- Reading pack files in parallel took the title's 40 ms of reads down to 11-14 ms; the GPU upload (13-17 ms) can't move off the game thread without making Dawn calls from other threads.
+
+What's next:
+- Developer: check the title (and file select, map entry) by eye, with your HD pack. Your own play will grow `nsmbw_data/Cache/texture_preload.txt`; merge it into the seed before a release with `python projects/nsmbw/tools/merge_texture_preload.py projects/nsmbw/assets/textures/initial_texture_preload.txt build_nsmbw/nsmbw_data/Cache/texture_preload.txt`.
+- Not measured on the Iris Xe laptop or with a cold OS file cache (after a reboot), where the preload's black would be longer.
+- The 36 ms frame on world-map entry is something else; not investigated.
