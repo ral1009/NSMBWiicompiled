@@ -83,6 +83,9 @@ extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan); // runtime/src/product
 extern "C" float NsmbwControlsReadTilt(uint32_t chan);     // same file; -1 (left) .. +1 (right)
 extern "C" uint32_t NsmbwControlsPlayerCount();            // same file; 1..4
 extern "C" int32_t NsmbwOptionsMenuTakeSound();            // runtime/src/product/nsmbw_options_menu.cpp; -1 when none
+extern "C" int64_t NsmbwOptionsMenuTakeSoundPauseWord();   // same file; -1 when none
+extern "C" uint32_t NsmbwMovieSkipFilterInput(uint32_t chan, uint32_t hold); // runtime/src/product/nsmbw_movie_skip.cpp
+extern "C" int32_t NsmbwMovieSkipTake();                   // same file; 0 none, 1 opening, 2 hint movie
 extern "C" void NsmbwWpadSetConnectedCount(uint32_t count); // nsmbw_wpad_overrides.cpp
 extern "C" const bool* SDL_GetKeyboardState(int* numkeys);
 // Set by nsmbw_tick_read_pump.cpp's self-test (NSMBW_AUTO_PRESS_SELFTEST): a synthetic A press
@@ -245,6 +248,7 @@ void SampleKeyboardForFrame() {
             hold |= g_nsmbwSelfTestPressBits;
             g_nsmbwSelfTestPressBits = 0;
         }
+        hold = NsmbwMovieSkipFilterInput(chan, hold); // - skips the opening / a hint movie
 
         // A shake press edge (not hold) starts one burst, so a tap is one spin like one flick of
         // the remote; the game's cooldowns decide how soon the next one can fire.
@@ -314,6 +318,52 @@ void PlayOptionsMenuSounds() {
     }
     *ctx = saved;
 }
+
+// The F10 options menu's sound pause / resume (see g_soundPauseWord in nsmbw_options_menu.cpp):
+// the game's own handler, dAudio's game-stop sync at 0x8006A830(stopWord), which pauses through
+// 0x8019C930 and resumes through 0x8019C9C0 on the sound manager at 0x8042A788 (r13 - 20984).
+// Skipped before that manager exists (the first-launch menu opens before the sound archive loads);
+// a resume without a pause is a no-op there ([r13 - 22828] stays 0).
+void SyncOptionsMenuSoundPause() {
+    const int64_t word = NsmbwOptionsMenuTakeSoundPauseWord();
+    if (word < 0) return;
+    uint32_t mgr = 0;
+    if (!Memory::TryRead32(0x8042A788u, mgr) || mgr == 0) return;
+    CpuContext* ctx = CurrentCpuContext();
+    const CpuContext saved = *ctx;
+    ctx->gpr[3] = static_cast<uint32_t>(word);
+    InvokeDirectCpu<0x8006A830u>(ctx);
+    *ctx = saved;
+}
+
+// Skipping the opening / a hint movie (nsmbw_movie_skip.cpp decides when). Both take an exit the
+// game already has, so the game's own code does the rest:
+//   Opening - dScMovie_c's execute (0x80922910) has a + skip for later movies (mMovieId >= 2, at
+//     0x80922DA8): it sets mMovieEnded (+0x19C) and, for movie 0, mState (+0x164) = 10, where the
+//     opening's normal end continues (marks it seen in the save, saves, loads the world map). Those
+//     two writes, made between frames while mState is 1, are that branch for the opening.
+//   Hint movie - the pause window's exit (0x800D11F0) calls dScStage_c's scene exit
+//     0x80102370(3 WORLD_MAP, 0, 2, fader 5); in GAME_MODE_HINT_MOVIE it goes to 0x801019D0,
+//     back to the hint movie list. Called here the same way, once per movie.
+void RunMovieSkip() {
+    const int32_t request = NsmbwMovieSkipTake();
+    if (request == 1) {
+        uint32_t movie = 0, state = 0;
+        if (!Memory::TryRead32(0x8042A498u, movie) || movie == 0) return;
+        if (!Memory::TryRead32(movie + 0x164u, state) || state != 1) return;
+        Memory::Write8(movie + 0x19Cu, 1);
+        Memory::Write32(movie + 0x164u, 10);
+    } else if (request == 2) {
+        CpuContext* ctx = CurrentCpuContext();
+        const CpuContext saved = *ctx;
+        ctx->gpr[3] = 3;
+        ctx->gpr[4] = 0;
+        ctx->gpr[5] = 2;
+        ctx->gpr[6] = 5;
+        InvokeDirectCpu<0x80102370u>(ctx);
+        *ctx = saved;
+    }
+}
 } // namespace
 
 extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint32_t num, uint32_t errPtr, uint32_t isEx)
@@ -321,7 +371,11 @@ extern "C" int32_t NsmbwKpadRead_801ED500(uint32_t chan, uint32_t samples, uint3
     (void)isEx;
     try {
         SampleKeyboardForFrame();
-        if (chan == 0) PlayOptionsMenuSounds();
+        if (chan == 0) {
+            SyncOptionsMenuSoundPause(); // before the menu's own sounds: those must not be paused
+            PlayOptionsMenuSounds();
+            RunMovieSkip();
+        }
         // Channels below the player count are connected remotes (nsmbw_wpad_overrides.cpp
         // marks the same channels connected for WPADProbe).
         if (chan >= g_connectedRemotes || chan >= kMaxRemotes || samples == 0 || num == 0) {

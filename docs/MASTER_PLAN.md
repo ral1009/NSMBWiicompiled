@@ -1245,3 +1245,33 @@ What's next:
 - Developer: check the title (and file select, map entry) by eye, with your HD pack. Your own play will grow `nsmbw_data/Cache/texture_preload.txt`; merge it into the seed before a release with `python projects/nsmbw/tools/merge_texture_preload.py projects/nsmbw/assets/textures/initial_texture_preload.txt build_nsmbw/nsmbw_data/Cache/texture_preload.txt`.
 - Not measured on the Iris Xe laptop or with a cold OS file cache (after a reboot), where the preload's black would be longer.
 - The 36 ms frame on world-map entry is something else; not investigated.
+
+## 2026-11-07 — F10 pauses everything; - skips the opening and hint movies
+What I did:
+- Found why F10 desynced hint movies. The game steps every player's recorded input in its system loop (`dScStage_c::play`, 0x80102250), which runs every frame outside the object updates F10 stops. That step (0x800DDD40) holds the replay only for the pause, Super Guide/hint-movie pause and warning bits of the game-stop word, not the HOME-menu bit F10 set. So Mario froze but his recorded input kept running. F10 now also sets the hint-movie pause bit (OTASUKE_PAUSE, 0x4).
+- Found why sound kept playing under F10. The game's sound pause (0x8006A830) is only called from the code that recomputes the stop word each frame, inside an update F10 stops. The KPAD override now calls it on the game thread when the menu opens and closes. This reverses the 2026-10-28 choice to leave sound playing under the menu, at your request.
+- Added a skip (`runtime/src/product/nsmbw_movie_skip.cpp`). The button is - rather than +: you chose to keep + for the game's own pause menu in a hint movie. The first press shows "Press (-) to skip" in the bottom-right corner, with the glyph of player 1's - binding (`nsmbw_button_glyphs`). A second press within 4 s skips. No game code changed. The host drives exits the game already has:
+  - Opening: the movie scene's own code (0x80922910) already has a + skip for later movies but never for the opening. Its two writes (`mMovieEnded = 1`, `mState = 10`) send the opening into its normal end: it marks the opening seen, saves, and loads the world map.
+  - Hint movie: the call the pause window's exit makes, `0x80102370(3, 0, 2, 5)`. In hint-movie mode it returns to the hint movie list.
+- New test switches: `NSMBW_LOG_MOVIE_SKIP`, `NSMBW_AUTO_SKIP_TEST=<frames>` (scripted - presses), `NSMBW_LOG_REPLAY` (replay object words every 30 frames), `NSMBW_OPTIONS_MENU_TEST=<open>,<close>` (+ `_SCENE`; opens and closes F10 without keyboard focus), `NSMBW_F10_NO_REPLAY_HOLD=1` (old F10 behaviour, for A/B).
+
+Evidence:
+- Opening: a fresh save in the portable copy reached the movie scene (profile 8). The log shows `[skip] prompt`, then `[skip] skip`, then `createRoot(profile=0x3)`. Screenshots `build_nsmbw/shots/skipopen2_prompt_0.png` (prompt in the corner over the opening) and `skipopen1_end_0.png` (World 1 map).
+- Replay: on the title screen's idle demo (same replay objects as hint movies), F10 opened for 300 frames. Old behaviour: the replay's frame index (+0x74) ran 0xDA → 0x224 while the menu was open. New: the replay entered its hold state and the index stayed at 0x111, continuing from there after closing (`nsmbw_f10b_old.err.log` / `nsmbw_f10b_new.err.log`).
+- You reported "it works" from your own play. I couldn't test a real hint movie: no test save reaches one. So the hint-movie skip and the sound pause rest on your check.
+
+What broke / what I didn't expect:
+- The first prompt drew only the glyph: the menu font is loaded on the options menu's first open, so the prompt now loads it itself.
+- The opening leaves its "playing" state between its parts. Resetting the prompt whenever the scene stopped being skippable hid it, so it is now reset only on a scene change.
+- The plain title screen has no replay object; its idle demo (after about 40 s, via the attract-mode movie) does.
+
+What I learned:
+- *Game-stop word*: one 32-bit value the game ORs pause reasons into (pause menu, Super Guide pause, warning, HOME Menu). Each system checks the reasons it cares about, so setting one bit doesn't pause everything.
+- Freezing a game by stopping its object updates misses whatever its system loop runs outside them: replay input, the fader, sound.
+
+- Hint movie list (follow-up, at your request): it opens from the hint block in a small course at the far left of World 1, and it doesn't pause the game, so the course's Gameplay bindings applied. That's why B (bubble, Wii A) confirmed and Y (run, Wii 1) went back. Two wrong attempts first: I assumed the list was on the world map, then guessed its buttons from code. You then pointed me at the course, and I drove a fresh save there with scripted input (`NSMBW_TEST_INPUT`). A dump of the list's object (`NSMBW_DUMP_HINT_LIST`) showed its state field (+0x88) leaving the idle value 0x809930B8 exactly while the list was on screen. Now, only while the list is on screen, the controls use the Menu bindings with 2 and A swapped (confirm → Wii A, back stays Wii 1). The log of the final run shows the course using Gameplay (Mario jumped and hit the block), then Menu with confirm sent as Wii A, and back closed the list.
+  - *Execute list* (concept): the framework keeps every live game object in a linked list that it walks each frame to update them. Reading it tells the host which objects exist, without calling game code. An object existing isn't the same as it being on screen, which is why the state field was needed.
+
+What's next:
+- Confirm on an unlocked hint movie (the test file had no star coins, so confirm had nothing to open).
+- Check the hint-movie skip's fade and return to the list by eye.

@@ -617,6 +617,173 @@ const char* ContextName(Context context) noexcept {
     }
 }
 
+namespace {
+// Whether a game object (fBase_c) of this profile is alive, from fManager_c's execute list: every
+// created base is on it, also while the F10 menu stops its updates. The list is a cLineMg_c at
+// 0x80377D34 (fManager_c's lists start at 0x80377D10, read by mainLoop 0x80162F50; execute is the
+// one at +36): {first, last}. Each node is a fLiNdBaPr_c {prev, next, owner, order}; the owner's
+// fBase_c::mProfName is the u16 at +8 (f_base.hpp: mUniqueID, mParam, mProfName). Read-only.
+constexpr uint32_t kExecuteListAddr = 0x80377D34u;
+uint32_t FindProfile(uint16_t profile) {
+    uint32_t node = 0;
+    Memory::TryRead32(kExecuteListAddr, node);
+    for (uint32_t n = 0; node != 0 && n < 4096; ++n) {
+        uint32_t owner = 0, next = 0, word = 0;
+        if (!Memory::TryRead32(node + 8u, owner) || !Memory::TryRead32(node + 4u, next)) break;
+        if (owner != 0 && Memory::TryRead32(owner + 8u, word) && (word >> 16) == profile) return owner;
+        node = next;
+    }
+    return 0;
+}
+bool ProfileAlive(uint16_t profile, uint32_t* walked = nullptr) {
+    uint32_t node = 0;
+    Memory::TryRead32(kExecuteListAddr, node);
+    uint32_t n = 0;
+    bool found = false;
+    for (; node != 0 && n < 4096; ++n) { // the cap only guards against a list caught mid-update
+        uint32_t owner = 0, next = 0;
+        if (!Memory::TryRead32(node + 8u, owner) || !Memory::TryRead32(node + 4u, next)) break;
+        uint16_t prof = 0xFFFFu;
+        if (owner != 0) {
+            uint32_t word = 0;
+            if (Memory::TryRead32(owner + 8u, word)) prof = uint16_t(word >> 16);
+        }
+        if (prof == profile) {
+            found = true;
+            break;
+        }
+        node = next;
+    }
+    if (walked) *walked = n;
+    return found;
+}
+// MODEL_PLAY_MANAGER (f_profile_name.hpp: 729): the hint movie list, opened by hitting the hint
+// block in the small course at the far left of World 1. It is a menu, but the course's Gameplay
+// bindings applied there (2026-11-07: "just make it use the bindings for Menu").
+constexpr uint16_t kProfileModelPlayManager = 729;
+
+// Any scene: it is a course (scene 5), not the world map as first assumed.
+// The manager exists for the whole hint course, so "open" is its state machine leaving the idle
+// state: its current state ID (+0x88) is 0x809930B8 from the course start until the block is hit,
+// then 0x809930F8 (opening), 0x80993138 / 0x80993478 (waiting / cursor moving), 0x80993538
+// (closing), and 0x809930B8 again once the list is gone (NSMBW_DUMP_HINT_LIST run with screenshots,
+// 2026-11-07). The state IDs are d_basesNP statics; the REL is linked at a fixed address
+// (0x8076D680, nsmbw-d_basesNP.yml), so the idle one's address doesn't move.
+constexpr uint32_t kHintListIdleState = 0x809930B8u;
+bool HintListOpen() {
+    static const bool off = std::getenv("NSMBW_NO_HINT_LIST_CONTEXT") != nullptr; // diagnostic A/B
+    if (off) return false;
+    const uint32_t obj = FindProfile(kProfileModelPlayManager);
+    uint32_t state = 0;
+    return obj != 0 && Memory::TryRead32(obj + 0x88u, state) && state != kHintListIdleState;
+}
+// NSMBW_DUMP_HINT_LIST=1 (diagnostic): every 30 calls from the KPAD frame, the words of the
+// MODEL_PLAY_MANAGER object that changed, to find the one that says the list is on screen.
+void DumpHintList() {
+    static const bool dump = std::getenv("NSMBW_DUMP_HINT_LIST") != nullptr;
+    if (!dump) return;
+    static int n = 0;
+    if (++n % 30 != 0) return;
+    static std::array<uint32_t, 0x400> last{};
+    static uint32_t lastObj = 0;
+    const uint32_t obj = FindProfile(kProfileModelPlayManager);
+    if (obj == 0) { lastObj = 0; return; }
+    uint32_t state = 0, flags = 0;
+    Memory::TryRead32(obj + 0x88u, state);
+    Memory::TryRead32(obj + 0x98u, flags);
+    std::fprintf(stderr, "[nsmbw][hintdump] n=%d obj=0x%08X +0x88=0x%08X +0x98=0x%08X changed:", n, obj, state, flags);
+    for (uint32_t i = 0; i < last.size(); ++i) {
+        uint32_t w = 0;
+        Memory::TryRead32(obj + i * 4, w);
+        if (obj == lastObj && w != last[i]) std::fprintf(stderr, " +0x%X=0x%X", i * 4, w);
+        last[i] = w;
+    }
+    lastObj = obj;
+    std::fprintf(stderr, "\n");
+}
+
+// NSMBW_LOG_CONTROLS: the menu-type objects alive (profiles 690..760: the 2D menus, windows and
+// managers, f_profile_name.hpp), so a log shows which object a screen really is.
+std::string AliveMenuProfiles() {
+    std::string s;
+    uint32_t node = 0;
+    Memory::TryRead32(kExecuteListAddr, node);
+    for (uint32_t n = 0; node != 0 && n < 4096; ++n) {
+        uint32_t owner = 0, next = 0, word = 0;
+        if (!Memory::TryRead32(node + 8u, owner) || !Memory::TryRead32(node + 4u, next)) break;
+        if (owner != 0 && Memory::TryRead32(owner + 8u, word)) {
+            const uint32_t prof = word >> 16;
+            if (prof >= 690 && prof <= 760) s += " " + std::to_string(prof);
+        }
+        node = next;
+    }
+    return s;
+}
+
+// The hint movie list confirms with A, not 2: it opens from a block inside a small course (scene
+// 5), where the Gameplay bindings applied and the developer found B (bubble = A) confirmed and Y
+// (run = 1) went back (2026-11-07). Its back check is 0x800B53F0, which asks mPad's core remote for
+// 1 (0x200; 1 | B with a Nunchuk). So while it is open the Menu actions are used, with 2 and A
+// swapped: confirm (normally 2) is sent as A, "A button" as 2; back stays 1. ListBit applies the
+// swap to what is sent; the prompt glyphs use the same swap (it is its own inverse) to find the
+// key of the action that sends the button the game shows.
+uint32_t ListBit(uint32_t bits) {
+    uint32_t out = bits & ~(kWpad2 | kWpadA);
+    if (bits & kWpad2) out |= kWpadA;
+    if (bits & kWpadA) out |= kWpad2;
+    return out;
+}
+uint32_t ListBitInverse(uint32_t bit) { return ListBit(bit); }
+
+// NSMBW_TEST_INPUT: scripted presses for test runs, as player 1's action bits (the Wii button an
+// action normally sends, before the hint-list swap), so they take the same path as a bound key.
+// Entries joined with ',': <scene>.<visit>@<start>+<frames>=<hex bits>[/<period>:<on>], e.g.
+// "3.1@120+4=8" taps screen-left 120 frames into the first world-map visit, and
+// "5.2@60+600=104/40:20" holds right (0x4) and 2 (0x100) for 20 of every 40 frames - the pulse
+// applies to all the bits of that entry - in the second course visit (the title is visit 1).
+struct TestInput {
+    uint32_t scene = 0, visit = 0;
+    int start = 0, frames = 0, period = 0, on = 0;
+    uint32_t bits = 0;
+};
+uint32_t TestInputBits() {
+    static const std::vector<TestInput> script = [] {
+        std::vector<TestInput> v;
+        const char* s = std::getenv("NSMBW_TEST_INPUT");
+        while (s && *s) {
+            TestInput t;
+            int used = 0;
+            if (std::sscanf(s, "%u.%u@%d+%d=%x%n", &t.scene, &t.visit, &t.start, &t.frames, &t.bits, &used) < 5) break;
+            s += used;
+            if (*s == '/') {
+                if (std::sscanf(s, "/%d:%d%n", &t.period, &t.on, &used) < 2) break;
+                s += used;
+            }
+            v.push_back(t);
+            if (*s == ',') ++s;
+        }
+        return v;
+    }();
+    if (script.empty()) return 0;
+    static uint32_t scene = 0xFFFFFFFFu;
+    static std::map<uint32_t, uint32_t> visits;
+    static int frame = 0;
+    if (g_nsmbwCurrentSceneProfile != scene) {
+        scene = g_nsmbwCurrentSceneProfile;
+        ++visits[scene];
+        frame = 0;
+    }
+    ++frame;
+    uint32_t bits = 0;
+    for (const auto& t : script) {
+        if (t.scene != scene || t.visit != visits[scene] || frame < t.start || frame >= t.start + t.frames) continue;
+        if (t.period > 0 && (frame - t.start) % t.period >= t.on) continue;
+        bits |= t.bits;
+    }
+    return bits;
+}
+} // namespace
+
 Context CurrentContext() noexcept {
     uint32_t stop = 0, mode = 0;
     Memory::TryRead32(kGameStopAddr, stop);
@@ -629,7 +796,34 @@ Context CurrentContext() noexcept {
         lastStop = stop;
     }
     const uint32_t profile = g_nsmbwCurrentSceneProfile;
-    if (profile == kProfileWorldMap) return (stop & kGameStopPauseMask) ? Context::Menu : Context::Map;
+    const bool hintList = HintListOpen();
+    if (log) { // a few times a second: is the hint list's object alive, and which menus are
+        static int n = 0;
+        static bool last = false;
+        if (++n % 240 == 0 || hintList != last) {
+            std::fprintf(stderr, "[nsmbw][controls] scene=%u hintList=%d stop=0x%X menus:%s\n", profile, hintList ? 1 : 0,
+                         stop, AliveMenuProfiles().c_str());
+        }
+        last = hintList;
+    }
+    if (hintList) return Context::Menu;
+    if (profile == kProfileWorldMap) {
+        static bool lastHintList = false;
+        if (log) {
+            // Once a second: whether the walk finds the map scene's own base (profile 3), proof
+            // that the list address and layout are right, and the hint list's state.
+            static int n = 0;
+            if (++n % 240 == 0 || hintList != lastHintList) {
+                uint32_t walked = 0, total = 0;
+                const bool map = ProfileAlive(uint16_t(kProfileWorldMap), &walked);
+                ProfileAlive(0xFFFFu, &total); // no such profile: walks the whole list
+                std::fprintf(stderr, "[nsmbw][controls] map: hint movie list %s, map base %s (%u nodes before it, %u in the list)\n",
+                             hintList ? "open" : "closed", map ? "found" : "NOT found", walked, total);
+            }
+        }
+        lastHintList = hintList;
+        return (stop & kGameStopPauseMask) ? Context::Menu : Context::Map;
+    }
     if (profile == kProfileStage) {
         Memory::TryRead32(kGameModeAddr, mode);
         if (mode == kGameModeTitle || mode == kGameModeTitleReplay) return Context::Menu;
@@ -642,6 +836,7 @@ std::string GamepadGlyphFor(uint32_t wpadBit) {
     std::lock_guard lock(g_mutex);
     LoadLocked();
     const Context c = CurrentContext();
+    if (c == Context::Menu && HintListOpen()) wpadBit = ListBitInverse(wpadBit);
     const auto& defs = ActionsFor(c);
     for (size_t i = 0; i < defs.size(); ++i) {
         if (defs[i].wpad != wpadBit) continue;
@@ -703,6 +898,7 @@ std::string KeyGlyphFor(uint32_t wpadBit) {
     std::lock_guard lock(g_mutex);
     LoadLocked();
     const Context c = CurrentContext();
+    if (c == Context::Menu && HintListOpen()) wpadBit = ListBitInverse(wpadBit);
     const auto& defs = ActionsFor(c);
     for (size_t i = 0; i < defs.size(); ++i) {
         if (defs[i].wpad != wpadBit) continue;
@@ -1133,6 +1329,25 @@ extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
             else if (KeyBindingDown(keys, numKeys, name) && singleCounts("k:" + name)) down = true;
         }
         if (down) out |= defs[i].wpad;
+    }
+    if (chan == 0) {
+        out |= TestInputBits();
+        DumpHintList();
+    }
+    const uint32_t actions = out;
+    const bool hintList = c == Context::Menu && HintListOpen();
+    if (hintList) out = ListBit(out);
+    // NSMBW_LOG_CONTROLS: every change of a player's buttons, with what decided them.
+    static const bool log = std::getenv("NSMBW_LOG_CONTROLS") != nullptr;
+    static std::array<uint32_t, kPlayers> lastOut{};
+    if (log && chan < kPlayers && out != lastOut[chan]) {
+        uint32_t stop = 0;
+        Memory::TryRead32(kGameStopAddr, stop);
+        std::fprintf(stderr,
+                     "[nsmbw][controls] p%u scene=%u context=%s stop=0x%X hintList=%d actions=0x%04X sent=0x%04X menus:%s\n",
+                     chan + 1, g_nsmbwCurrentSceneProfile, ContextName(c), stop, hintList ? 1 : 0, actions, out,
+                     AliveMenuProfiles().c_str());
+        lastOut[chan] = out;
     }
     return out;
 }

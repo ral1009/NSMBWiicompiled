@@ -8,6 +8,7 @@
 #include "nsmbw_controls.h"
 #include "nsmbw_menu_art.h"
 #include "nsmbw_menu_draw.h"
+#include "nsmbw_movie_skip.h"
 
 #include "memory.h"
 #include "runtime_config.h"
@@ -30,6 +31,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 namespace nsmbw_options_menu {
 namespace {
@@ -161,6 +164,25 @@ std::vector<Row> BuildRows(int tab) {
 // race the game's own updates of the word.
 constexpr uint32_t kGameStopAddr = 0x8042A228u;
 constexpr uint32_t kGameStopHomeMenu = 0x8u;
+// GAME_STOP_OTASUKE_PAUSE (BIT_FLAG(2)) as well, for the replays (hint movies, Super Guide, the
+// title screen's demo): dScStage_c::play (0x80102250) steps each player's replay from
+// dSys_c::execute, outside fManager_c::mainLoop, so the process stop below doesn't reach it. Its
+// step (0x800DDD40) holds the replay only while PAUSE, OTASUKE_PAUSE or WARNING is set (or the
+// real HOME Menu is up), not for HOME_MENU. With HOME_MENU alone the actors froze but the recorded
+// input kept advancing one frame per frame, and every player was out of sync after the menu closed
+// (developer report, 2026-11-07). OTASUKE_PAUSE is the bit the game itself sets for its pause
+// during a hint movie. Every other reader of the word tests any bit (isGameStop(-1)) except
+// 0x800D0DA0 / 0x800D1350, which mask out PAUSE / OTASUKE_PAUSE and still see HOME_MENU.
+constexpr uint32_t kGameStopOtasukePause = 0x4u;
+uint32_t g_stopBitsAdded = 0; // only the bits this menu set
+
+// The game's sound pause (0x8006A830, called with the stop word) pauses on any of PAUSE / WARNING
+// / HOME_MENU and resumes when they clear, but only the per-frame recompute of the word at
+// 0x800B3A30 calls it, from a process update this menu stops - so sound kept playing under the
+// menu (developer report, 2026-11-07: "pause everything"). The KPAD override calls it on the game
+// thread with the word below (NsmbwOptionsMenuTakeSoundPauseWord); -1 = nothing pending.
+std::atomic<int64_t> g_soundPauseWord{-1};
+bool g_soundPaused = false;
 
 // That flag alone only stops what checks it: actors stopped, but the camera, effects and the
 // scene's own logic kept running (developer report, 2026-10-28). The framework has a full stop:
@@ -178,8 +200,24 @@ uint32_t g_procBitsAdded = 0; // only the bits this menu set, so the game's own 
 void SetGameStopped(bool stopped) {
     uint32_t word = 0;
     if (Memory::TryRead32(kGameStopAddr, word)) {
-        const uint32_t next = stopped ? word | kGameStopHomeMenu : word & ~kGameStopHomeMenu;
+        uint32_t next = word;
+        if (stopped) {
+            // NSMBW_F10_NO_REPLAY_HOLD=1: the old behaviour (HOME_MENU only, sound left playing),
+            // for A/B tests of the replay desync.
+            static const bool old = std::getenv("NSMBW_F10_NO_REPLAY_HOLD") != nullptr;
+            const uint32_t bits = old ? kGameStopHomeMenu : kGameStopHomeMenu | kGameStopOtasukePause;
+            g_stopBitsAdded |= bits & ~word;
+            next = word | bits;
+        } else {
+            next = word & ~g_stopBitsAdded;
+            g_stopBitsAdded = 0;
+        }
         if (next != word) Memory::TryWrite32(kGameStopAddr, next);
+        static const bool oldSound = std::getenv("NSMBW_F10_NO_REPLAY_HOLD") != nullptr;
+        if (stopped != g_soundPaused && !oldSound) {
+            g_soundPaused = stopped;
+            g_soundPauseWord = next;
+        }
     }
     uint32_t proc = 0;
     if (Memory::TryRead32(kStopProcInfAddr, proc)) {
@@ -192,8 +230,6 @@ void SetGameStopped(bool stopped) {
         }
         Memory::TryWrite32(kStopProcInfAddr, proc);
     }
-    // Sound runs on its own timing (the AX callbacks), not in mainLoop, so it keeps playing under
-    // the menu - as the developer wants (2026-10-28).
 }
 
 // ---- Sounds ---------------------------------------------------------------------------------------
@@ -807,11 +843,42 @@ void OpenOnFirstLaunch() {
     Open("first launch", false);
 }
 
+// NSMBW_OPTIONS_MENU_TEST=<open>,<close>: test runs open the menu that many frames (60 fps menu time)
+// after the first frame of scene <profile> in NSMBW_OPTIONS_MENU_TEST_SCENE (default 5), and close it
+// again, without keyboard focus.
+void RunScriptedOpenClose() {
+    static const char* spec = std::getenv("NSMBW_OPTIONS_MENU_TEST");
+    if (spec == nullptr) return;
+    static int openAt = -1, closeAt = -1;
+    static uint32_t scene = 5;
+    static float sceneStart = -1;
+    static int step = 0;
+    if (openAt < 0) {
+        std::sscanf(spec, "%d,%d", &openAt, &closeAt);
+        if (const char* s = std::getenv("NSMBW_OPTIONS_MENU_TEST_SCENE")) scene = uint32_t(std::atoi(s));
+    }
+    if (sceneStart < 0) {
+        if (g_nsmbwCurrentSceneProfile != scene) return;
+        sceneStart = draw::Now();
+    }
+    const float t = draw::Now() - sceneStart;
+    if (step == 0 && t >= openAt) {
+        Play(kSndPause);
+        Open("test", false);
+        step = 1;
+    } else if (step == 1 && t >= closeAt) {
+        Close("test");
+        step = 2;
+    }
+}
+
 void Draw() noexcept {
+    RunScriptedOpenClose();
     if (!g.open && g_openFromPause.exchange(false)) Open("pause menu", true);
     if (!g.open) OpenOnFirstLaunch();
     if (!g.open) {
         ClearHeldIfReleased();
+        nsmbw_movie_skip::Draw();
         return;
     }
     if (!art::Load()) { // logged once by Load; without the art there is nothing to draw with
@@ -864,5 +931,6 @@ void Register() noexcept {
 } // namespace nsmbw_options_menu
 
 extern "C" int32_t NsmbwOptionsMenuTakeSound() { return nsmbw_options_menu::TakeSound(); }
+extern "C" int64_t NsmbwOptionsMenuTakeSoundPauseWord() { return nsmbw_options_menu::g_soundPauseWord.exchange(-1); }
 extern "C" void NsmbwOptionsMenuRequestOpen() { nsmbw_options_menu::g_openFromPause = true; }
 extern "C" bool NsmbwOptionsMenuTakeReturnToPause() { return nsmbw_options_menu::g_returnToPause.exchange(false); }

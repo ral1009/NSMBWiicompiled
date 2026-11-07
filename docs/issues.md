@@ -721,6 +721,30 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: portable copy, RTX 4060 desktop, `NSMBW_LOG_LONG_FRAMES` (new). Title preload: `preloaded 33 pack files (44.1 MB) ... in 24.8-29.8 ms (read 11-14 ms on 8 threads, upload 13-17 ms)` in the scene-creation frame (47-61 ms, a screenshot burst showed that frame black). After that, no frame >= 30 ms in 7 runs, and in an 18 ms-threshold run one 18.0 ms frame that kept its retrace. Font: `prebuilt - 3.2-4.1 ms on the game thread` at the title and at every map/level switch in a self-test run. A first launch with only the seed (no learned file) preloaded the title. Without the pack the font is still built on first draw (20 ms, no missed retrace) and prebuilt afterwards. Not checked: the laptop (Iris Xe), a cold OS file cache, or levels beyond 1-1.
 - Scope: General (aurora) for the patch generation bug and the on-demand pack loads; any title with a large uncompressed pack hits the latter. The scene keys and the seed list are NSMBW-specific.
 
+## 2026-11-07 — F10 menu during replays and cutscenes
+
+### Opening the F10 menu during a hint movie desynced every player's replay
+- Symptom: a hint movie replayed correctly for all four players until the F10 options menu was opened and closed; after that every player's input was out of step with the level.
+- Root cause: `dSys_c::execute` calls `dScStage_c::play` (0x80102250) every frame, outside `fManager_c::mainLoop`. It steps each player's replay object (0x800DDD40). That step holds the replay only while the game-stop word 0x8042A228 has PAUSE, OTASUKE_PAUSE or WARNING set, or the real HOME Menu is up. F10 set HOME_MENU and stopped mainLoop's process updates, so the actors froze while the recorded input kept advancing one frame per frame.
+- Fix (`runtime/src/product/nsmbw_options_menu.cpp`): F10 also sets GAME_STOP_OTASUKE_PAUSE (0x4), the bit the game sets for its own pause during a hint movie, and clears only the bits it added. Besides the replay step, only 0x800D0DA0 and 0x800D1350 test single bits, and both still see HOME_MENU.
+- Verified: portable copy, title-screen demo (TITLE_REPLAY, same replay objects), F10 scripted open for 300 frames (`NSMBW_OPTIONS_MENU_TEST`, `NSMBW_LOG_REPLAY`, both new). Old behaviour (`NSMBW_F10_NO_REPLAY_HOLD=1`): the replay's frame index (+0x74) ran 0xDA → 0x224 with the menu open. New: the replay switched to its hold state (+0x18 = 0x80371D30), the index stayed at 0x111 and continued from 0x111 after closing. The developer reported "it works" from their own play. Not checked by me in a real hint movie (no test save reaches one).
+- Scope: NSMBW-specific (addresses, stop-word bits). The class is general: freezing a game by stopping its object updates misses whatever its system loop runs outside them.
+
+### Sound kept playing under the F10 menu
+- Symptom: with F10 open, sound effects kept playing (developer, during the opening cutscene).
+- Root cause: the game pauses its sound through 0x8006A830(stopWord) (pause 0x8019C930 / resume 0x8019C9C0 when PAUSE, WARNING or HOME_MENU is set or cleared). Only 0x800B3A30, the per-frame recompute of the stop word, calls it, and that runs inside a process update the menu stops. The HOME_MENU bit F10 set never reached the sound system.
+- Fix (`nsmbw_options_menu.cpp`, `projects/nsmbw/native/nsmbw_kpad_overrides.cpp`): on open and close, the KPAD override calls 0x8006A830 on the game thread with the new stop word. It is skipped until the sound manager (0x8042A788) exists. The menu's own sounds play after this call, as system SEs.
+- Verified: developer's play ("it works", 2026-11-07). I didn't measure audio.
+- Scope: NSMBW-specific.
+
+### The hint movie list used the course's (Gameplay) bindings
+- Symptom: menu confirm (South) did nothing on the hint movie list; B confirmed and Y went back, though the developer's Menu bindings are A = confirm, B = back.
+- Root cause: the list opens when Mario hits the hint block in a small course at the far left of World 1 (scene 5, STAGE), and it doesn't pause the game. So `CurrentContext()` returned Gameplay: B is "bubble" there (Wii A) and Y is "run" (Wii 1). The list confirms with Wii A and goes back with Wii 1; its back check (0x800B53F0) asks mPad's core remote for 1. Wii 2 does nothing there.
+- Fix (`runtime/src/product/nsmbw_controls.cpp`): while the list is on screen, the context is Menu, with 2 and A swapped (confirm is sent as A, "A button" as 2; back stays 1). The prompt glyphs use the same swap. "On screen" is the MODEL_PLAY_MANAGER object (profile 729), found in fManager_c's execute list (0x80377D34, read-only), with its state ID (+0x88) not the idle 0x809930B8. The object exists for the whole course, so its existence alone put the course itself in Menu context (Mario couldn't jump; 2026-11-07 run).
+- How it was found: `NSMBW_TEST_INPUT` (new, scripted presses as action bits) drove a fresh save to the hint block. `NSMBW_DUMP_HINT_LIST` (new) showed +0x88 going 0x809930B8 → 0x809930F8 → 0x80993138 / 0x80993478 when the block was hit and back to 0x809930B8 after a back press, matching screenshots.
+- Verified (portable copy, fresh save): `NSMBW_LOG_CONTROLS` shows `context=gameplay` with jump sent as 0x0100 until the block is hit, then `context=menu hintList=1`, with confirm sent as 0x0800 and back as 0x0200. Back closed the list on screen. Confirm showed no visible effect: the only movie needs 3 star coins and the file had 0. That confirm works rests on the developer's finding that Wii A confirms.
+- Scope: NSMBW-specific (profile number, state address).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -757,4 +781,6 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Full-target resolve snapshots (2026-10-25): cropped for sampled/converted copies; MKW's depth-of-field chain, which the upstream comment says needed them, is untested with the crop (`NSMBW_FULL_RESOLVE_SNAPSHOT=1` to compare).
 - GPU timer resolve alignment (2026-10-26): why Dawn reported the unaligned offset despite `skip_validation` in one run (after an injected out-of-memory error) is unexplained.
 - HD-pack preload (2026-11-07): a scene's list records only files that were not already in the replacement cache, so it depends on the order scenes were visited (1-1 recorded 6 files after the title had loaded the shared ones). The first world-map visit after the title is keyed by the title demo's world (0). A 36 ms frame on world-map entry remains; it is not pack loading and was not investigated.
+- Hint movie skip (2026-11-07): calls the scene exit 0x80102370(3, 0, 2, 5) that the pause window's exit handler (0x800D11F0) uses; not tested in a real hint movie by me. The opening skip was tested (fresh save → world map).
+- Hint movie list (2026-11-07): confirm on an unlocked movie not seen in a test (the test file had no star coins).
 - Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.
