@@ -73,6 +73,8 @@ Dolphin texture packs for NSMBW work without changes. Install one during setup, 
 - **Exit** in the pause menu works in any course, even one you haven't cleared yet.
 - **Save** on the world map always saves fully and keeps playing. The original only offers Quick Save until the final boss is beaten.
 - The Wii Remote strap and "hold the remote sideways" screens are skipped.
+- The opening cutscene and hint movies can be skipped: press **-** once to show the prompt, then again to skip.
+- The options menu pauses the whole game, sound and hint-movie replays included.
 
 ### Screenshots
 
@@ -93,12 +95,12 @@ Defaults; change them in **Options → Controls**.
 | Pause | Start | = or Esc |
 | Move | D-pad, left stick | Arrow keys |
 | Tilt (tilting platforms) | Right stick left / right | A / D |
+| Skip cutscene / hint movie (press twice) | Back (-) | - |
 | Options menu | Back + Start (- and +) | F10 |
 | Switch options tab | LB / RB | Q / E |
 
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
-- **Changing the resolution inside a level freezes animated tiles** such as coins and item boxes.
 - **6x and 8x are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
 - Only the PAL disc, revision 1, is supported.

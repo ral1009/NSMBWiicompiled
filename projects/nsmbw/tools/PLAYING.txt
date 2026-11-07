@@ -44,6 +44,8 @@ CONTROLS (keyboard defaults; any SDL gamepad also works)
    Players can share the keyboard: set a player's controller to Keyboard and bind their own keys.
    Gamepad: Back + Start (- and +) opens the options menu; LB / RB (Q / E) switch its tabs.
    Any binding can be a combination: hold the buttons together while binding.
+   Skip the opening cutscene or a hint movie: press - (gamepad: Back) twice.
+   The options menu pauses the whole game, sound included.
 
 PAUSE MENU
    Exit works in any course, even one you haven't cleared. Options (also on the world-map
