@@ -127,3 +127,7 @@ print('playstation start/back drawn')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from draw_key_icons import draw_all
 draw_all(os.path.join(OUT, 'keyboard'))
+
+# Last, so the drawn icons above get it too.
+from outline_glyphs import outline_all
+outline_all(OUT)
