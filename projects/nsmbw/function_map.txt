@@ -29794,3 +29794,6 @@
 800FDE70 rel_vtable_target_func_800FDE70
 800FE020 rel_vtable_target_func_800FE020
 80A0EB00 rel_vtable_target_func_80A0EB00
+800D0F80 func_800D0F80
+801B93A0 func_801B93A0
+801BA5F0 func_801BA5F0

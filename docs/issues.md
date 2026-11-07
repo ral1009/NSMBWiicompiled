@@ -694,6 +694,15 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: compiles and is in the running build. No on-screen check is on record for this entry.
 - Scope: General (aurora): any patched texture whose pack copy is block-compressed. The bubble arrow is only where it was found.
 
+## 2026-11-06 — Full re-translation of `build/`
+
+### A full re-translation would have dropped a function the pause menu still calls
+- Symptom: none seen; caught before it shipped. A static check of a scratch re-translation found `0x800D0F80` missing. The build would still compile and link, then hit `missing_target` when the game reached one of two calls on the pause-menu confirm path. Which button presses reach them was not worked out.
+- Root cause: `nsmbw_pause_options.cpp` overrides `0x800D0DA0` with a structural copy of its translated body, and the copy still calls `InvokeDirectCpu<0x800D0F80u>` (lines 1216, 1315). The translator does not read native C++, so once the guest caller was overridden it saw no caller. `0x800D0F80` had survived only in `build/` output older than the override.
+- Fix: seeded `0x800D0F80` in `projects/nsmbw/function_map.txt`, plus `0x801B93A0` and `0x801BA5F0`, which `nsmbw_exi_init.cpp` / `nsmbw_exi_deselect.cpp` call the same way and which were missing even before this (no `missing_target` for them in the logs; why that path does not run is unverified). Then re-translated all five modules in place, regenerated the shard manifest and rebuilt `build_nsmbw`. `build/` is gitignored: another machine needs the same re-translation. The seeded map is the part a commit carries.
+- Verified: 41,006 functions registered, the same set as a scratch run. Against the old build, 24 functions are gone and 5 are new (the two EXI seeds and the three functions they call). Compile errors: 0. Not run or played yet, and `build_release` is not rebuilt.
+- Scope: General class (a native copy of a guest function hides its callees from the translator). The three addresses are NSMBW-specific.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -702,7 +711,8 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.
 
 - Sky above water darker than hardware after the `GXSetDither` binding (2026-09-23 entry); A/B switch `NSMBW_DITHER_LEGACY` in place, cause unconfirmed. Two suspects (0x8000A3D0, 0x802D32D0) stopped inlining the guest `GXSetDither` on 2026-11-05; the sky has not been re-checked since.
-- Stale translated output (2026-11-05): `build/` is older than many overrides, and a full re-translation would drop 359 non-overridden functions from the output (25 of them in the current build), so only the 11 flagged functions were replaced. Whether those 359 are safe to lose is unproven.
+- Full re-translation (2026-11-06): `build/` replaced after static checks of the 359 functions it drops: one was still reachable and is now seeded (see the 2026-11-06 entry); 24 were in the old build but only called by overrides or by each other; 334 were not in the old build. Static proof only until the new build has been played, including pause-menu confirm. Nothing yet fails the build when native code calls a guest address that is missing.
+- `MKW_KNOWN_TYPED_NATIVE(0x8016EAB0u, GX__DrawDone_8016eab0)` in `native_cpu_calls.inc` is not guarded for NSMBW, where that address is `saveCurrentHeap`. A direct call there would run Mario Kart's GX code. No such call exists today: every caller inlines it (2026-11-06).
 - Item boxes untextured (2026-09-23 report): cause found and fixed 2026-09-26 (native-readback blit clamp, only above 1x). World 2 map ground black: fixed 2026-09-27 (palette objects).
 - (superseded) Regressions since `2688f2c` (developer, 2026-09-23): item boxes have no texture in every level incl. 1-1 (textured before), and the World 2 map draws with no ground - objects float over black (other worlds fine). Unconfirmed cause. First suspect: the strided-copy rule in `GXCopyTex` (`texCopyDstWidth > copied rectangle width`) also catches ordinary copies whose destination width is padded, shrinking the GPU copy so `copy_ref_matches_texobj` no longer matches the texture that samples it. Check with `NSMBW_LOG_TEXFMT` (NSMBW_TEXCOPY lines: dst vs src width) on the W2 map. Second suspect: the `GXSetDither` binding (`NSMBW_DITHER_LEGACY=1`).
 - `NsmbwBootStub_00000060` — unknown low-memory routine, log-and-return.

@@ -1160,3 +1160,26 @@ What I learned:
 What's next:
 - Re-check the darker-sky item: two of its suspects no longer inline the guest `GXSetDither`.
 - Decide on a full re-translation. `build_release` needs a rebuild before v0.2.2 carries this fix.
+
+## 2026-11-06 — Full re-translation of `build/`, after seeding what it would have dropped
+
+What I did:
+- Re-translated all five modules into a scratch folder and compared them with `build/`. This reproduced the earlier numbers: 412 function files lost, 53 of them overridden, 359 not, and 25 of those 359 in the current build (41,025 functions down to 41,000).
+- Checked the 359 three ways: calls in the fresh output plus `function_map.txt` and `extract-data-function-pointers`; a separate scan of the original DOL and the REL relocation tables for any reference (a relocation table is the REL's list of addresses to fill in at load time, so it names every reference to another module); and a search of all hand-written source for each address.
+- Added three seeds to `projects/nsmbw/function_map.txt` ("seeding" means listing an address so the translator translates it even though it found no caller), re-translated in place, regenerated the shard manifest and rebuilt `build_nsmbw`.
+
+What broke:
+- Nothing in the game yet: this was caught before any run. A plain re-translation would have dropped `0x800D0F80`, which the pause-menu override calls at `nsmbw_pause_options.cpp:1216` and `:1315`. The result would compile and link, then crash with `missing_target` on that path.
+- The translator rewrites `<output.root>/RuntimeConfig.h` whenever it loads the image, even with `--outdir` elsewhere, so scratch runs need yml copies with `output.root` changed.
+
+What I learned:
+- A structural-copy override hides its callees. The translator cannot read native C++, so a function called only from such a copy looks dead. The other 24 lost functions in the build are different: only hand-written overrides that do not call them (GX display list, `GXSetTexCopyDst`, KPAD) or other lost functions refer to them.
+- Of the other 334: 309 have no reference anywhere in the binaries, 17 are branch labels inside surviving functions, 3 are labels inside lost functions and 5 are called only from overrides. None were in the old build, because the shard step reads the metadata, not the folder; the leftover files were never compiled.
+- The same search found two older gaps of the same kind: the EXI overrides call `0x801B93A0` and `0x801BA5F0`, which were never in the build. No log shows them being reached.
+- Of the 41,000 functions in both builds, 153 changed, and nearly all of that is callers saving more registers (2,454 lines added, 2 removed; ABI masks were never narrower). The 3 `inline leaf` addresses from the last entry are fine: those overrides are Mario Kart only and are compiled out for NSMBW.
+
+Result: 41,006 functions, the same set as the seeded scratch run. 0 compile errors. Not run or played yet; the proof so far is static.
+
+What's next:
+- Play the new build, including confirming in the pause menu. The old output is in a backup tar in the session's temp folder until this is confirmed.
+- Rebuild `build_release`. Add a check that fails the shard step when native code calls an address that is neither in the build nor overridden.
