@@ -1071,7 +1071,14 @@ std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GX
   std::optional<ConvertedTexture> base;
   if (fromPack) {
     base = load_replacement(*packEntry);
+    // A block-compressed pack texture can't be written to, so patch the original instead. Found
+    // with NSMBW's bubble arrow, whose pack copy is format 62 and whose only patch erases it.
+    if (base.has_value() && base->format != wgpu::TextureFormat::RGBA8Unorm &&
+        base->format != wgpu::TextureFormat::BGRA8Unorm) {
+      base.reset();
+    }
   }
+  const bool baseFromPack = base.has_value();
   if (!base.has_value()) {
     const u32 dataSize = GXGetTexBufferSize(static_cast<u16>(obj.width()), static_cast<u16>(obj.height()),
                                             obj.format(), false, 0);
@@ -1089,7 +1096,7 @@ std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GX
     return std::nullopt;
   }
 
-  if (!fromPack) {
+  if (!baseFromPack) {
     // Upscale so the smallest patch rectangle gets >= 128 texels (Kenney's "Double" glyphs are
     // 128 px), capped at 2048 px per side.
     uint32_t minSide = UINT32_MAX;
@@ -1108,7 +1115,7 @@ std::optional<TextureHandle> find_patched(const RuntimeTextureKey& key, const GX
   auto handle = upload_converted(fmt::format("PatchedTexture {}", format_replacement_filename(key)), &*base);
   s_patchedCache[key] = PatchedTexture{.generation = generation, .fromPack = fromPack, .handle = handle};
   Log.info("texture_replacement: patched {} ({} rects, base {})", format_replacement_filename(key), patches.size(),
-           fromPack ? "pack" : "original");
+           baseFromPack ? "pack" : "original");
   return handle;
 }
 

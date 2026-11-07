@@ -685,6 +685,15 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: same draws now log `blend type=1 src=4 dst=5 colorUpdate=1`; screenshots show the crimson smoke following from the left through a played run of 8-1; developer confirmed on screen. Regression run (title, file select, a level, world map, a bonus room) looks normal in stills, no `missing_target`. Not checked: the palette textures the `GXInitTlutObj` callers load, and animated tiles in motion (stills only).
 - Scope: General class (any override added after translation stays bypassed at call sites already inlined). The binding and the smoke are NSMBW-specific.
 
+## 2026-11-05 — Texture patches on HD-pack textures
+
+### A texture patch could not be applied to a block-compressed pack texture
+- Symptom: a patch had nothing it could write to when the HD pack's copy of the texture was block-compressed. Found with NSMBW's bubble arrow, whose pack copy is format 62 and whose only patch erases it.
+- Root cause: `find_patched` used the pack image as its base whenever one existed, but patches are written into RGBA8/BGRA8 pixels and a block-compressed image can't be written to that way.
+- Fix: `aurora-main/lib/gfx/texture_replacement.cpp` drops a pack base that isn't RGBA8/BGRA8 and patches the original texture instead. The upscale step and the log line now follow the base actually used (`baseFromPack`), not whether a pack entry exists.
+- Verified: compiles and is in the running build. No on-screen check is on record for this entry.
+- Scope: General (aurora): any patched texture whose pack copy is block-compressed. The bubble arrow is only where it was found.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
