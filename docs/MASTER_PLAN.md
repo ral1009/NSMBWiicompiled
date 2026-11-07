@@ -1273,5 +1273,5 @@ What I learned:
   - *Execute list* (concept): the framework keeps every live game object in a linked list that it walks each frame to update them. Reading it tells the host which objects exist, without calling game code. An object existing isn't the same as it being on screen, which is why the state field was needed.
 
 What's next:
-- Confirm on an unlocked hint movie (the test file had no star coins, so confirm had nothing to open).
+- You tested all of it in your own play (2026-11-07): F10 pause, both skips and the hint list.
 - Check the hint-movie skip's fade and return to the list by eye.
