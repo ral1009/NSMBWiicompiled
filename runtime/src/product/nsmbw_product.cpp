@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <ios>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -894,6 +895,28 @@ int main() {
         }
         nsmbw_controls::HandleEvents(events);
         nsmbw_button_glyphs::HandleEvents(events);
+        // NSMBW_RES_SCALE_SWITCH=<scale>@<seconds>[,...]: change the render scale live, timed from the
+        // first level entered after the world map (profile 3 then 5; the title is also 5). Same call as
+        // the options menu, but saves nothing and needs no keyboard focus, for testing a mid-level
+        // resolution change. Entries must be in time order.
+        static const char* resSwitch = AURORA_ENV("NSMBW_RES_SCALE_SWITCH");
+        if (resSwitch != nullptr && *resSwitch != '\0') {
+            static bool sawMap = false;
+            static std::optional<std::chrono::steady_clock::time_point> levelStart;
+            sawMap = sawMap || g_nsmbwCurrentSceneProfile == 3u;
+            if (sawMap && !levelStart && g_nsmbwCurrentSceneProfile == 5u) {
+                levelStart = std::chrono::steady_clock::now();
+            }
+            float scale = 0.f;
+            float seconds = 0.f;
+            if (levelStart && std::sscanf(resSwitch, "%f@%f", &scale, &seconds) == 2 &&
+                std::chrono::duration<float>(std::chrono::steady_clock::now() - *levelStart).count() >= seconds) {
+                std::fprintf(stderr, "[nsmbw] NSMBW_RES_SCALE_SWITCH: scale %.2f at %.0f s\n", scale, seconds);
+                VISetFrameBufferScale(scale);
+                const char* comma = std::strchr(resSwitch, ',');
+                resSwitch = comma != nullptr ? comma + 1 : nullptr;
+            }
+        }
         // NSMBW_LOG_INTERP: every 2 s, why presented FPS is below the interpolation target - frames
         // sealed without slots because the game frame ran late (lateSealDrops), too few draws
         // matched (framesLowMatch) or the command stream could not be replayed (framesReplayUnsafe).
