@@ -226,7 +226,7 @@ Work that has been decided on but parked. Remove an item when it is done and not
 - **Confirm the seed shader list on the Iris Xe laptop** (2026-10-16). Put `initial_pipeline_cache.db` next to the exe, move `nsmbw_data\Cache` aside, then run `run_with_logging.bat`. Expect "Seeded pipeline cache ... 398 rows merged", "Pipeline prewarm finished", and no multi-second freeze on the first world-map visit.
 - **Native AX audio routines** (2026-10-16, low priority). 96% of audio time is NSMBW's own AX library running as translated code (guest AI callback: ~31 ms/s, about 93 us per 3 ms block; host join+push ~1 ms/s). Rewriting the hot routines natively saves at most ~3% of a core on a game thread that is 74-86% idle, so it is only worth it if a slow CPU ever becomes the limit. Needs a bit-exact PCM comparison before and after.
 - **Grow the seed shader list** (2026-10-16; partly done 2026-11-02 for v0.2.2). The developer's play cache was merged in: 398 -> 1,532 recipes (1,529 GX + 3 clear), from levels in several worlds the developer played without stutter. Levels nobody has played on the dev build are still missing. Not yet measured: how much longer the background prewarm takes on a first launch, especially on the Iris Xe laptop, now that it compiles four times as many recipes.
-- **Animations freeze after a resolution change in a level** (developer report, 2026-10-31; for a future release). Changing the render scale while in a level freezes the animation of coins, item boxes and similar animated tiles. Not investigated yet. A first guess, unchecked: those tiles are animated by copying each frame into the tileset atlas (EFB copies, see the 2026-10-17 copy-target work), and a scale change rebuilds the copy targets, so the atlas may keep sampling a stale copy.
+- **Animations freeze after a resolution change in a level** (developer report, 2026-10-31). Fixed in the source 2026-11-06, see that progress log entry; not in a release yet, so the README still lists it. The first guess here (stale copy targets) was wrong: the copy targets resized correctly, and the tile atlas they paste into did not.
 - **Shader cache** (developer, 2026-10-31; for a future release). The scope is not written down yet; related open items are "Grow the seed shader list" above and confirming the seed on the laptop.
 
 ## 6. Progress log
@@ -1183,3 +1183,38 @@ Result: 41,006 functions, the same set as the seeded scratch run. 0 compile erro
 What's next:
 - Play the new build, including confirming in the pause menu. The old output is in a backup tar in the session's temp folder until this is confirmed.
 - Rebuild `build_release`. Add a check that fails the shard step when native code calls an address that is neither in the build nor overridden.
+
+## 2026-11-06 — Animated tiles no longer freeze when the resolution changes
+
+What I did:
+- Traced why coins and item blocks freeze after a resolution change, fixed it in `aurora-main/lib/gx/scaled_tile_cache.cpp`, and added `NSMBW_RES_SCALE_SWITCH=<scale>@<seconds>[,...]` (`nsmbw_product.cpp`). The switch changes the render scale live, timed from the first level entered after the world map. It saves nothing and needs no keyboard focus.
+- Tested the same source with the fix stubbed out and with it on, from portable copies, so the real save and Config.toml were not touched.
+
+What broke:
+- The animated tiles. NSMBW draws each tile frame and copies it into its slot in the tileset atlas (explained in the "Placed coins" entry of `docs/issues.md`). The scaled tile cache keeps that atlas as a GPU texture at one scale, and each new tile frame is pasted onto it.
+- After a scale change, a tile copy at the new scale is refused by `slot_belongs`, because the scales differ. Only `lookup()` can resize an atlas, and `gx.cpp` calls it only if `lookup_unchanged` fails. That fast path never checked scale, and its hash skips the tile slots, so it kept succeeding and returned the old texture. The tiles stayed on their last pasted frame.
+- The first test run was invalid. With no input, Mario was dead by about 14 s into 1-1 (lives ×05 -> ×04, an enemy most likely, not observed), so switches at 25 s and later landed on the map. The second run fit the switches into the first 13 s, but its burst after the return to 4x read 0 with the fix on too, because he was already dying, so a third run covered that return. The third run's self-test also stopped pressing before it re-entered a level (`NSMBW_AUTO_PRESS_TICKS`, default 4000), so a fourth pair of runs raised that limit for the re-entry case.
+
+What I learned:
+- The earlier guess in the open items (stale copy targets) was wrong: the log shows the copies resized correctly (`gpu=128x128` -> `64x64`). The atlas was the stale part.
+- There were two more cases than the report. Non-whole scales (1.5x, possibly Auto): `note_tile_copy` returned before storing the slot, so the old atlas stayed in use. Changing scale on the world map and then entering a level also froze tiles, because the atlas outlives the level when its address and contents are unchanged.
+- Without the fix, going back to the original scale does appear to resume pastes: the `?` block jumped to a different frame in that run. That fits the cause, though Mario's death freeze hid any further movement.
+
+Result (changed pixels inside two `?` blocks across a 5-frame burst, fix off vs. fix on):
+
+| Case | Fix off | Fix on |
+|---|---|---|
+| 4x, before any change | 101-161 | 92-192 |
+| 4x -> 2x in the level | 0 | 162-204 |
+| 2x -> 1.5x in the level | 0 | 128-213 |
+| 4x -> 1.5x in the level | not run | 131-250 |
+| 1.5x -> 4x in the level | not run | 130-209 |
+| Scale changed on the map, level re-entered | 0 | 89-178 |
+
+With the fix, the log shows `drop atlas ... x4: tile copies are now x2`, then `build atlas ... x2 -> 2048x2048, 6 tiles pasted`. Without it, no `build atlas` line follows the change. No `missing_target` in any of these runs.
+
+Not tested: Auto (window size), coins by eye (only `?` blocks were measured; all six tile copies log the same way), frame interpolation on, or a developer playing it.
+
+What's next:
+- Developer confirms on screen with a normal play session, including coins.
+- Remove the line from the README's Known issues in the release that ships this; the current release still has the bug.

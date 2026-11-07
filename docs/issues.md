@@ -703,6 +703,15 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: 41,006 functions registered, the same set as a scratch run. Against the old build, 24 functions are gone and 5 are new (the two EXI seeds and the three functions they call). Compile errors: 0. Not run or played yet, and `build_release` is not rebuilt.
 - Scope: General class (a native copy of a guest function hides its callees from the translator). The three addresses are NSMBW-specific.
 
+## 2026-11-06 — Animated tiles after a resolution change
+
+### Coins, item blocks and other animated tiles froze when the resolution changed
+- Symptom: after a render-scale change, animated tiles stop on one frame while sprites and 3D actors keep moving. It happens in a level, and also when the scale changes on the world map and that level's atlas is entered again.
+- Root cause: `scaled_tile_cache` keeps the tileset atlas as a GPU texture at one scale. After a change, `queue_paste` rejected each new tile (`slot_belongs` compares scales). Only `lookup()` resizes an atlas, but `gx.cpp` tries `lookup_unchanged` first, and that never checked scale. Its hash skips the tile slots, and a scale change does not alter the other atlas bytes, so it kept returning the old texture. Also, at 1.5x and Auto the copy can be a non-whole multiple of the tile, so `note_tile_copy` returned early and the old atlas stayed in use.
+- Fix: `note_tile_copy` (`aurora-main/lib/gx/scaled_tile_cache.cpp`) now calls `drop_entries_at_other_scale`, which removes the atlas and its old-scale slots as soon as a copy arrives at another scale. Dropping the slots matters because `lookup()` takes its scale from the first slot in range and slots are never removed otherwise. At a non-whole scale no atlas is rebuilt, so tiles use the RAM write-back, as they do when launching at that scale.
+- Verified: new `NSMBW_RES_SCALE_SWITCH` in 1-1, same source with the fix stubbed out vs. on, windowed, interpolation off. Changed pixels inside two `?` blocks across a 5-frame burst: 4x -> 2x 0 vs. 162-204; 2x -> 1.5x 0 vs. 128-213; scale changed on the map, then level re-entered, 0 vs. 89-178; 1.5x -> 4x with the fix on, 130-209. Log with the fix: `drop atlas ... x4: tile copies are now x2`, then `build atlas ... x2 -> 2048x2048, 6 tiles pasted`; without it, no `build atlas` line. Only `?` blocks were measured. Auto, coins by eye and interpolation on were not tested.
+- Scope: General (aurora): any title that EFB-copies tiles into a texture it samples, once the render scale changes at runtime.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.

@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <vector>
 
@@ -190,6 +191,36 @@ u64 masked_hash(uintptr_t base, const Atlas& atlas, const u8* data) noexcept {
   return hash;
 }
 
+// A render-scale change leaves the atlas holding `key` at the old scale. queue_paste rejects every new
+// tile for it (slot_belongs compares scales), and lookup_unchanged keeps returning its composite
+// because a scale change leaves the bytes it hashes alone, so lookup(), the only code that resizes an
+// atlas, is never reached and the tiles freeze on their last frame. Dropping the atlas sends the next
+// draw through lookup(). Old-scale slots go with it: s_slots keeps entries forever, and lookup() takes
+// the scale from the first slot in range, so a leftover would recreate the atlas at the old scale.
+// `scale` 0 means the copy is not a whole multiple of the tile (1.5x, Auto): no atlas can use it, so
+// everything in range goes and the tiles are written back to RAM, as when launching at that scale.
+void drop_entries_at_other_scale(uintptr_t key, u32 scale) noexcept {
+  for (auto atlasIt = s_atlases.begin(); atlasIt != s_atlases.end(); ++atlasIt) {
+    const uintptr_t base = atlasIt->first;
+    const u32 bytes = atlasIt->second.bytes;
+    if (key < base || key >= base + bytes) {
+      continue;
+    }
+    if (atlasIt->second.scale == scale) {
+      return;
+    }
+    if (s_log) {
+      std::fprintf(stderr, "[scaled_tile_cache] drop atlas base=%p x%u: tile copies are now x%u\n",
+                   reinterpret_cast<const void*>(base), atlasIt->second.scale, scale);
+    }
+    for (auto slotIt = s_slots.lower_bound(base); slotIt != s_slots.end() && slotIt->first < base + bytes;) {
+      slotIt = slotIt->second.scale != scale ? s_slots.erase(slotIt) : std::next(slotIt);
+    }
+    s_atlases.erase(atlasIt);
+    return;
+  }
+}
+
 } // namespace
 
 bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GXTexFmt format,
@@ -209,10 +240,12 @@ bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
                    height, strideWidth, static_cast<unsigned>(format), scaled->size.width, scaled->size.height, scale);
     }
   }
+  const auto key = reinterpret_cast<uintptr_t>(dest);
   if (scale == 0 || scaled->size.width != width * scale || scaled->size.height != height * scale) {
+    drop_entries_at_other_scale(key, 0);
     return false;
   }
-  const auto key = reinterpret_cast<uintptr_t>(dest);
+  drop_entries_at_other_scale(key, scale);
   auto& slot = s_slots[key];
   slot = Slot{
       .scaled = scaled,
