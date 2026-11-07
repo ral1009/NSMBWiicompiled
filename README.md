@@ -99,6 +99,12 @@ Defaults; change them in **Options → Controls**.
 | Options menu | Back + Start (- and +) | F10 |
 | Switch options tab | LB / RB | Q / E |
 
+## Future Plans
+- Support for all game versions beyond the PAL rev 1 disc
+- Lower the system requirements, specifically AVX2
+- Android, Linux, Mac Support
+- Player 1 Character Select
+
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
 - **6x and 8x are not available with frame interpolation on**, because they ran badly on the hardware tested.
