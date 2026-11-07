@@ -333,6 +333,84 @@ Bytes PatchPauseMenu(const Bytes& original) {
     return WriteArchive(arc);
 }
 
+// ---- The "1 + shake" bubble --------------------------------------------------------------------
+//
+// nsmbw_button_glyphs paints the Spin control over the bubble's remote frames, for every bubble
+// that shows them. The hop comes from the panes, not the texture: these three animations key
+// P_UpDownImage_00 and its after-image between y 56 and 44, which reads as a shake for a wiggling
+// remote and as a jitter for a button. Only this variant uses these three files, and only they make
+// T_guide_02 visible (alpha 255; every other animation keys it to 0), so all of this stays inside
+// the "1 + spin" bubble. The plain bubble's own hop (loopUpdownOpposite) is left alone.
+
+// Replaces every key of one of a pane's tracks with one value and a zero slope. `kind` is the tag:
+// RLPA for its transform (target 0 = x, 1 = y), RLVC for its colours (target 16 = alpha).
+// pai1: entry count at +14, offset table at the offset in +16. Entry: tag count at +20, tag offsets
+// from +24 (relative to the entry). Tag: magic, group count at +4, group offsets from +8 (relative
+// to the tag). Group: target at +1, key count at +4, key offset at +8 (relative to the group).
+// A key is frame, value, slope, 4 bytes each.
+void FlattenTrack(Sectioned& a, const std::string& pane, const std::string& kind, uint8_t target, float value) {
+    bool found = false;
+    for (Bytes& sec : a.sections) {
+        if (Magic(sec) != "pai1") continue;
+        const size_t table = Get32(sec, 16);
+        for (uint16_t e = 0, entries = Get16(sec, 14); e < entries; ++e) {
+            const size_t entry = Get32(sec, table + e * 4u);
+            if (Name(sec, entry, 20) != pane) continue;
+            for (uint8_t t = 0, tags = sec[entry + 20]; t < tags; ++t) {
+                const size_t tag = entry + Get32(sec, entry + 24 + t * 4u);
+                if (std::string(sec.begin() + tag, sec.begin() + tag + 4) != kind) continue;
+                for (uint8_t g = 0, groups = sec[tag + 4]; g < groups; ++g) {
+                    const size_t group = tag + Get32(sec, tag + 8 + g * 4u);
+                    if (sec[group + 1] != target) continue;
+                    const size_t keys = group + Get32(sec, group + 8);
+                    for (uint16_t k = 0, count = Get16(sec, group + 4); k < count; ++k) {
+                        PutF(sec, keys + k * 12u + 4, value);
+                        PutF(sec, keys + k * 12u + 8, 0.0f);
+                    }
+                    found = true;
+                }
+            }
+        }
+    }
+    Require(found, "bubble animation track");
+}
+
+// T_guide_02 ("+") sits at (1, 32.1) with its child T_guide_01 (the 1 button) at (-26, -2). The group
+// moves right so it stays centred over the player once the spin button comes closer, and the "+"
+// moves up to the 1 button's line (the child moves down by as much, so the 1 button stays put). The
+// spin pane's values put its glyph on that line with the same gap as the 1 button's. All measured
+// from a 2000 px screenshot at 2.38 px per unit: 5.5 px, 6 px and 11 px off before these values.
+constexpr float kPlusX = 10.0f;
+constexpr float kPlusY = 34.4f;
+constexpr float kOneButtonY = -4.3f;
+constexpr float kSpinPaneX = 36.4f;
+constexpr float kSpinPaneY = 54.5f;
+
+Bytes PatchFukidashi(const Bytes& original) {
+    Archive arc = ReadArchive(original);
+
+    Bytes& lytFile = File(arc, "arc/blyt/fukidashiInfo_16.brlyt");
+    Sectioned lyt = ReadSectioned(lytFile);
+    PutF(Pane(lyt, "T_guide_02"), 36, kPlusX);
+    MovePane(lyt, "T_guide_02", kPlusY);
+    MovePane(lyt, "T_guide_01", kOneButtonY);
+    lytFile = WriteSectioned(lyt);
+
+    for (const char* anim : {"inFukidashi2", "loop1PlusShake", "outFukidashi2"}) {
+        Bytes& file = File(arc, std::string("arc/anim/fukidashiInfo_16_") + anim + ".brlan");
+        Sectioned a = ReadSectioned(file);
+        for (const char* pane : {"P_UpDownImage_00", "P_afterImageUD"}) {
+            FlattenTrack(a, pane, "RLPA", 0, kSpinPaneX);
+            FlattenTrack(a, pane, "RLPA", 1, kSpinPaneY);
+        }
+        // The after-image pulses to alpha 128 on frames 3..10 of the loop. It trailed the moving
+        // remote; on a still glyph it only darkens the edges on every pulse.
+        FlattenTrack(a, "P_afterImageUD", "RLVC", 16, 0.0f);
+        file = WriteSectioned(a);
+    }
+    return WriteArchive(arc);
+}
+
 // ---- The world-map menu ------------------------------------------------------------------------
 //
 // dCourseSelectMenu_c (layout corseSelectMenu_11, opened with + on the map): Star Coins, Add/Drop
@@ -428,6 +506,10 @@ void GenerateFiles() {
     g_pauseMenuPatched = Generate("/Layout/pauseMenu/pauseMenu.arc", "pauseMenu.arc", &PatchPauseMenu);
     g_mapMenuPatched =
         Generate("/Layout/corseSelectMenu/corseSelectMenu.arc", "corseSelectMenu.arc", &PatchCourseSelectMenu);
+    // The Wii Remote icon set keeps the game's own bubble: its hop belongs to the remote art.
+    if (RuntimeConfigFile::ButtonIcons("auto") != "wii") {
+        Generate("/Layout/fukidashiInfo/fukidashiInfo.arc", "fukidashiInfo.arc", &PatchFukidashi);
+    }
 }
 
 } // namespace

@@ -12,6 +12,10 @@
 // Its Dolphin texture-pack name is tex1_256x256_7b53229a3b86fede_5, so aurora can identify it by
 // that hash with or without a pack installed. Two layout textures carry standalone Wii icons too
 // (the "2" on the "Hold the Wii Remote sideways" screen, and a d-pad); those are repainted whole.
+// The speech bubble over the player that asks for a shake is repainted the same way: its remote
+// frames (Im_remoconUpDown_03..07, fukidashiInfo.arc) become the Spin control's glyph and its hand
+// frames (Im_remoconUpDownHand_03..07) are cleared, because the player presses a button and does
+// not shake anything. The tilt frames (Im_remoconKatamuki*) stay: tilting is still its own input.
 // Other screens may use more such textures - a Wii icon that stays unchanged under a controller
 // set is one of those, found with texture dumps.
 //
@@ -519,28 +523,53 @@ constexpr Glyph kGlyphs[] = {
     {GlyphSet::Keyboard, "z", kKeyboard_z, sizeof(kKeyboard_z)},
 };
 
-// Textures carrying Wii button art, by their Dolphin texture-pack identity. All GX_TF_RGB5A3 (5).
+// Textures carrying Wii button art, by their Dolphin texture-pack identity.
+constexpr uint32_t kFormatIA4 = 2, kFormatIA8 = 3, kFormatRGB5A3 = 5;
 struct IconTexture {
     uint64_t hash;
     uint16_t width, height;
+    uint32_t format = kFormatRGB5A3;
 };
 constexpr IconTexture kPictureFont{0x7b53229a3b86fedeULL, 256, 256};
 // Identified from the HD pack's SMN/Buttons (Wii art) and its ~PSX Buttons variant, which replaces
 // exactly these two with a cross and a d-pad.
 constexpr IconTexture kLayoutTwo{0x332ba0ec293b70b9ULL, 40, 40};
 constexpr IconTexture kLayoutDpad{0x6de12cfa944308b1ULL, 48, 48};
-constexpr const IconTexture* kIconTextures[] = {&kPictureFont, &kLayoutTwo, &kLayoutDpad};
-constexpr uint32_t kIconFormat = 5;
+// Hashes computed from the disc's TPLs (XXH64 of the image data); the same computation reproduces
+// kLayoutTwo above. Each hash occurs only in fukidashiInfo.arc, so no other screen changes.
+constexpr IconTexture kShakeRemote[] = {
+    {0x3edb18d2f47757e9ULL, 80, 76, kFormatRGB5A3}, {0x883aed9090f43f18ULL, 80, 76, kFormatIA8},
+    {0xf98657f11e1c5d9aULL, 80, 76, kFormatIA8},    {0xedd473bf0fe2bbecULL, 80, 76, kFormatRGB5A3},
+    {0x6e7470051066322bULL, 80, 76, kFormatIA8},
+};
+constexpr IconTexture kShakeHand[] = {
+    {0xb25c08e508f71250ULL, 80, 76, kFormatIA8}, {0xf41dcd9ad2c86c52ULL, 80, 76, kFormatIA8},
+    {0x690096098e5962abULL, 80, 76, kFormatIA8}, {0xd6d0f76df3e4b69dULL, 80, 76, kFormatIA8},
+    {0x1d29e20fe76536a2ULL, 80, 76, kFormatIA8},
+};
+// The bubble's little triangle (im_arrow_01). Cleared: the layout's animation hops the icon up and
+// down, and at the glyph's size that overlapped it. The tilt bubbles share this texture, so they
+// lose it too while a glyph set is active. Hashed over 3072 bytes: IA4 tiles are 8x4, so 60x45 is
+// stored padded to 64x48.
+constexpr IconTexture kBubbleArrow{0x40610bebbdfa20d9ULL, 60, 45, kFormatIA4};
+constexpr const IconTexture* kIconTextures[] = {
+    &kBubbleArrow,    &kPictureFont,    &kLayoutTwo,      &kLayoutDpad,   &kShakeRemote[0], &kShakeRemote[1],
+    &kShakeRemote[2], &kShakeRemote[3], &kShakeRemote[4], &kShakeHand[0],  &kShakeHand[1],
+    &kShakeHand[2],   &kShakeHand[3],   &kShakeHand[4],
+};
 
 // WPAD bits (NSMBW-Decomp WPAD.h). The d-pad icon follows screen-up, which is WPAD RIGHT on the
 // sideways remote.
 constexpr uint32_t kWpadRight = 1u << 1, kWpadPlus = 1u << 4, kWpad2 = 1u << 8, kWpad1 = 1u << 9;
 constexpr uint32_t kWpadB = 1u << 10, kWpadA = 1u << 11, kWpadMinus = 1u << 12;
+// Not a Wii button: the "spin" action's bit in nsmbw_controls.cpp (kHostShake).
+constexpr uint32_t kSpin = 1u << 31;
 
 struct IconCell {
     const IconTexture* texture;
     uint16_t x, y, width, height;
     uint32_t wpad; // the Wii button this icon shows
+    bool clearOnly = false; // erase the art instead of drawing the glyph
 };
 
 // A picture-font character's cell: 32x32 at a 33-texel pitch, 7 per row, index = ch - 0x20.
@@ -559,6 +588,24 @@ constexpr IconCell kCells[] = {
     FontCell('(', kWpad2),
     {&kLayoutTwo, 0, 0, 40, 40, kWpad2},
     {&kLayoutDpad, 0, 0, 48, 48, kWpadRight},
+    {&kBubbleArrow, 0, 0, 60, 45, kSpin, true},
+    // Clear the whole frame, then draw at 36x36: at the full 76 px the glyph was much bigger than
+    // the remote it replaces (developer, 2026-11-05). Bottom-aligned, closest to the player now that the arrow is gone.
+    {&kShakeRemote[0], 0, 0, 80, 76, kSpin, true},
+    {&kShakeRemote[0], 22, 40, 36, 36, kSpin},
+    {&kShakeRemote[1], 0, 0, 80, 76, kSpin, true},
+    {&kShakeRemote[1], 22, 40, 36, 36, kSpin},
+    {&kShakeRemote[2], 0, 0, 80, 76, kSpin, true},
+    {&kShakeRemote[2], 22, 40, 36, 36, kSpin},
+    {&kShakeRemote[3], 0, 0, 80, 76, kSpin, true},
+    {&kShakeRemote[3], 22, 40, 36, 36, kSpin},
+    {&kShakeRemote[4], 0, 0, 80, 76, kSpin, true},
+    {&kShakeRemote[4], 22, 40, 36, 36, kSpin},
+    {&kShakeHand[0], 0, 0, 80, 76, kSpin, true},
+    {&kShakeHand[1], 0, 0, 80, 76, kSpin, true},
+    {&kShakeHand[2], 0, 0, 80, 76, kSpin, true},
+    {&kShakeHand[3], 0, 0, 80, 76, kSpin, true},
+    {&kShakeHand[4], 0, 0, 80, 76, kSpin, true},
 };
 
 GlyphSet g_lastDevice = GlyphSet::Wii; // what "Auto" shows
@@ -680,8 +727,8 @@ void ApplyIfChanged() {
                     .y = cell.y,
                     .width = cell.width,
                     .height = cell.height,
-                    .png = glyph->png,
-                    .pngSize = glyph->size,
+                    .png = cell.clearOnly ? nullptr : glyph->png,
+                    .pngSize = cell.clearOnly ? 0 : glyph->size,
                 });
                 ++total;
             }
@@ -691,7 +738,7 @@ void ApplyIfChanged() {
     g_appliedSignature = signature;
     for (size_t t = 0; t < std::size(kIconTextures); ++t) {
         const IconTexture& tex = *kIconTextures[t];
-        aurora_set_texture_patches(tex.hash, tex.width, tex.height, kIconFormat, patches[t].data(), patches[t].size());
+        aurora_set_texture_patches(tex.hash, tex.width, tex.height, tex.format, patches[t].data(), patches[t].size());
     }
     if (g_log) std::fprintf(stderr, "[nsmbw] button glyphs -> %s (%zu cells)\n", signature.c_str(), total);
 }
