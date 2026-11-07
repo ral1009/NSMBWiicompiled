@@ -1178,10 +1178,13 @@ What I learned:
 - The same search found two older gaps of the same kind: the EXI overrides call `0x801B93A0` and `0x801BA5F0`, which were never in the build. No log shows them being reached.
 - Of the 41,000 functions in both builds, 153 changed, and nearly all of that is callers saving more registers (2,454 lines added, 2 removed; ABI masks were never narrower). The 3 `inline leaf` addresses from the last entry are fine: those overrides are Mario Kart only and are compiled out for NSMBW.
 
-Result: 41,006 functions, the same set as the seeded scratch run. 0 compile errors. Not run or played yet; the proof so far is static.
+Result: 41,006 functions, the same set as the seeded scratch run. 0 compile errors. A portable smoke run on 2026-11-07 reached the map and 1-1 and went through pause -> Exit -> yes/no -> map with no `missing_target` or crash. It is weak evidence:
+- A second game instance was running at the same time, and the Exit and OK presses did not come from the test script.
+- The Enter-on-Continue press the test was meant to send never reached the pause menu, because the first Escape opened the Options overlay instead.
+- A retry stopped at boot with "No DVD root is configured". The test's own `Set-Content -Encoding utf8` had written the portable `Config.toml` with a byte-order mark (BOM: three invisible bytes some editors put at the start of a UTF-8 file), and after that run the file held a second `[video]` table. That duplicate makes the TOML invalid, so the runtime fell back to defaults. Writing test configs without a BOM avoids it; whether the runtime should cope with a BOM is not investigated.
 
 What's next:
-- Play the new build, including confirming in the pause menu. The old output is in a backup tar in the session's temp folder until this is confirmed.
+- (Done 2026-11-07) The developer played the new build, including pause -> Continue: fine.
 - Rebuild `build_release`. Add a check that fails the shard step when native code calls an address that is neither in the build nor overridden.
 
 ## 2026-11-06 — Animated tiles no longer freeze when the resolution changes
