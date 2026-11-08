@@ -20,6 +20,8 @@
 #include "nsmbw_options_menu.h"
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
+#include <iterator>
 #include <vector>
 #include <fstream>
 #include "fiber_manager.h"
@@ -322,6 +324,31 @@ std::filesystem::path NsmbwDataDir() {
     return std::filesystem::current_path() / "nsmbw_data";
 }
 
+// True when the Windows exe is running under Wine/Proton: Wine's ntdll exports wine_get_version,
+// which real Windows' ntdll does not.
+bool RunningUnderWine() {
+#if defined(_WIN32)
+    const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+    return ntdll != nullptr && ::GetProcAddress(ntdll, "wine_get_version") != nullptr;
+#else
+    return false;
+#endif
+}
+
+// Graphics backend for the window. Before 2026-11-07 this was hard-coded to BACKEND_AUTO, so the
+// Config.toml `graphics_api` setting was ignored for NSMBW and, under Proton, `auto` picked
+// Direct3D 12 (through vkd3d), which a Linux user reported draws nothing on screen (Reddit
+// report, unverified here: the developer has not run on Linux yet). Now the setting is honoured,
+// and `auto` means Vulkan under Wine/Proton and aurora's usual order on real Windows. An
+// unavailable backend still falls back to aurora's automatic search (aurora.cpp), and the
+// choice is logged below.
+AuroraBackend ChooseGraphicsBackend() {
+    const std::string api = RuntimeConfigFile::GraphicsApi("auto");
+    if (api == "vulkan") return BACKEND_VULKAN;
+    if (api == "d3d12") return BACKEND_D3D12;
+    return RunningUnderWine() ? BACKEND_VULKAN : BACKEND_AUTO;
+}
+
 bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     std::error_code ec;
     const auto dataDir = NsmbwDataDir();
@@ -338,7 +365,9 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     config.logLevel = LOG_INFO;
     config.windowWidth = 640;
     config.windowHeight = 480;
-    config.desiredBackend = BACKEND_AUTO;
+    config.desiredBackend = ChooseGraphicsBackend();
+    std::printf("[nsmbw] graphics backend requested: %d (0 = auto, under Wine: %d)\n",
+                static_cast<int>(config.desiredBackend), RunningUnderWine() ? 1 : 0);
     config.allowJoystickBackgroundEvents = true;
     // Mirror main.cpp's MKW init: skip the display copy's vertical deflicker filter (default on,
     // as in Dolphin). Left zero-initialised, the filter ran on every frame while the F10 checkbox
@@ -372,8 +401,14 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     // With widescreen on, SCGetAspectRatio (nsmbw_sc_aspect_ratio.cpp) tells the game 16:9 and it
     // renders an anamorphic frame into the same 640-wide XFB. Without a present-aspect lock the
     // presenter fits that XFB as 4:3, horizontally squeezing the scene inside pillarboxes.
-    if (outInfo.window != nullptr && RuntimeConfigFile::WidescreenEnabled(true)) {
-        VILockAspectRatio(16, 9);
+    if (outInfo.window != nullptr) {
+        // 4:3 needs the lock too (2026-11-07): left unlocked, a 4:3 frame (widescreen = false) was
+        // shown stretched into a 16:9-shaped box in a 640x480 window (screenshot, t43 run).
+        if (RuntimeConfigFile::WidescreenEnabled(true)) {
+            VILockAspectRatio(16, 9);
+        } else {
+            VILockAspectRatio(4, 3);
+        }
     }
     return outInfo.window != nullptr;
 }
@@ -726,7 +761,75 @@ void ClearCrashMarker() noexcept {
     std::filesystem::remove(g_crashMarkerPath, ec);
 }
 
+// Keeps the last few copies of the game's save so a crash while the game is writing it (or a
+// corrupted file) cannot lose a whole playthrough. Runs once per launch, before anything can
+// touch the save: copies wiimj2d.sav into <app data>/SaveBackups/ unless it is byte-identical to
+// the newest backup, then deletes all but the newest kMaxSaveBackups. The names sort by time
+// (wiimj2d_YYYYMMDD_HHMMSS.sav), so "newest" is just the largest name.
+// Skipped for test runs (the self-test, NSMBW_KEEP_STATE): they rewrite the save constantly and
+// would push the player's real backups out of the rotation.
+void BackUpSaveFile() {
+    if (AURORA_ENV("NSMBW_AUTO_PRESS_SELFTEST") != nullptr || AURORA_ENV("NSMBW_KEEP_STATE") != nullptr) {
+        return;
+    }
+    constexpr size_t kMaxSaveBackups = 10;
+    std::error_code ec;
+    const auto appData = RuntimeConfigFile::ApplicationDataDirectory();
+    const auto save = appData / "NAND" / "title" / "00010004" / "534d4e50" / "wiimj2d.sav";
+    if (!std::filesystem::is_regular_file(save, ec) || std::filesystem::file_size(save, ec) == 0) {
+        return;
+    }
+    const auto backupDir = appData / "SaveBackups";
+    std::filesystem::create_directories(backupDir, ec);
+    if (ec) {
+        std::printf("[nsmbw] Save backup: cannot create %s (%s)\n", backupDir.string().c_str(),
+                    ec.message().c_str());
+        return;
+    }
+
+    std::vector<std::filesystem::path> backups;
+    for (const auto& entry : std::filesystem::directory_iterator(backupDir, ec)) {
+        const auto name = entry.path().filename().string();
+        if (name.rfind("wiimj2d_", 0) == 0 && entry.path().extension() == ".sav") {
+            backups.push_back(entry.path());
+        }
+    }
+    std::sort(backups.begin(), backups.end());
+
+    const auto readAll = [](const std::filesystem::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    if (!backups.empty() && readAll(backups.back()) == readAll(save)) {
+        return;  // unchanged since the last backup
+    }
+
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &local);
+    const auto target = backupDir / (std::string("wiimj2d_") + stamp + ".sav");
+    std::filesystem::copy_file(save, target, std::filesystem::copy_options::skip_existing, ec);
+    if (ec) {
+        std::printf("[nsmbw] Save backup failed: %s\n", ec.message().c_str());
+        return;
+    }
+    backups.push_back(target);
+    std::sort(backups.begin(), backups.end());
+    while (backups.size() > kMaxSaveBackups) {
+        std::filesystem::remove(backups.front(), ec);
+        backups.erase(backups.begin());
+    }
+    std::printf("[nsmbw] Save backup: %s (%zu kept)\n", target.string().c_str(), backups.size());
+}
+
 void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
+    BackUpSaveFile();
     if (AURORA_ENV("NSMBW_KEEP_STATE") != nullptr) {
         std::printf("[nsmbw] NSMBW_KEEP_STATE set: keeping save, config and pipeline cache from the previous run.\n");
         return;

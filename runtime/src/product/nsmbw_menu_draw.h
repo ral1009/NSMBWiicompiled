@@ -76,8 +76,10 @@ public:
 
     // The pause-menu button: on = selected (green gradient, 1.13x); dim = greyed out. `over` draws
     // the label after the glossy frame so the frame's white fade can't cover it. Returns its size.
+    // noGrow keeps the selected button at its resting size (no 1.13x), for a row that already spans
+    // the full width of the window's content and would otherwise run past the frame.
     ImVec2 Button(std::string_view text, float cx, float cy, float w, float h, bool on, float size,
-                  bool dim = false, bool over = false) const;
+                  bool dim = false, bool over = false, bool noGrow = false) const;
     // Plays the press animation on the button drawn at (cx, cy) with width w.
     void Press(float cx, float cy, float w) const;
     // The yellow four-corner selection cursor around a w x h box.

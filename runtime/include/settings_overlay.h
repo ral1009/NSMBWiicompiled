@@ -57,6 +57,9 @@ bool Bloom() noexcept; // applies when the next scene renderer is created
 void SetBloom(bool enabled) noexcept;
 bool ShowFps() noexcept;
 void SetShowFps(bool show) noexcept;
+bool Widescreen() noexcept;  // the saved choice: true = 16:9, false = 4:3
+void SetWidescreen(bool wide) noexcept;
+bool WidescreenNeedsRestart() noexcept; // saved choice differs from the one this run started with
 bool HdTextures() noexcept;
 void SetHdTextures(bool enabled) noexcept;
 bool HdTexturesNeedRestart() noexcept; // no pack was loaded at startup

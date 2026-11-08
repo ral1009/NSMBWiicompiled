@@ -33,7 +33,14 @@ PPC_NATIVE_OVERRIDE(801B0220, SCCheckStatus_HLE, uint32_t, (), ());
 // Returns: 0 = 4:3, 1 = 16:9
 extern "C" uint32_t SCGetAspectRatio_HLE()
 {
-    return RuntimeConfigFile::WidescreenEnabled(true) ? 1u : 0u;
+    // Fixed at the first call (during boot) instead of re-reading Config.toml each time. The game
+    // asks for the ratio at different moments: EGG::Screen picks its TV mode once at init, and
+    // 2D objects and faders (m2d::Simple_c, mColorFader, mWipeFader) ask again when each is
+    // constructed. If the F10 "Aspect ratio" option changed the config mid-session, new objects
+    // would be built for one ratio and the screen for the other. So a change applies after a
+    // restart (2026-11-07). settings_overlay compares the saved value with this one.
+    static const uint32_t runningAspect = RuntimeConfigFile::WidescreenEnabled(true) ? 1u : 0u;
+    return runningAspect;
 }
 
 PPC_NATIVE_OVERRIDE(801B1BE4, SCGetAspectRatio_HLE, uint32_t, (), ());

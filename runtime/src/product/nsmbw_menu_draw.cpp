@@ -273,7 +273,7 @@ float Canvas::Mario(std::string_view text, float cx, float cy, float size, Color
 }
 
 ImVec2 Canvas::Button(std::string_view text, float cx, float cy, float w, float h, bool on, float size, bool dim,
-                      bool over) const {
+                      bool over, bool noGrow) const {
     // The game's on / off / press animations: its scale (1.0 unselected .. 1.13 selected) and how far
     // the colours have moved towards the selected ones. A button seen for the first time starts
     // settled, so a screen doesn't open with every button animating.
@@ -292,6 +292,7 @@ ImVec2 Canvas::Button(std::string_view text, float cx, float cy, float w, float 
     if (const float p = now - st.pressed; on && p >= 0 && p < 6) {
         scale = Curve({K(0, 1.13f, 0), {2, 0.95f, -0.105f, 0.056f}, K(6, 1.13f, 0)}, p);
     }
+    if (noGrow) scale = 1.0f;  // selected or not, drawn at the unselected size
     // 1.13 is the selected size; shrinkOthers draws that at 1.0 and the others smaller.
     const float k = scale * m_selectedScale / 1.13f, bw = w * k, bh = h * k;
     // Text wider than the button (a long controller name) is drawn smaller to fit inside it.

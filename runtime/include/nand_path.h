@@ -138,11 +138,19 @@ inline std::filesystem::path CreateManagedNandRoot() {
     std::error_code ec;
     std::filesystem::create_directories(root, ec);
     if (ec || !std::filesystem::is_directory(root, ec)) {
-        FailNandRoot("Unable to create managed NAND root", root);
+        // Say why: a Proton user was told only to set nand_root (2026-11-07 report), with no hint
+        // whether the folder could not be created or the bootstrap files were missing.
+        FailNandRoot(ec ? ("Unable to create managed NAND root (" + ec.message() + ")").c_str()
+                        : "Unable to create managed NAND root",
+                     root);
     }
 
     if (!SeedMissingBootstrapFiles(root)) {
-        FailNandRoot("Unable to initialize managed NAND", root);
+        FailNandRoot(BootstrapPayloadPath()
+                         ? "Unable to initialize managed NAND (could not copy the wii_bootstrap files)"
+                         : "Unable to initialize managed NAND (the wii_bootstrap folder was not "
+                           "found next to the exe)",
+                     root);
     }
 
     const auto marker = root / ".mkw_recompiled_managed_nand";

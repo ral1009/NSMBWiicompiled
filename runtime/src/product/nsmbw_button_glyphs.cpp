@@ -770,6 +770,41 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     ApplyIfChanged();
 }
 
+namespace {
+// True when a connected gamepad would be drawn in this style by "Auto".
+bool GamepadConnectedForChoice(int choice) {
+    const char* config = kChoices[choice].config;
+    if (std::strcmp(config, "auto") == 0 || std::strcmp(config, "wii") == 0 || std::strcmp(config, "keyboard") == 0) {
+        return false;
+    }
+    const GlyphSet wanted = SetFromName(config);
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    bool found = false;
+    for (int i = 0; ids != nullptr && i < count && !found; ++i) {
+        found = SetForGamepadType(SDL_GetGamepadTypeForID(ids[i])) == wanted;
+    }
+    SDL_free(ids);
+    return found;
+}
+} // namespace
+
+// The in-game options menu's "Button prompts" row. Every style can be chosen whether or not such a
+// controller is plugged in; a style that matches a connected pad just says so in its label.
+int ChoiceCount() noexcept { return static_cast<int>(std::size(kChoices)); }
+std::string ChoiceLabel(int index) noexcept {
+    if (index < 0 || index >= ChoiceCount()) return "";
+    std::string label = kChoices[index].label;
+    if (GamepadConnectedForChoice(index)) label += " (connected)";
+    return label;
+}
+int ChoiceIndex() noexcept { return g_choice; }
+void SetChoice(int index) noexcept {
+    if (index < 0 || index >= ChoiceCount()) return;
+    g_choice = index;
+    RuntimeConfigFile::SetButtonIcons(kChoices[index].config);
+}
+
 void DrawSettingsMenu() noexcept {
     const char* current = kChoices[g_choice].label;
     ImGui::SetNextItemWidth(220.0f);

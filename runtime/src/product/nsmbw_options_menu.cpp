@@ -58,6 +58,7 @@ struct Row {
     std::function<bool(int)> allowed; // Picker: options that may be chosen (all when empty)
     std::string note;                 // shown under the rows when it matters (a restart, no controller)
     bool dim = false; // Player: no controller
+    bool wide = false; // Picker: as wide as a Player row's controller + Rebind (51..276)
 };
 
 struct State {
@@ -96,8 +97,13 @@ std::vector<Row> BuildRows(int tab) {
         }
         res.set = [](int v) { settings::SetResolutionIndex(v); };
         res.allowed = [](int v) { return settings::ResolutionAllowed(v); };
-        if (settings::FrameInterpolation() != 0) res.note = "6x and 8x need frame interpolation off";
+        if (settings::FrameInterpolation() != 0) res.note = "5K and 6K need frame interpolation off";
         rows.push_back(std::move(res));
+        // 4:3 is the game's own 4:3 mode (SCGetAspectRatio answers 0), for CRTs and 4:3 screens. The
+        // game reads the ratio at boot and as it builds objects, so a change applies after a restart.
+        rows.push_back({"Aspect ratio", Kind::Picker, {"16:9", "4:3"}, settings::Widescreen() ? 0 : 1,
+                        [](int v) { settings::SetWidescreen(v == 0); }, {},
+                        settings::WidescreenNeedsRestart() ? "Applies after a restart" : ""});
         rows.push_back({"Frame interpolation", Kind::Picker, {"Off", "120 fps", "180 fps"}, settings::FrameInterpolation(),
                         [](int v) { settings::SetFrameInterpolation(v); }});
         rows.push_back({"HD texture pack", Kind::Toggle, {}, settings::HdTextures() ? 1 : 0,
@@ -136,6 +142,16 @@ std::vector<Row> BuildRows(int tab) {
             r.note = name.empty() ? "No controller for this player" : "Using: " + name;
             rows.push_back(std::move(r));
         }
+        // Which button pictures the game's prompts use. Any style can be picked with or without
+        // that controller; one that matches a connected pad is labelled "(connected)".
+        Row prompts{"Button prompts", Kind::Picker};
+        for (int i = 0; i < nsmbw_button_glyphs::ChoiceCount(); ++i) {
+            prompts.options.push_back(nsmbw_button_glyphs::ChoiceLabel(i));
+        }
+        prompts.wide = true;
+        prompts.value = nsmbw_button_glyphs::ChoiceIndex();
+        prompts.set = [](int v) { nsmbw_button_glyphs::SetChoice(v); };
+        rows.push_back(std::move(prompts));
         break;
     }
     default: {
@@ -642,15 +658,22 @@ void DrawRow(const draw::Canvas& c, const Row& r, float y, bool focused) {
     switch (r.kind) {
     case Kind::Picker: {
         const std::string& text = r.options.empty() ? std::string() : r.options[size_t(std::clamp(r.value, 0, int(r.options.size()) - 1))];
-        const float cx = 150;
-        if (focused && g.pressPending) c.Press(cx, y, 180);
-        const ImVec2 size = c.Button(text, cx, y, 180, 21, focused, 17, false, true);
+        // A wide picker spans the same width as a Player row (its controller button, 51..126+75,
+        // plus Rebind, to 242+34 = 276; buttons draw about 7% narrower than the width asked for, hence
+        // 242 for a 225-wide span), so the "Button prompts" row lines up with the rows above it.
+        // A selected button draws 1.13x larger, which put this row's right end, arrows and cursor
+        // past the window frame (developer screenshot, 2026-11-07). So this row is drawn at the same
+        // size selected or not, with the arrows inside its ends (negative gap) and the cursor
+        // hugging it; its edges then stay on the Player rows' span.
+        const float cx = r.wide ? 165.5f : 150, bw = r.wide ? 240.0f : 180.0f, gap = r.wide ? -22.0f : 16.0f;
+        if (focused && g.pressPending) c.Press(cx, y, bw);
+        const ImVec2 size = c.Button(text, cx, y, bw, 21, focused, 17, false, true, r.wide);
         if (focused) {
             if (r.set) {
-                c.Mario("<", cx - size.x / 2 - 16, y, 26, kNumberTop, kNumberBottom);
-                c.Mario(">", cx + size.x / 2 + 16, y, 26, kNumberTop, kNumberBottom);
+                c.Mario("<", cx - size.x / 2 - gap, y, 26, kNumberTop, kNumberBottom);
+                c.Mario(">", cx + size.x / 2 + gap, y, 26, kNumberTop, kNumberBottom);
             }
-            c.Cursor(cx, y, size.x + (r.set ? 52 : 4), size.y + 4, 0.55f);
+            c.Cursor(cx, y, size.x + (r.set && !r.wide ? 52 : 4), size.y + 4, 0.55f);
         }
         break;
     }
@@ -865,6 +888,12 @@ void RunScriptedOpenClose() {
     if (step == 0 && t >= openAt) {
         Play(kSndPause);
         Open("test", false);
+        // NSMBW_OPTIONS_MENU_TEST_TAB=<0..3> starts on that tab, so a test can screenshot it.
+        if (const char* tab = std::getenv("NSMBW_OPTIONS_MENU_TEST_TAB")) {
+            g.tab = std::clamp(std::atoi(tab), 0, int(kTabs.size()) - 1);
+        }
+        // NSMBW_OPTIONS_MENU_TEST_ROW=<n> puts the cursor on that row of the tab (tests the focused look).
+        if (const char* row = std::getenv("NSMBW_OPTIONS_MENU_TEST_ROW")) g.focus[size_t(g.tab)] = std::atoi(row);
         step = 1;
     } else if (step == 1 && t >= closeAt) {
         Close("test");

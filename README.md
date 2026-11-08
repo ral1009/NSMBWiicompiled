@@ -48,13 +48,13 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 
 **Save** in that world-map menu always does a full save and lets you keep playing, at any point in the game. The original only offers Quick Save, which quits to the title screen, until you beat the final boss.
 
-- **Graphics:** windowed, borderless or fullscreen; resolution from native up to 8x; frame interpolation; HD textures; bloom
+- **Graphics:** windowed, borderless or fullscreen; resolution from native (528p) up to 6K; frame interpolation; HD textures; bloom
 - **Audio:** separate volumes for music, sound effects and menu sounds
 - **Controls:** pick which controller each player uses, and rebind any button, including to combinations such as L + R
 - **Advanced:** FPS counter and a few performance switches
 
 ### High resolution and widescreen
-Render at up to 8x the Wii's resolution, in 16:9. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120 or 180 fps on high-refresh monitors.
+Render at up to 6K (3456 rows, 6.5 times the Wii's native 528), in 16:9. Pick a preset by height: 528p (native), 720p, 1080p, 1440p, 4K, 5K, 6K, or Auto to match the window. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120 or 180 fps on high-refresh monitors.
 
 ### HD texture packs
 Dolphin texture packs for NSMBW work without changes. Install one during setup, or later by copying it into the game folder, and switch it on or off in the options menu while you play. Tested with *NSMBW HD v2.81* and nymo642's [HD HUD Tweaks](https://gamebanana.com/mods/480785). No packs are included; download them from their authors.
@@ -101,7 +101,7 @@ Defaults; change them in **Options → Controls**.
 
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
-- **6x and 8x are not available with frame interpolation on**, because they ran badly on the hardware tested.
+- **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
 - Only the PAL disc, revision 1, is supported.
 
@@ -117,7 +117,7 @@ The port is built against the PAL release (SMNP01, revision 1). Other versions h
 In `%LOCALAPPDATA%\WiiCompiled\`: settings in `Config.toml`, controls in `nsmbw_controls.ini`, and the save in `NAND\title\00010004\534d4e50\wiimj2d.sav`. To keep everything inside the game folder instead, put an empty file named `portable.txt` next to `NSMBWCompiled.exe`. Saves and settings then go to a `UserData` folder there.
 
 #### It runs slowly on my laptop. What should I change?
-Lower the resolution first. On an Intel Iris Xe laptop, 1x and 1.5x hold 180 fps with frame interpolation, 2x holds 120 and 4x holds 60. Keep the game window in front, since a covered window can run noticeably slower.
+Lower the resolution first. On an Intel Iris Xe laptop, 528p and 792p (the old 1x and 1.5x settings) hold 180 fps with frame interpolation, 1056p (2x) holds 120 and 2112p (4x) holds 60. Keep the game window in front, since a covered window can run noticeably slower.
 
 #### Something broke. Where is the log?
 `nsmbw_data\NSMBWCompiled.log` next to the game. Include it if you [open an issue](https://github.com/ral1009/NSMBWiicompiled/issues).

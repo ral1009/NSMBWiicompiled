@@ -636,6 +636,11 @@ inline bool SetTextureReplacements(bool value) {
     return WriteSetting("video", "texture_replacements", value ? "true" : "false");
 }
 
+inline bool SetWidescreen(bool value) {
+    Mutable().widescreen = value;
+    return WriteSetting("video", "widescreen", value ? "true" : "false");
+}
+
 inline bool SetShowFps(bool value) {
     Mutable().showFps = value;
     return WriteSetting("video", "show_fps", value ? "true" : "false");

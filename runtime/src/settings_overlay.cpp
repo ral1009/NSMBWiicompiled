@@ -44,6 +44,9 @@ extern "C" int g_gxFrameCount;
 
 // Defined in runtime/src/hle/audio/ax_mix.cpp. That header is private to the HLE
 // directory and is not on this target's include path.
+// hle/sc.cpp: the aspect ratio this run started with (0 = 4:3, 1 = 16:9).
+extern "C" uint32_t SCGetAspectRatio_HLE();
+
 namespace AxDspHle {
 void SetMixWorkerEnabled(bool enabled);
 }
@@ -239,19 +242,31 @@ std::atomic_uint64_t g_startupDismissFrame = UINT64_MAX;
 std::atomic_bool g_startupScreenDisabled = false;
 constexpr uint64_t kStrapTransitionCoverFrames = 60;
 
+// Presets are named by internal render height, because that is what a player compares against a
+// display. The game's framebuffer is 640x528 at scale 1 (aurora logs "Using framebuffer size
+// 640x528 scale 1"), so a preset of H rows is the scale H/528; Config.toml still stores the scale
+// (video.resolution_multiplier), so old files keep working: a saved value that is not one of these
+// shows as "Custom" until a preset is picked. 480p is not offered: it is below native, and scales
+// under 1 are clamped. 8K is not offered (decision 2026-11-07). Auto picks the scale that fits the
+// window, so on a 1080-row window it renders about 1080 rows.
+constexpr float kNativeFramebufferHeight = 528.0f;
+constexpr float ScaleForHeight(int rows) { return static_cast<float>(rows) / kNativeFramebufferHeight; }
+
 constexpr std::array<ResolutionItem, 8> kResolutions = {{
-    {"Auto (window size)", 0.0f}, {"Native (1x)", 1.0f}, {"1.5x", 1.5f}, {"2x", 2.0f},
-    {"3x", 3.0f}, {"4x", 4.0f}, {"6x", 6.0f}, {"8x", 8.0f},
+    {"Auto (match window)", 0.0f}, {"528p (native)", 1.0f},    {"720p", ScaleForHeight(720)},
+    {"1080p", ScaleForHeight(1080)},   {"1440p", ScaleForHeight(1440)}, {"4K (2160p)", ScaleForHeight(2160)},
+    {"5K (2880p)", ScaleForHeight(2880)}, {"6K (3456p)", ScaleForHeight(3456)},
 }};
 
 constexpr std::array<uint32_t, 3> kFrameInterpolationTargetFps{0, 120, 180};
 
-// 6x and 8x are refused while frame interpolation is on: greyed out in the menus, and a saved 6x /
-// 8x is lowered to 4x at startup or when interpolation is turned on. Inherited from WiiCompiled;
+// Scales above 4K (5K and 6K, and the old 6x / 8x values that may still be saved) are refused while
+// frame interpolation is on: greyed out in the menus, and a saved value that high is lowered to 4K
+// at startup or when interpolation is turned on. Inherited from WiiCompiled as "6x and 8x";
 // removed on 2026-10-29 and restored the same day after 8x at 180 fps "ran horribly" on the
-// developer's machine.
+// developer's machine. Now defined by height so the new 5K and 6K presets are covered too.
 bool IsHighResolutionScale(float scale) {
-    return std::fabs(scale - 6.0f) < 0.001f || std::fabs(scale - 8.0f) < 0.001f;
+    return scale > ScaleForHeight(2160) + 0.05f;
 }
 
 bool IsHighFrameRateMode() {
@@ -266,7 +281,7 @@ void SetResolutionScale(float scale) {
 
 void LimitResolutionForFrameRate() {
     if (IsHighFrameRateMode() && IsHighResolutionScale(g_resolutionScale)) {
-        SetResolutionScale(4.0f);
+        SetResolutionScale(ScaleForHeight(2160));
     }
 }
 
@@ -1091,6 +1106,13 @@ bool ShowFps() noexcept { return g_showFps; }
 void SetShowFps(bool show) noexcept {
     g_showFps = show;
     RuntimeConfigFile::SetShowFps(show);
+}
+
+bool Widescreen() noexcept { return RuntimeConfigFile::WidescreenEnabled(true); }
+void SetWidescreen(bool wide) noexcept { RuntimeConfigFile::SetWidescreen(wide); }
+bool WidescreenNeedsRestart() noexcept {
+    // SCGetAspectRatio_HLE (hle/sc.cpp) holds the ratio this run started with; 1 = 16:9.
+    return (SCGetAspectRatio_HLE() != 0) != Widescreen();
 }
 
 bool HdTextures() noexcept { return g_textureReplacements; }

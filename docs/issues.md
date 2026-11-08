@@ -745,6 +745,34 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified (portable copy, fresh save): `NSMBW_LOG_CONTROLS` shows `context=gameplay` with jump sent as 0x0100 until the block is hit, then `context=menu hintList=1`, with confirm sent as 0x0800 and back as 0x0200. Back closed the list on screen. Confirm showed no visible effect: the only movie needs 3 star coins and the file had 0. The developer then tested the list ("tested everything", 2026-11-07).
 - Scope: NSMBW-specific (profile number, state address).
 
+## 2026-11-07 (v0.2.3 work)
+
+### Resolution menu named scales, not resolutions
+- Symptom: players (and the developer, in public replies) did not know what "2x" meant; a reply assumed a 480-row base.
+- Root cause: labels were multipliers inherited from WiiCompiled. The game's framebuffer is 640x528 at scale 1 (aurora logs "Using framebuffer size 640x528 scale 1"), so 2x was 1056 rows, not 960.
+- Fix (`runtime/src/settings_overlay.cpp`): presets named by internal height: Auto, 528p (native), 720p, 1080p, 1440p, 4K, 5K, 6K, each stored as the scale height/528 (Config.toml still holds the scale). The "no interpolation" limit (`IsHighResolutionScale`) is now "above 4K" instead of exactly 6x/8x, so 5K and 6K are covered. 8K is not offered. README updated.
+- Verified: builds. Not yet seen on screen; fractional scales other than 1.5x are untested (the scaled tile cache is keyed on the scale). Whether all 528 rows are visible picture or include borders is not checked. A saved scale that is not a preset (e.g. 2x) shows as "Custom".
+- Scope: General (menu); the 528 base is NSMBW-specific.
+
+### Backend ignored `graphics_api`; Proton drew nothing (Reddit report, unverified)
+- Symptom: a user on Linux/Proton got a blank screen until they set the renderer to Vulkan in the config.
+- Root cause: `InitializeAuroraWindow` hard-coded `BACKEND_AUTO` (Config.toml `graphics_api` was only read on the MKW path in `main.cpp`), and `auto` prefers Direct3D 12, which under Proton goes through vkd3d. The Proton failure itself is the user's report; not reproduced here.
+- Fix (`runtime/src/product/nsmbw_product.cpp`): `ChooseGraphicsBackend()` honours `graphics_api`; `auto` means Vulkan when Wine's `wine_get_version` export is present, else aurora's normal order. aurora still falls back if the backend is unavailable.
+- Verified: builds only. The backend selection was not exercised (the portable runs stopped at "DVD data unavailable"), and nothing was run on Linux.
+- Scope: General. Status: Unconfirmed.
+
+### "Set nand_root" error gave no reason (Reddit report, unverified)
+- Symptom: the same Linux user was told to set `nand_root` by hand, as if the default failed.
+- Root cause: not found. With `nand_root` unset the runtime uses `<app data>/NAND` (`nand_path.h`); the error comes from either creating that folder or copying the `wii_bootstrap` files, and the message did not say which.
+- Fix (`runtime/include/nand_path.h`): the two failure messages now name the reason (the OS error text, or "wii_bootstrap not found next to the exe"). This does not fix the underlying failure.
+- Scope: Unconfirmed.
+
+### No backup of the game save
+- Symptom: none yet; a crash while the game writes `wiimj2d.sav` would lose the playthrough with no way back.
+- Fix (`nsmbw_product.cpp`, `BackUpSaveFile`): once per launch, before anything touches the save, copy it to `<app data>/SaveBackups/wiimj2d_YYYYMMDD_HHMMSS.sav` unless identical to the newest copy; keep 10. Skipped for the self-test and `NSMBW_KEEP_STATE`.
+- Verified: portable copy with a fake 200-byte save made one backup, "1 kept". Not tested: the identical-skip, the 10-file rotation, or a real save.
+- Scope: General.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
