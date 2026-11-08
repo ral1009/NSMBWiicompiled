@@ -99,9 +99,12 @@ std::vector<Row> BuildRows(int tab) {
         res.allowed = [](int v) { return settings::ResolutionAllowed(v); };
         if (settings::FrameInterpolation() != 0) res.note = "5K and 6K need frame interpolation off";
         rows.push_back(std::move(res));
-        // 4:3 is the game's own 4:3 mode (SCGetAspectRatio answers 0), for CRTs and 4:3 screens. The
+        // 4:3 is the game's own 4:3 mode (SCGetAspectRatio answers 0), for CRTs and 4:3 screens. That
+        // mode letterboxes the 3D view into a 640x352 strip (the game's own viewport, per
+        // NSMBW_LOG_VIEWPORT), so the label says so; a full-screen 4:3 needs the view-extent work
+        // in docs/futureplans.md. The
         // game reads the ratio at boot and as it builds objects, so a change applies after a restart.
-        rows.push_back({"Aspect ratio", Kind::Picker, {"16:9", "4:3"}, settings::Widescreen() ? 0 : 1,
+        rows.push_back({"Aspect ratio", Kind::Picker, {"16:9", "4:3 (letterboxed)"}, settings::Widescreen() ? 0 : 1,
                         [](int v) { settings::SetWidescreen(v == 0); }, {},
                         settings::WidescreenNeedsRestart() ? "Applies after a restart" : ""});
         rows.push_back({"Frame interpolation", Kind::Picker, {"Off", "120 fps", "180 fps"}, settings::FrameInterpolation(),

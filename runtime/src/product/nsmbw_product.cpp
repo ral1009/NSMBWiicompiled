@@ -20,6 +20,7 @@
 #include "nsmbw_options_menu.h"
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 #include <ctime>
 #include <iterator>
 #include <vector>
@@ -93,6 +94,28 @@ namespace {
 //     project confirms what IOS NSMBW actually boots under) and a precisely-tuned MEM1 arena hi
 //     (reuses the same 0x817F0000 ceiling used for the stack pointer elsewhere in this file,
 //     which is conservative but not derived from NSMBW's own arena-init code).
+// ULTRAWIDE SPIKE (2026-11-07): NSMBW_ULTRAWIDE_TEST=<w>:<h> (e.g. 21:9) widens the game's 16:9
+// canvas. EGG::Screen::sTVModeInfo (0x80350820, 12 bytes per mode: u16 width, u16 height, two
+// floats; mode 1 = 16:9 = 832x456 in the PAL DOL) is what the game reads for its 3D projection
+// width and, in d_2d/m_2d, for scaling its HUD layouts. This is the same idea as MKW's
+// dynamic_aspect.cpp (it rewrites that game's EGG::Screen records). Written once after the DOL's
+// data is loaded and before the game's m3d::create reads it (SetTVMode, 0x802D1D90). The present
+// aspect lock below is set to match. Experiment only; not a user setting yet.
+int g_ultrawideA = 0, g_ultrawideB = 0;
+void ApplyUltrawideTest() {
+    const char* spec = AURORA_ENV("NSMBW_ULTRAWIDE_TEST");
+    if (spec == nullptr || std::sscanf(spec, "%d:%d", &g_ultrawideA, &g_ultrawideB) != 2 || g_ultrawideA <= 0 ||
+        g_ultrawideB <= 0) {
+        g_ultrawideA = g_ultrawideB = 0;
+        return;
+    }
+    constexpr uint32_t kTvModeInfo169Width = 0x80350820u + 12u;  // mode 1 (16:9), u16 width
+    const double width = 832.0 * (static_cast<double>(g_ultrawideA) / g_ultrawideB) / (16.0 / 9.0);
+    Memory::Write16(kTvModeInfo169Width, static_cast<uint16_t>(std::lround(width)));
+    std::printf("[nsmbw] ULTRAWIDE TEST %d:%d: 16:9 canvas width 832 -> %ld\n", g_ultrawideA, g_ultrawideB,
+                std::lround(width));
+}
+
 void SeedLowMemDefaults() {
     struct SeedEntry { uint32_t address; uint32_t value; const char* label; };
     const uint32_t mem1Size = static_cast<uint32_t>(Memory::kMem1Size);
@@ -175,6 +198,7 @@ void SeedLowMemDefaults() {
         seeded++;
     }
     std::printf("[nsmbw] Seeded %d low-memory OS default(s).\n", seeded);
+    ApplyUltrawideTest();
 }
 
 constexpr uint32_t kNsmbwEntryAddress = 0x80004050u;
@@ -404,7 +428,9 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     if (outInfo.window != nullptr) {
         // 4:3 needs the lock too (2026-11-07): left unlocked, a 4:3 frame (widescreen = false) was
         // shown stretched into a 16:9-shaped box in a 640x480 window (screenshot, t43 run).
-        if (RuntimeConfigFile::WidescreenEnabled(true)) {
+        if (g_ultrawideA > 0) {
+            VILockAspectRatio(g_ultrawideA, g_ultrawideB);
+        } else if (RuntimeConfigFile::WidescreenEnabled(true)) {
             VILockAspectRatio(16, 9);
         } else {
             VILockAspectRatio(4, 3);
