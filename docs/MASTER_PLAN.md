@@ -187,6 +187,7 @@ Each item was checked against the code on 2026-09-26. None of it starts until th
 6. **Parked:**
    - Newer SMBW. Its Kamek code arrives via `<memory>` patches and a runtime loader. Supporting it would need a separate build that patches the DOL/RELs *before* translation and translates Newer's code as an extra module.
    - Online play. Prerequisites: channels 1-3 and verified co-op, a cross-machine determinism check (hash guest RAM per frame), and for rollback, save/restore of guest RAM, thread contexts and HLE state.
+7. **Future ideas (2026-11-07)** now live in `docs/futureplans.md`: aspect ratios (promised for v0.3.0), no-AVX2 build, other game versions, save carry-over, Linux, mods and more.
 
 ---
 

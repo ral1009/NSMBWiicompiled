@@ -2,7 +2,7 @@
 
 ## What this project is
 
-Attempting to apply static recompilation (in the style of WiiCompiled, which does this for Mario Kart Wii) to New Super Mario Bros. Wii, using NSMBW-Decomp/NSMBW-Maps as reference material for symbols and verified source. See `docs/MASTER_PLAN.md` for the full project overview, phase breakdown, learning curriculum, and progress log — read it before making assumptions about scope or approach. That file is the single source of truth; don't create separate plan/curriculum docs elsewhere.
+Attempting to apply static recompilation (in the style of WiiCompiled, which does this for Mario Kart Wii) to New Super Mario Bros. Wii, using NSMBW-Decomp/NSMBW-Maps as reference material for symbols and verified source. See `docs/MASTER_PLAN.md` for the full project overview, phase breakdown, learning curriculum, and progress log — read it before making assumptions about scope or approach. That file is the single source of truth for the plan and progress; the one exception is `docs/futureplans.md`, the to-do list of what to build next and how (kept separate by the developer's choice, 2026-11-07). Don't create other plan/curriculum docs.
 
 I (the developer) am learning C, PowerPC, and this whole toolchain largely *through* this project. I have limited programming background going in. This file exists to keep AI assistance from quietly outpacing my actual understanding.
 
