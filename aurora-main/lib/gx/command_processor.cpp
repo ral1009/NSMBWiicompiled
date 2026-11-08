@@ -532,24 +532,21 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
   return false;
 }
 
-// EXPERIMENT (NSMBW ultrawide, 2026-11-07): AURORA_WIDE_HORPLUS=1. NSMBW asks for a viewport
-// wider than its 640-unit frame (840 at 21:9) when its 16:9 canvas is widened, but keeps the same
-// projection, so the 3D world came out stretched. Here such a viewport is squeezed back to 640
-// and every projection's x row is scaled by the same factor, so the extra width shows more world
-// instead of stretching it. Draws only - the game's own culling is unchanged (that is what this
-// experiment is meant to show).
-static float g_wideXScale = 1.0f;
-static bool wide_horplus_enabled() {
-  static const bool enabled = AURORA_ENV("AURORA_WIDE_HORPLUS") != nullptr;
-  return enabled;
-}
-static void scale_projection_x(float factor) {
-  auto& proj = g_gxState.proj;
-  proj.m0[0] *= factor;
-  proj.m0[1] *= factor;
-  proj.m0[2] *= factor;
-  proj.m0[3] *= factor;
-}
+// Wide viewport squeeze (NSMBW ultrawide, 2026-11-07). With its 16:9 canvas widened (so the HUD
+// spreads to the screen edges) NSMBW asks for a 3D viewport wider than its 640-unit frame (840 at
+// 21:9), while its own projection is widened separately (the level view width, see
+// nsmbw_product.cpp ApplyAspectSetting). Drawing that viewport as asked would crop and stretch the
+// picture; squeezing it back into the frame width makes the wider projection fill the frame, and
+// the presenter then shows the frame at the wide aspect. 0 = off (the default; MKW never sets it).
+static float g_wideViewportLimit = 0.0f;
+void set_wide_viewport_limit(float limit) { g_wideViewportLimit = limit; }
+// Perspective x scale (NSMBW world map at wide ratios, 2026-11-07): the map's perspective camera
+// keeps a 16:9 aspect (proj[1][1]/proj[0][0] = 832/456 at 21:9 too) and draws into the normal
+// 640 viewport, so the wider window stretched it. Scaling every perspective projection's x row by
+// (16:9)/(wide ratio) shows more of the map instead. Orthographic projections (the level, whose
+// width the game widens itself, and all 2D) are left alone. 1 = off.
+static float g_perspectiveXScale = 1.0f;
+void set_perspective_x_scale(float scale) { g_perspectiveXScale = scale; }
 
 static void apply_xf_viewport() {
   const auto& vp = g_gxState.xfViewport;
@@ -588,19 +585,11 @@ static void apply_xf_viewport() {
       std::fflush(stderr);
     }
   }
-  if (wide_horplus_enabled()) {
+  if (g_wideViewportLimit > 0.0f && lv.width > g_wideViewportLimit + 1.0f) {
     gfx::Viewport squeezed = lv;
-    float k = 1.0f;
-    if (lv.width > 641.0f) {
-      k = 640.0f / lv.width;
-      squeezed.left = lv.left * k;
-      squeezed.width = 640.0f;
-    }
-    if (k != g_wideXScale) {
-      scale_projection_x(k / g_wideXScale);
-      g_wideXScale = k;
-      g_gxState.stateDirty = true;
-    }
+    const float k = g_wideViewportLimit / lv.width;
+    squeezed.left = lv.left * k;
+    squeezed.width = g_wideViewportLimit;
     set_logical_viewport(squeezed);
     return;
   }
@@ -624,9 +613,10 @@ static void apply_xf_projection() {
     proj.m0[2] = raw[1];
     proj.m1[2] = raw[3];
     proj.m3[2] = -1.0f;
-  }
-  if (wide_horplus_enabled() && g_wideXScale != 1.0f) {
-    scale_projection_x(g_wideXScale);
+    if (g_perspectiveXScale != 1.0f) {
+      proj.m0[0] *= g_perspectiveXScale;
+      proj.m0[2] *= g_perspectiveXScale;
+    }
   }
 
   g_gxState.stateDirty = true;

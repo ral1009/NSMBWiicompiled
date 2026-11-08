@@ -664,22 +664,17 @@ inline AspectSetting ParseAspect(const std::string& text) {
     }
     const double ratio = static_cast<double>(a) / b;
     const bool exactFourThree = (a * 3 == b * 4);
-    // Ratios other than 16:9 and 4:3 are disabled unless NSMBW_EXPERIMENTAL_ASPECT is set: at 21:9
-    // the HUD moved to the wider edges but the 3D world was only STRETCHED sideways (the level's
-    // projection is unchanged and its viewport grows to 840 px, measured 2026-11-07), not widened.
-    // Until the world's view is widened for real, only the game's own 16:9 and 4:3 are offered.
-    if (!exactFourThree && a * 9 != b * 16 && std::getenv("NSMBW_EXPERIMENTAL_ASPECT") == nullptr) {
-        return out;
-    }
-    // Anything narrower than 16:9 other than exactly 4:3 is not supported yet: shrinking the game's
-    // canvas below 832 also shrinks its render viewport (16:10 = canvas 749 gave a viewport 576
-    // wide in a 640-wide frame, so the picture was left-aligned with black on the right; seen
-    // 2026-11-07), so it needs its own handling. 16:10 screens use 16:9 with thin bars for now.
-    // Above about 21:9 (2.40) is refused: 32:9 showed a visible seam in the title backdrop and
-    // characters cut off at the right edge (seen 2026-11-07), probably the 640-wide render buffer
-    // being asked to hold a 1664-unit canvas. 21:9 (canvas 1092) looked right on the title, the
-    // world map and the start of 1-1.
-    if (!exactFourThree && (ratio < 16.0 / 9.0 - 0.01 || ratio > 2.40)) {
+    // Wider than 16:9 widens the game's view (ApplyAspectSetting in nsmbw_product.cpp): the level's
+    // view width, the 2D layouts' adjust factor, the fades, and the 16:9 canvas, plus aurora's wide
+    // viewport squeeze. Checked at 21:9 (2026-11-07): world, HUD, pause menu and wipes keep their
+    // shape. Up to 2.40 (a little past 21:9) is allowed; NSMBW_EXPERIMENTAL_ASPECT=1 lifts that to
+    // 32:9 for testing, which has not been checked.
+    // Narrower than 16:9 other than exactly 4:3 is not supported: shrinking the game's canvas below
+    // 832 also shrinks its render viewport (16:10 = canvas 749 gave a viewport 576 wide in a
+    // 640-wide frame, picture left-aligned with black on the right; seen 2026-11-07). It would need
+    // its own (taller-view) handling, so 16:10 screens use 16:9 with thin bars.
+    const double maxRatio = std::getenv("NSMBW_EXPERIMENTAL_ASPECT") != nullptr ? 3.60 : 2.40;
+    if (!exactFourThree && (ratio < 16.0 / 9.0 - 0.01 || ratio > maxRatio)) {
         return out;
     }
     out.num = a;

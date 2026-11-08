@@ -1110,10 +1110,10 @@ struct AspectChoice {
     const char* label;
     const char* text;
 };
-// No 16:10 or 21:9 preset: other ratios stretch the 3D world instead of widening it, so they are
-// disabled (see ParseAspect).
-constexpr std::array<AspectChoice, 2> kAspects = {{
-    {"16:9", "16:9"}, {"4:3 (letterboxed)", "4:3"},
+// No 16:10 preset: narrower than 16:9 is not supported yet (see ParseAspect). 21:9 widens the
+// view (more of the level, HUD at the screen edges, nothing stretched).
+constexpr std::array<AspectChoice, 3> kAspects = {{
+    {"16:9", "16:9"}, {"21:9 (experimental)", "21:9"}, {"4:3 (letterboxed)", "4:3"},
 }};
 } // namespace
 

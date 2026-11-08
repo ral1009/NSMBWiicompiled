@@ -34,6 +34,7 @@
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
 #include <dolphin/vi.h>
+#include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
 #include <atomic>
@@ -114,6 +115,57 @@ void ApplyAspectSetting() {
     constexpr uint32_t kTvModeInfo169Width = 0x80350820u + 12u;  // mode 1 (16:9), u16 width
     const double width = 832.0 * (static_cast<double>(aspect.num) / aspect.den) / (16.0 / 9.0);
     Memory::Write16(kTvModeInfo169Width, static_cast<uint16_t>(std::lround(width)));
+    // The level's view size in world units. mVideo::create (0x800E8BC0) copies two small-data
+    // constants, 0x8042D058 (width 408.70 = 224 x 832/456) and 0x8042D05C (height 224), into
+    // globals (r13-21940 / r13-21936) that dBg_c (0x80077B00) divides by the zoom to get the
+    // visible rectangle (dBgParameter_c size); that rectangle drives the camera projection and the
+    // game's culling. Widening the constant before the game boots widens both.
+    // 2D layouts. The game draws every layout in its 608-wide 4:3 space (d2d::Multi_c::draw and
+    // m2d::Simple_c::draw cancel the canvas width out, so the 2D projection is 608 wide whatever
+    // the table says) and the presenter stretches it to the screen, so pane POSITIONS spread to the
+    // screen edges by themselves. Panes flagged "location adjust" (the HUD pieces) are then shrunk
+    // sideways by DrawInfo's location-adjust scale so they keep their shape: 19/26 = 608/832 for
+    // 16:9. That constant has one copy per layout class, read only by its constructor:
+    // 0x8042B364 (d2d::Multi_c, 0x80006CD0) and 0x8042DF28 (m2d::Simple_c, 0x80163A20). At a wider
+    // ratio it must be 608 / canvas width, or the HUD comes out stretched (seen at 21:9,
+    // 2026-11-07, before this).
+    for (const uint32_t adjustConst : {0x8042B364u, 0x8042DF28u}) {
+        const float current = Memory::ReadFloat32(adjustConst);
+        if (current > 0.7305f && current < 0.7310f) {
+            Memory::WriteFloat32(adjustConst, 608.0 / width);
+        } else {
+            std::printf("[nsmbw] Aspect ratio %s: layout adjust constant at %08X not found (read %.4f)\n",
+                        aspect.text.c_str(), adjustConst, current);
+        }
+    }
+    // Full-screen fades and wipes size themselves for 16:9 with their own constants: mColorFader::draw
+    // (0x8016AE70) reads 416 (half of 832) at 0x8042DFD0, mWipeFader's constructor (0x80170D90)
+    // reads 1.36842095 (832/608) at 0x8042E040; each is read only by that function. Left alone,
+    // the Bowser-face wipe stopped about 32 px short of each side at 21:9 (2026-11-07).
+    struct FaderConst {
+        uint32_t addr;
+        float expected;
+        double value;
+    };
+    for (const FaderConst& c : {FaderConst{0x8042DFD0u, 416.0f, width / 2.0}, FaderConst{0x8042E040u, 1.36842095f, width / 608.0}}) {
+        const float current = Memory::ReadFloat32(c.addr);
+        if (current > c.expected - 0.001f && current < c.expected + 0.001f) {
+            Memory::WriteFloat32(c.addr, c.value);
+        } else {
+            std::printf("[nsmbw] Aspect ratio %s: fader constant at %08X not found (read %.4f)\n", aspect.text.c_str(),
+                        c.addr, current);
+        }
+    }
+    constexpr uint32_t kViewWidthConst = 0x8042D058u;
+    const float baseWidth = Memory::ReadFloat32(kViewWidthConst);
+    if (baseWidth > 408.5f && baseWidth < 408.9f) {
+        const double viewWidth = baseWidth * (static_cast<double>(aspect.num) / aspect.den) / (16.0 / 9.0);
+        Memory::WriteFloat32(kViewWidthConst, viewWidth);
+        std::printf("[nsmbw] Aspect ratio %s: level view width %.2f -> %.2f\n", aspect.text.c_str(), baseWidth, viewWidth);
+    } else {
+        std::printf("[nsmbw] Aspect ratio %s: level view width constant not found (read %.3f)\n", aspect.text.c_str(),
+                    baseWidth);
+    }
     std::printf("[nsmbw] Aspect ratio %s: 16:9 canvas width 832 -> %ld\n", aspect.text.c_str(), std::lround(width));
 }
 
@@ -431,6 +483,15 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
         // black bars seen in the game's 4:3 mode are its own letterbox, not this lock.
         const auto& aspect = RuntimeConfigFile::RunningAspect();
         VILockAspectRatio(aspect.num, aspect.den);
+        // Wider than 16:9: the widened canvas makes the game ask for a 3D viewport past its 640-unit
+        // frame (840 at 21:9). Squeeze it back to 640 so the game's own widened projection (level
+        // view width, ApplyAspectSetting) fills the frame instead of being cropped and stretched.
+        if (!aspect.fourThree && aspect.num * 9 > aspect.den * 16) {
+            AuroraSetWideViewportLimit(640.0f);
+            // The world map's perspective camera keeps a 16:9 aspect (832/456, measured at 21:9),
+            // so widen perspective projections by the same ratio (aurora command_processor.cpp).
+            AuroraSetPerspectiveXScale(static_cast<float>((16.0 / 9.0) / (static_cast<double>(aspect.num) / aspect.den)));
+        }
     }
     return outInfo.window != nullptr;
 }

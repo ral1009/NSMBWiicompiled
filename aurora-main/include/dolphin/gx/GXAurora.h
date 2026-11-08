@@ -95,6 +95,11 @@ typedef enum _AuroraViewportPolicy {
  * When AURORA_VIEWPORT_NATIVE is used, GXSetTexCopySrc/GXSetTexCopyDst will use native framebuffer resolution.
  */
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
+// Squeeze guest viewports wider than logicalWidth (in GX logical units) back to that width, for
+// a game whose widened canvas asks for a viewport past its frame. 0 turns it off (the default).
+void AuroraSetWideViewportLimit(float logicalWidth);
+// Scale the x row of every perspective projection (1 = off), to widen a 3D view at a wider aspect.
+void AuroraSetPerspectiveXScale(float scale);
 
 /**
  * Retrieves the current content framebuffer size.

@@ -57,7 +57,7 @@ bool Bloom() noexcept; // applies when the next scene renderer is created
 void SetBloom(bool enabled) noexcept;
 bool ShowFps() noexcept;
 void SetShowFps(bool show) noexcept;
-// NSMBW aspect ratio presets (16:9, 4:3 letterboxed). Saved as [video] aspect_ratio; applies
+// NSMBW aspect ratio presets (16:9, 21:9, 4:3 letterboxed). Saved as [video] aspect_ratio; applies
 // after a restart. AspectIndex() is -1 for a saved ratio that is not a preset (a custom "w:h").
 int AspectCount() noexcept;
 const char* AspectLabel(int index) noexcept;

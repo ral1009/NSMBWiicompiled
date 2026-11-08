@@ -313,6 +313,21 @@ void NsmbwWatchWrite() {
     last = cur;
 }
 
+// NSMBW_LOG_BGPARAM=1: once a second, the level's visible rectangle in world units
+// (dBgParameter_c::ms_Instance_p at 0x8042A0E0; mPos at +0x38, mSize at +0x40, per the decomp's
+// d_bg_parameter.hpp). For the ultrawide work: this is what the game's actor spawning uses as
+// "the screen".
+void NsmbwLogBgParam() {
+    static const bool enabled = AURORA_ENV("NSMBW_LOG_BGPARAM") != nullptr;
+    if (!enabled || g_nsmbwCurrentViTick % 60u != 0u) return;
+    uint32_t p = 0;
+    if (!Memory::TryRead32(0x8042A0E0u, p) || p == 0 || !Memory::Contains(p, 0x80)) return;
+    std::fprintf(stderr, "[nsmbw][bgparam] tick %u scene %u inst=%08X pos=(%.3f,%.3f) size=(%.3f,%.3f) m48=%.3f\n",
+                 g_nsmbwCurrentViTick, g_nsmbwCurrentSceneProfile, p, Memory::ReadFloat32(p + 0x38),
+                 Memory::ReadFloat32(p + 0x3C), Memory::ReadFloat32(p + 0x40), Memory::ReadFloat32(p + 0x44),
+                 Memory::ReadFloat32(p + 0x48));
+}
+
 // NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad): experiment for
 // "let player 1 pick any character". Writes daPyMng_c::mPlayerType[0] (0x80355160, a u32 enum per
 // player; syms.txt) while the world map is up, and nowhere else, so whatever the level shows was
@@ -339,6 +354,7 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
     NsmbwDiagWatch();
     NsmbwDebugP1Character();
     NsmbwWatchWrite();
+    NsmbwLogBgParam();
     NsmbwDumpScnObjs();
     ctx->gpr[3] = ::Memory::Read32(0x8042AB4Cu);
     g_nsmbwCurrentViTick = ctx->gpr[3];

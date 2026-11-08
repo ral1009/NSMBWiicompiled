@@ -38,6 +38,20 @@ void GXInsertDebugMarker(const char* label) {
   GXWriteString(label);
 }
 
+namespace aurora::gx::fifo {
+void set_wide_viewport_limit(float limit);
+void set_perspective_x_scale(float scale);
+}
+
+// See command_processor.cpp: perspective projections' x row is scaled by `scale` (1 = off).
+void AuroraSetPerspectiveXScale(float scale) { aurora::gx::fifo::set_perspective_x_scale(scale); }
+
+// See command_processor.cpp: viewports wider than `logicalWidth` are squeezed to it (0 = off).
+void AuroraSetWideViewportLimit(float logicalWidth) {
+  // Set once at startup, before any guest draw, so no drain is needed (and none is safe yet).
+  aurora::gx::fifo::set_wide_viewport_limit(logicalWidth);
+}
+
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy) {
   const bool changed = g_gxState.viewportPolicy != policy;
   if (changed) {

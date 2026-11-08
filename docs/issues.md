@@ -773,6 +773,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: portable copy with a fake 200-byte save made one backup, "1 kept". Not tested: the identical-skip, the 10-file rotation, or a real save.
 - Scope: General.
 
+### 21:9 stretched the world, then the HUD, then wipes stopped short
+- Symptom: with the 16:9 canvas widened to 1092, the world and the HUD were stretched sideways (the developer: "Don't just stretch the game"; castle 32% wider than tall vs 16:9). After the world was fixed, HUD icons were still stretched, and the Bowser-face wipe left 32 px at each side.
+- Root cause: the canvas table moves only some layout maths. The level view comes from the base view width 0x8042D058 (408.70) via `mVideo::create` and `dBg_c`; HUD panes are counter-shrunk by a 19/26 constant per layout class; the faders have their own 16:9 constants. All were still at their 16:9 values.
+- Fix (`runtime/src/product/nsmbw_product.cpp` ApplyAspectSetting, `aurora-main/lib/gx/command_processor.cpp` + `AuroraSetWideViewportLimit`): widen each constant by the aspect ratio before the game boots, and squeeze the game's over-wide 3D viewport back to 640.
+- Verified: captures at 21:9 of the title, map, 1-1 (running), pause menu; ? block square, HUD icons round; 16:9 unchanged. The world map also needed a perspective x-scale (it was still stretched, developer's screenshot). Still open (21:9 stays experimental): tile pop-in at the sides, menu backgrounds narrower than the screen, the end of the wipe, the title's ground edge - docs/futureplans.md 1b.
+- Scope: NSMBW-specific (addresses). The class is general: a widescreen hack has to find every place a game hard-codes its screen width, not just the canvas record.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
