@@ -94,26 +94,27 @@ namespace {
 //     project confirms what IOS NSMBW actually boots under) and a precisely-tuned MEM1 arena hi
 //     (reuses the same 0x817F0000 ceiling used for the stack pointer elsewhere in this file,
 //     which is conservative but not derived from NSMBW's own arena-init code).
-// ULTRAWIDE SPIKE (2026-11-07): NSMBW_ULTRAWIDE_TEST=<w>:<h> (e.g. 21:9) widens the game's 16:9
-// canvas. EGG::Screen::sTVModeInfo (0x80350820, 12 bytes per mode: u16 width, u16 height, two
+// The aspect-ratio setting (RuntimeConfigFile::RunningAspect: [video] aspect_ratio, or the old
+// `widescreen` flag). For any ratio other than 16:9 and 4:3 it rewrites the game's 16:9 canvas
+// width. EGG::Screen::sTVModeInfo (0x80350820, 12 bytes per mode: u16 width, u16 height, two
 // floats; mode 1 = 16:9 = 832x456 in the PAL DOL) is what the game reads for its 3D projection
-// width and, in d_2d/m_2d, for scaling its HUD layouts. This is the same idea as MKW's
-// dynamic_aspect.cpp (it rewrites that game's EGG::Screen records). Written once after the DOL's
-// data is loaded and before the game's m3d::create reads it (SetTVMode, 0x802D1D90). The present
-// aspect lock below is set to match. Experiment only; not a user setting yet.
-int g_ultrawideA = 0, g_ultrawideB = 0;
-void ApplyUltrawideTest() {
-    const char* spec = AURORA_ENV("NSMBW_ULTRAWIDE_TEST");
-    if (spec == nullptr || std::sscanf(spec, "%d:%d", &g_ultrawideA, &g_ultrawideB) != 2 || g_ultrawideA <= 0 ||
-        g_ultrawideB <= 0) {
-        g_ultrawideA = g_ultrawideB = 0;
+// width and, in d_2d/m_2d, for scaling its HUD layouts. Same idea as MKW's dynamic_aspect.cpp
+// (it rewrites that game's EGG::Screen records). Written once after the DOL's data is loaded and
+// before the game's m3d::create reads it (SetTVMode, 0x802D1D90); the present aspect lock
+// (InitializeAuroraWindow) is set to the same ratio. 4:3 is the game's own mode and needs no
+// rewrite. Seen working at 21:9 on the title, the world map and the start of 1-1 (2026-11-07);
+// edge pop-in, fades and menus are untested (docs/futureplans.md 1b).
+void ApplyAspectSetting() {
+    const auto& aspect = RuntimeConfigFile::RunningAspect();
+    if (aspect.fourThree || aspect.num * 9 == aspect.den * 16) {
+        std::printf("[nsmbw] Aspect ratio %s (game's own %s mode)\n", aspect.text.c_str(),
+                    aspect.fourThree ? "4:3" : "16:9");
         return;
     }
     constexpr uint32_t kTvModeInfo169Width = 0x80350820u + 12u;  // mode 1 (16:9), u16 width
-    const double width = 832.0 * (static_cast<double>(g_ultrawideA) / g_ultrawideB) / (16.0 / 9.0);
+    const double width = 832.0 * (static_cast<double>(aspect.num) / aspect.den) / (16.0 / 9.0);
     Memory::Write16(kTvModeInfo169Width, static_cast<uint16_t>(std::lround(width)));
-    std::printf("[nsmbw] ULTRAWIDE TEST %d:%d: 16:9 canvas width 832 -> %ld\n", g_ultrawideA, g_ultrawideB,
-                std::lround(width));
+    std::printf("[nsmbw] Aspect ratio %s: 16:9 canvas width 832 -> %ld\n", aspect.text.c_str(), std::lround(width));
 }
 
 void SeedLowMemDefaults() {
@@ -198,7 +199,7 @@ void SeedLowMemDefaults() {
         seeded++;
     }
     std::printf("[nsmbw] Seeded %d low-memory OS default(s).\n", seeded);
-    ApplyUltrawideTest();
+    ApplyAspectSetting();
 }
 
 constexpr uint32_t kNsmbwEntryAddress = 0x80004050u;
@@ -426,15 +427,10 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
     // renders an anamorphic frame into the same 640-wide XFB. Without a present-aspect lock the
     // presenter fits that XFB as 4:3, horizontally squeezing the scene inside pillarboxes.
     if (outInfo.window != nullptr) {
-        // 4:3 needs the lock too (2026-11-07): left unlocked, a 4:3 frame (widescreen = false) was
-        // shown stretched into a 16:9-shaped box in a 640x480 window (screenshot, t43 run).
-        if (g_ultrawideA > 0) {
-            VILockAspectRatio(g_ultrawideA, g_ultrawideB);
-        } else if (RuntimeConfigFile::WidescreenEnabled(true)) {
-            VILockAspectRatio(16, 9);
-        } else {
-            VILockAspectRatio(4, 3);
-        }
+        // Present at the chosen ratio (4:3 included, so a 4:3 frame is not fitted as 16:9). The
+        // black bars seen in the game's 4:3 mode are its own letterbox, not this lock.
+        const auto& aspect = RuntimeConfigFile::RunningAspect();
+        VILockAspectRatio(aspect.num, aspect.den);
     }
     return outInfo.window != nullptr;
 }

@@ -48,7 +48,7 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 
 **Save** in that world-map menu always does a full save and lets you keep playing, at any point in the game. The original only offers Quick Save, which quits to the title screen, until you beat the final boss.
 
-- **Graphics:** windowed, borderless or fullscreen; resolution from native (528p) up to 6K; frame interpolation; HD textures; bloom
+- **Graphics:** windowed, borderless or fullscreen; resolution from native (528p) up to 6K; aspect ratio (16:9, 21:9 ultrawide, or the game's own letterboxed 4:3); frame interpolation; HD textures; bloom
 - **Audio:** separate volumes for music, sound effects and menu sounds
 - **Controls:** pick which controller each player uses, and rebind any button, including to combinations such as L + R
 - **Advanced:** FPS counter and a few performance switches
@@ -101,6 +101,7 @@ Defaults; change them in **Options → Controls**.
 
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
+- **Aspect ratio changes apply after a restart.** 21:9 widens the view and the HUD moves to the screen edges, but it has only been checked on the title, the world map and the start of level 1-1: objects may appear late at the edges, and fades may not cover the full width. 4:3 is the game's own mode, which has black bars above and below. Ratios narrower than 16:9 (such as 16:10) and wider than about 21:9 are not supported yet; set `aspect_ratio` in Config.toml for other wide ratios.
 - **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
 - Only the PAL disc, revision 1, is supported.

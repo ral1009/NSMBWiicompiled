@@ -44,9 +44,6 @@ extern "C" int g_gxFrameCount;
 
 // Defined in runtime/src/hle/audio/ax_mix.cpp. That header is private to the HLE
 // directory and is not on this target's include path.
-// hle/sc.cpp: the aspect ratio this run started with (0 = 4:3, 1 = 16:9).
-extern "C" uint32_t SCGetAspectRatio_HLE();
-
 namespace AxDspHle {
 void SetMixWorkerEnabled(bool enabled);
 }
@@ -1108,11 +1105,34 @@ void SetShowFps(bool show) noexcept {
     RuntimeConfigFile::SetShowFps(show);
 }
 
-bool Widescreen() noexcept { return RuntimeConfigFile::WidescreenEnabled(true); }
-void SetWidescreen(bool wide) noexcept { RuntimeConfigFile::SetWidescreen(wide); }
-bool WidescreenNeedsRestart() noexcept {
-    // SCGetAspectRatio_HLE (hle/sc.cpp) holds the ratio this run started with; 1 = 16:9.
-    return (SCGetAspectRatio_HLE() != 0) != Widescreen();
+namespace {
+struct AspectChoice {
+    const char* label;
+    const char* text;
+};
+// No 16:10 preset: ratios narrower than 16:9 are not supported yet (see ParseAspect).
+constexpr std::array<AspectChoice, 3> kAspects = {{
+    {"16:9", "16:9"}, {"21:9 (ultrawide)", "21:9"}, {"4:3 (letterboxed)", "4:3"},
+}};
+} // namespace
+
+int AspectCount() noexcept { return static_cast<int>(kAspects.size()); }
+const char* AspectLabel(int index) noexcept {
+    return index >= 0 && index < AspectCount() ? kAspects[static_cast<size_t>(index)].label : "Custom";
+}
+int AspectIndex() noexcept {
+    const std::string saved = RuntimeConfigFile::ParseAspect(RuntimeConfigFile::AspectText()).text;
+    for (int i = 0; i < AspectCount(); ++i) {
+        if (saved == RuntimeConfigFile::ParseAspect(kAspects[static_cast<size_t>(i)].text).text) return i;
+    }
+    return -1;
+}
+void SetAspectIndex(int index) noexcept {
+    if (index >= 0 && index < AspectCount()) RuntimeConfigFile::SetAspectRatio(kAspects[static_cast<size_t>(index)].text);
+}
+bool AspectNeedsRestart() noexcept {
+    // RunningAspect() (runtime_config.h) is what this run started with.
+    return RuntimeConfigFile::ParseAspect(RuntimeConfigFile::AspectText()).text != RuntimeConfigFile::RunningAspect().text;
 }
 
 bool HdTextures() noexcept { return g_textureReplacements; }

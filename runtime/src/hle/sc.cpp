@@ -39,8 +39,9 @@ extern "C" uint32_t SCGetAspectRatio_HLE()
     // constructed. If the F10 "Aspect ratio" option changed the config mid-session, new objects
     // would be built for one ratio and the screen for the other. So a change applies after a
     // restart (2026-11-07). settings_overlay compares the saved value with this one.
-    static const uint32_t runningAspect = RuntimeConfigFile::WidescreenEnabled(true) ? 1u : 0u;
-    return runningAspect;
+    // 0 = the game's 4:3 mode (a letterboxed view), 1 = its 16:9 mode, which every other aspect
+    // ratio uses with a widened or narrowed canvas (nsmbw_product.cpp, ApplyAspectSetting).
+    return RuntimeConfigFile::RunningAspect().fourThree ? 0u : 1u;
 }
 
 PPC_NATIVE_OVERRIDE(801B1BE4, SCGetAspectRatio_HLE, uint32_t, (), ());

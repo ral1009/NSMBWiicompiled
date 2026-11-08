@@ -24,12 +24,14 @@
 #include <windows.h>
 #include <shlobj.h>
 #else
+#include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
 #endif
 
 struct RuntimeUserConfig {
     std::optional<bool> widescreen;
+    std::optional<std::string> aspectRatio; // [video] aspect_ratio = "16:9" | "4:3" | "21:9" | "<w>:<h>" (wider than 16:9)
     std::optional<int32_t> windowPosX;
     std::optional<int32_t> windowPosY;
     std::optional<uint32_t> windowWidth;
@@ -389,6 +391,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
 #endif
 
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
+    config.aspectRatio = FindConfigValue<std::string>(document, "video", "aspect_ratio");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
     config.windowPosY = FindConfigInt(document, "video", "window_y");
     if (auto value = FindConfigUint(document, "video", "window_width"); value && *value != 0) {
@@ -639,6 +642,72 @@ inline bool SetTextureReplacements(bool value) {
 inline bool SetWidescreen(bool value) {
     Mutable().widescreen = value;
     return WriteSetting("video", "widescreen", value ? "true" : "false");
+}
+
+// NSMBW's aspect ratio (2026-11-07). The saved text is [video] aspect_ratio ("16:9", "4:3",
+// "16:10", "21:9", or any "<w>:<h>"); when it is absent the old `widescreen` flag decides (true =
+// 16:9, false = 4:3), so existing config files keep working. NSMBW_ASPECT=<w>:<h> overrides it for
+// a test run. "4:3" means the game's own 4:3 mode (a letterboxed 3D view); every other ratio is
+// the game's 16:9 mode with its canvas widened or narrowed to that ratio.
+struct AspectSetting {
+    int num = 16;
+    int den = 9;
+    bool fourThree = false;
+    std::string text = "16:9";
+};
+
+inline AspectSetting ParseAspect(const std::string& text) {
+    AspectSetting out;
+    int a = 0, b = 0;
+    if (std::sscanf(text.c_str(), "%d:%d", &a, &b) != 2 || a <= 0 || b <= 0) {
+        return out; // unreadable: keep 16:9
+    }
+    const double ratio = static_cast<double>(a) / b;
+    const bool exactFourThree = (a * 3 == b * 4);
+    // Anything narrower than 16:9 other than exactly 4:3 is not supported yet: shrinking the game's
+    // canvas below 832 also shrinks its render viewport (16:10 = canvas 749 gave a viewport 576
+    // wide in a 640-wide frame, so the picture was left-aligned with black on the right; seen
+    // 2026-11-07), so it needs its own handling. 16:10 screens use 16:9 with thin bars for now.
+    // Above about 21:9 (2.40) is refused: 32:9 showed a visible seam in the title backdrop and
+    // characters cut off at the right edge (seen 2026-11-07), probably the 640-wide render buffer
+    // being asked to hold a 1664-unit canvas. 21:9 (canvas 1092) looked right on the title, the
+    // world map and the start of 1-1.
+    if (!exactFourThree && (ratio < 16.0 / 9.0 - 0.01 || ratio > 2.40)) {
+        return out;
+    }
+    out.num = a;
+    out.den = b;
+    out.text = std::to_string(a) + ":" + std::to_string(b);
+    out.fourThree = (a * 3 == b * 4);
+    return out;
+}
+
+// The saved choice as text (what the F10 menu edits).
+inline std::string AspectText() {
+    if (const char* env = std::getenv("NSMBW_ASPECT"); env != nullptr && *env != '\0') {
+        return env;
+    }
+    const auto& config = Get();
+    if (config.aspectRatio && !config.aspectRatio->empty()) {
+        return *config.aspectRatio;
+    }
+    return config.widescreen.value_or(true) ? "16:9" : "4:3";
+}
+
+// The choice this run started with: fixed at the first call (during boot), because the game reads
+// the ratio at boot and as it builds objects, so a later change applies after a restart.
+inline const AspectSetting& RunningAspect() {
+    static const AspectSetting running = ParseAspect(AspectText());
+    return running;
+}
+
+inline bool SetAspectRatio(const std::string& text) {
+    const AspectSetting parsed = ParseAspect(text);
+    Mutable().aspectRatio = parsed.text;
+    Mutable().widescreen = !parsed.fourThree; // keeps the old flag meaningful for older builds
+    const bool wroteAspect = WriteSetting("video", "aspect_ratio", FormatString(parsed.text));
+    const bool wroteFlag = WriteSetting("video", "widescreen", parsed.fourThree ? "false" : "true");
+    return wroteAspect && wroteFlag;
 }
 
 inline bool SetShowFps(bool value) {

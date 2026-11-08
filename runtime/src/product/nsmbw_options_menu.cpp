@@ -102,11 +102,20 @@ std::vector<Row> BuildRows(int tab) {
         // 4:3 is the game's own 4:3 mode (SCGetAspectRatio answers 0), for CRTs and 4:3 screens. That
         // mode letterboxes the 3D view into a 640x352 strip (the game's own viewport, per
         // NSMBW_LOG_VIEWPORT), so the label says so; a full-screen 4:3 needs the view-extent work
-        // in docs/futureplans.md. The
-        // game reads the ratio at boot and as it builds objects, so a change applies after a restart.
-        rows.push_back({"Aspect ratio", Kind::Picker, {"16:9", "4:3 (letterboxed)"}, settings::Widescreen() ? 0 : 1,
-                        [](int v) { settings::SetWidescreen(v == 0); }, {},
-                        settings::WidescreenNeedsRestart() ? "Applies after a restart" : ""});
+        // in docs/futureplans.md. 16:10 and 21:9 keep the game's 16:9 mode and widen or narrow its
+        // canvas (nsmbw_product.cpp, ApplyAspectSetting). The game reads the ratio at boot and as it
+        // builds objects, so a change applies after a restart; the note is always shown (the rows
+        // are built once per tab visit, so a note computed from "has it changed" would be stale).
+        Row aspect{"Aspect ratio", Kind::Picker};
+        for (int i = 0; i < settings::AspectCount(); ++i) aspect.options.push_back(settings::AspectLabel(i));
+        aspect.value = settings::AspectIndex();
+        if (aspect.value < 0) {
+            aspect.options.push_back("Custom");
+            aspect.value = int(aspect.options.size()) - 1;
+        }
+        aspect.set = [](int v) { settings::SetAspectIndex(v); };
+        aspect.note = "Applies after a restart";
+        rows.push_back(std::move(aspect));
         rows.push_back({"Frame interpolation", Kind::Picker, {"Off", "120 fps", "180 fps"}, settings::FrameInterpolation(),
                         [](int v) { settings::SetFrameInterpolation(v); }});
         rows.push_back({"HD texture pack", Kind::Toggle, {}, settings::HdTextures() ? 1 : 0,
