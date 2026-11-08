@@ -664,6 +664,13 @@ inline AspectSetting ParseAspect(const std::string& text) {
     }
     const double ratio = static_cast<double>(a) / b;
     const bool exactFourThree = (a * 3 == b * 4);
+    // Ratios other than 16:9 and 4:3 are disabled unless NSMBW_EXPERIMENTAL_ASPECT is set: at 21:9
+    // the HUD moved to the wider edges but the 3D world was only STRETCHED sideways (the level's
+    // projection is unchanged and its viewport grows to 840 px, measured 2026-11-07), not widened.
+    // Until the world's view is widened for real, only the game's own 16:9 and 4:3 are offered.
+    if (!exactFourThree && a * 9 != b * 16 && std::getenv("NSMBW_EXPERIMENTAL_ASPECT") == nullptr) {
+        return out;
+    }
     // Anything narrower than 16:9 other than exactly 4:3 is not supported yet: shrinking the game's
     // canvas below 832 also shrinks its render viewport (16:10 = canvas 749 gave a viewport 576
     // wide in a 640-wide frame, so the picture was left-aligned with black on the right; seen
