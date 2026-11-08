@@ -532,6 +532,25 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
   return false;
 }
 
+// EXPERIMENT (NSMBW ultrawide, 2026-11-07): AURORA_WIDE_HORPLUS=1. NSMBW asks for a viewport
+// wider than its 640-unit frame (840 at 21:9) when its 16:9 canvas is widened, but keeps the same
+// projection, so the 3D world came out stretched. Here such a viewport is squeezed back to 640
+// and every projection's x row is scaled by the same factor, so the extra width shows more world
+// instead of stretching it. Draws only - the game's own culling is unchanged (that is what this
+// experiment is meant to show).
+static float g_wideXScale = 1.0f;
+static bool wide_horplus_enabled() {
+  static const bool enabled = AURORA_ENV("AURORA_WIDE_HORPLUS") != nullptr;
+  return enabled;
+}
+static void scale_projection_x(float factor) {
+  auto& proj = g_gxState.proj;
+  proj.m0[0] *= factor;
+  proj.m0[1] *= factor;
+  proj.m0[2] *= factor;
+  proj.m0[3] *= factor;
+}
+
 static void apply_xf_viewport() {
   const auto& vp = g_gxState.xfViewport;
   const f32 sx = vp[0];
@@ -569,6 +588,22 @@ static void apply_xf_viewport() {
       std::fflush(stderr);
     }
   }
+  if (wide_horplus_enabled()) {
+    gfx::Viewport squeezed = lv;
+    float k = 1.0f;
+    if (lv.width > 641.0f) {
+      k = 640.0f / lv.width;
+      squeezed.left = lv.left * k;
+      squeezed.width = 640.0f;
+    }
+    if (k != g_wideXScale) {
+      scale_projection_x(k / g_wideXScale);
+      g_wideXScale = k;
+      g_gxState.stateDirty = true;
+    }
+    set_logical_viewport(squeezed);
+    return;
+  }
   set_logical_viewport(lv);
 }
 
@@ -589,6 +624,9 @@ static void apply_xf_projection() {
     proj.m0[2] = raw[1];
     proj.m1[2] = raw[3];
     proj.m3[2] = -1.0f;
+  }
+  if (wide_horplus_enabled() && g_wideXScale != 1.0f) {
+    scale_projection_x(g_wideXScale);
   }
 
   g_gxState.stateDirty = true;
@@ -2509,7 +2547,7 @@ if (armedDraw || (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint
     const auto& p = g_gxState.proj;
     const auto& vp = g_gxState.logicalViewport;
     const auto& sc = g_gxState.logicalScissor;
-    std::fprintf(stderr, "[NSMBW_TEXGEN]   projType=%d proj=[%.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f] vp=(%.0f,%.0f %.0fx%.0f) scissor=(%d,%d %dx%d)\n",
+    std::fprintf(stderr, "[NSMBW_TEXGEN]   projType=%d proj=[%.7g %.7g %.7g %.7g | %.7g %.7g %.7g %.7g | %.7g %.7g %.7g %.7g | %.7g %.7g %.7g %.7g] vp=(%.0f,%.0f %.0fx%.0f) scissor=(%d,%d %dx%d)\n",
                  static_cast<int>(g_gxState.projType), p.m0.x(), p.m0.y(), p.m0.z(), p.m0.w(), p.m1.x(), p.m1.y(), p.m1.z(), p.m1.w(),
                  p.m2.x(), p.m2.y(), p.m2.z(), p.m2.w(), p.m3.x(), p.m3.y(), p.m3.z(), p.m3.w(),
                  vp.left, vp.top, vp.width, vp.height, sc.x, sc.y, sc.width, sc.height);

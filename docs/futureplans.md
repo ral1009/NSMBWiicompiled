@@ -62,7 +62,13 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
   2. The game's culling must see the same wider extent, or objects in the new side bands will be missing. A GX-level shortcut (scale the projection's x term and clamp the viewport to 640) would widen only what is drawn, not what is culled, so it is not enough on its own.
   3. Fades and wipes (`m_wipe_fader.cpp`, `m_color_fader.cpp`) use fixed 16:9 widths and need the same treatment.
 - **Same idea for full-screen 4:3 (later):** the 4:3 letterbox is the game's camera viewport (`top=52 height=352`), set by its scene code (`ScnRoot` -> camera viewport -> `GXSetViewport`). Full-screen 4:3 means more vertical view (Vert+) rather than stretching, with the same culling question.
-- **Next:** find where the camera computes its 500-unit width (start from the viewport-setting call chain `0x80259438` -> `0x80258E20` and the `EGG::Screen` data computation at `0x802D15D0`), then widen it and check culling by scrolling a level.
+- **Exact camera numbers (2026-11-07, `%.7g` projection log):** the level view is exactly 272 units tall (`proj[1][1]` = 2/272) and 272 x 832/456 = 496.28 wide (`proj[0][0]` = 0.004029955), so the width is the height times the 16:9 canvas aspect.
+- **Where it is not:** widening the canvas table, the DOL's three small-data 832.0 floats (0x8042C294, 0x8042C440, 0x8042CF94) and d_basesNP's 832.0 (next to 456 / 0.3 / 2750) all left the level projection unchanged. A RAM scan (MEM1 + MEM2) during the level found no stored edges (+-248.14 / +-136) and no stored copy of the matrix, so the game appears to build the projection in a temporary each frame. Still unknown where its 832/456 comes from.
+- **A working shortcut, with one problem (`AURORA_WIDE_HORPLUS=1`, experiment):** in `aurora-main/lib/gx/command_processor.cpp`, a viewport wider than 640 (840 at 21:9) is squeezed back to 640 and every projection's x row is scaled by the same factor. Result at 21:9 (captures `hp_*`):
+  - World map: more of the map on both sides, nothing stretched (round mushrooms stay round).
+  - Level 1-1: more of the level on both sides (the next ? blocks, the blue pipe, the slope), castle back to its 16:9 proportions.
+  - **But the ground is missing in the new band at the bottom-left**: the game only draws the tiles it thinks are on screen, using the 16:9 width. That is the culling problem predicted above, now seen. Fixing it means widening the range the tile renderer (and actor culling) treat as visible.
+- **Next:** find the tile renderer's visible-range calculation (dBg) and widen it by the same factor; then check actors and effects popping in at the edges while scrolling; then fades and wipes.
 
 ## 1. More aspect ratios (target: v0.3.0)
 
