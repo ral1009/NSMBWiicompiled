@@ -1,4 +1,8 @@
-# NSMBWiicompiled
+<p align="center">
+  <img src="NSMBWRECOMPART.png" width="400" alt="New Super Mario Bros. Wiicompiled">
+</p>
+
+---
 
 **New Super Mario Bros. Wii as a native Windows game.** Play in high resolution and widescreen, at up to 180 fps, with keyboard or any gamepad, Dolphin HD texture packs and up to four players. No emulator needed.
 
@@ -134,8 +138,8 @@ You don't need to build anything to play. To build the port yourself or work on 
 ## Credits
 - [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the Mario Kart Wii recompilation this port is built on
 - [aurora](https://github.com/encounter/aurora), which draws the game's graphics on modern GPUs
-- The [NSMBW decompilation project](https://github.com/NSMBW-Community/NSMBW-Decomp), used as a reference
 - [Dolphin](https://github.com/dolphin-emu/dolphin)'s `DolphinTool`, which extracts your disc image (GPLv2+)
 - Button prompt art: [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0)
+- Repository art (Will be added to game): [POOTERMAN](https://www.deviantart.com/pooterman)
 
 This is a student project, made with AI assistance. Licensed under [GPL-3.0](LICENSE); third-party licenses are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
