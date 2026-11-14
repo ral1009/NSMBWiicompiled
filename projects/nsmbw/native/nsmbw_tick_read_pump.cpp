@@ -23,6 +23,7 @@
 #include "memory.h"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 // Keyboard input used to be polled here and injected as "just pressed" edges into
 // EGG::CoreController::downTrigger. Since 2026-09-20 real samples go through KPADRead instead
@@ -313,13 +314,14 @@ void NsmbwWatchWrite() {
     last = cur;
 }
 
-// NSMBW_LOG_BGPARAM=1: once a second, the level's visible rectangle in world units
+// NSMBW_LOG_BGPARAM=1 (or =<n> for every n ticks): once a second, the level's visible rectangle in world units
 // (dBgParameter_c::ms_Instance_p at 0x8042A0E0; mPos at +0x38, mSize at +0x40, per the decomp's
 // d_bg_parameter.hpp). For the ultrawide work: this is what the game's actor spawning uses as
 // "the screen".
 void NsmbwLogBgParam() {
     static const bool enabled = AURORA_ENV("NSMBW_LOG_BGPARAM") != nullptr;
-    if (!enabled || g_nsmbwCurrentViTick % 60u != 0u) return;
+    static const uint32_t every = [] { const char* v = AURORA_ENV("NSMBW_LOG_BGPARAM"); return v && std::atoi(v) > 1 ? uint32_t(std::atoi(v)) : 60u; }();
+    if (!enabled || g_nsmbwCurrentViTick % every != 0u) return;
     uint32_t p = 0;
     if (!Memory::TryRead32(0x8042A0E0u, p) || p == 0 || !Memory::Contains(p, 0x80)) return;
     std::fprintf(stderr, "[nsmbw][bgparam] tick %u scene %u inst=%08X pos=(%.3f,%.3f) size=(%.3f,%.3f) m48=%.3f\n",

@@ -156,6 +156,19 @@ void ApplyAspectSetting() {
                         c.addr, current);
         }
     }
+    // The BG tile drawer (0x80082740, next to dBgParameter_c's code; it loads the 1024x1024 tile
+    // texture through 0x8010AAC0) draws ceil(28 / zoom + 0.999) + 2 columns of 16-unit tiles from
+    // the view's left edge. 28.0 at 0x8042C1A4 (read only by that function) covers 448 units, just
+    // over the 408.7-unit 16:9 base view; at 21:9 the view is 1.31x wider, so the right-hand columns
+    // were never drawn and ground popped in as it scrolled (developer report, 2026-11-07). Scale the
+    // count with the view, plus one column of slack for the rounding.
+    constexpr uint32_t kTileColumnsConst = 0x8042C1A4u;
+    if (Memory::ReadFloat32(kTileColumnsConst) == 28.0f) {
+        Memory::WriteFloat32(kTileColumnsConst, std::ceil(28.0 * width / 832.0) + 1.0);
+    } else {
+        std::printf("[nsmbw] Aspect ratio %s: tile column count not found (read %.3f)\n", aspect.text.c_str(),
+                    Memory::ReadFloat32(kTileColumnsConst));
+    }
     constexpr uint32_t kViewWidthConst = 0x8042D058u;
     const float baseWidth = Memory::ReadFloat32(kViewWidthConst);
     if (baseWidth > 408.5f && baseWidth < 408.9f) {

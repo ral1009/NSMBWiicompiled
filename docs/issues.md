@@ -787,6 +787,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: captures of the file select and player count at 21:9 fill the width; the developer confirmed it on their screen.
 - Scope: NSMBW-specific (layout names, the 790-unit threshold).
 
+### 21:9 ground popped in at the right edge while scrolling
+- Symptom: at 21:9 the ground at the right edge appeared late as the level scrolled (developer: "the level is loading in ahead of me"); a capture showed the slope stopping in a hard vertical edge ~40 px from the right edge.
+- Root cause: the BG tile drawer (0x80082740) draws ceil(28 / zoom + 0.999) + 2 tile columns from the view's left edge; 28.0 (0x8042C1A4) is sized for the 16:9 view. Found by logging every GXLoadTexObj caller (the 1024x1024 tile texture is loaded via 0x8010AAC0, called only from 0x80082740) after RAM scans for a stored 16:9 width found nothing.
+- Fix (`runtime/src/product/nsmbw_product.cpp` ApplyAspectSetting): scale that constant with the view width (+1 column).
+- Verified: burst captures running right through 1-1 at 21:9; the ground reaches the right edge in every frame.
+- Scope: NSMBW-specific (address).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
