@@ -74,7 +74,20 @@ This writes `dist\NSMBWCompiled-v<version>-<commit>.zip` from the release build 
 - `wii_bootstrap\`, the files a fresh emulated NAND is seeded with
 - `PLAYING.txt`, setup instructions for the player
 
-Release builds ask for the disc image on first launch (`runtime/src/product/nsmbw_disc_setup.cpp`), then offer to install an HD texture pack; `NSMBW_SETUP_IMAGE=<rvz>` and `NSMBW_SETUP_TEXTURES=<dir>` script those dialogs. They have no console window and log to `nsmbw_data\NSMBWCompiled.log`, and they need an AVX2 CPU (the build targets `x86-64-v3`) and a D3D12 or Vulkan GPU. `package_nsmbw.ps1 -Private` builds the developer's own no-setup folder instead, which contains the game and must never be shared.
+Release builds ask for the disc image on first launch (`runtime/src/product/nsmbw_disc_setup.cpp`), then offer to install an HD texture pack; `NSMBW_SETUP_IMAGE=<rvz>` and `NSMBW_SETUP_TEXTURES=<dir>` script those dialogs. They have no console window and log to `nsmbw_data\NSMBWCompiled.log`, and they need a D3D12 or Vulkan GPU. The main exe needs an AVX2 CPU (it targets `x86-64-v3`); the compat exe below removes that requirement. `package_nsmbw.ps1 -Private` builds the developer's own no-setup folder instead, which contains the game and must never be shared.
+
+### CPUs without AVX2 (the compat exe)
+
+`-DMKW_HOST_ISA=v2` builds the same exe for `x86-64-v2` (SSE4.2: Intel Nehalem 2008+, AMD Bulldozer 2011+) instead of `x86-64-v3`. Configure it in its own folder with the same options as the build it pairs with, plus that flag: `build_release_compat\` next to `build_release\`, or `build_compat\` next to `build_nsmbw\`:
+
+```
+cmake -S runtime -B build_release_compat -G Ninja -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_NSMBW=ON -DNSMBW_RELEASE=ON -DMKW_HOST_ISA=v2 -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build_release_compat --target NSMBWCompiled
+```
+
+`package_nsmbw.ps1` ships it as `NSMBWCompiled-compat.exe` when it finds it, and warns when it doesn't or when the two exes were built more than an hour apart. Players never choose: on a CPU without AVX2 the main exe starts the `-compat.exe` next to it with the same arguments and waits for it (`runtime/src/host_cpu_baseline.cpp`). `MKW_FORCE_UNSUPPORTED_CPU=1` fakes a failed CPU check to test that hand-off; `MKW_NO_COMPAT_FALLBACK=1` shows the error box instead.
+
+The compat exe computes the same float results. PowerPC's fused multiply-add (one rounding) is emulated exactly with SSE2 (`runtime/include/isa/ppc_isa_fma_compat.h`), not as a multiply followed by an add, which rounds twice. `projects/nsmbw/tools/test_fma_compat.cpp` checks it bit for bit against the FMA instruction (build line at its top; needs an FMA CPU). Double-precision multiply-adds call the C library's exact software `fma` in that build.
 
 Test a package from a folder **outside** this repo. When a file is missing next to the exe, the runtime looks for it in `runtime/assets/` by walking up from the working directory, so inside the checkout a missing file goes unnoticed.
 

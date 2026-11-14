@@ -146,7 +146,7 @@ if(MKW_BUILD_NSMBW)
         target_link_libraries(nsmbw_runtime_common PRIVATE mkw::libco)
     endif()
 
-    # PublicProducts.cmake applies -march=x86-64-v3 (AVX2/FMA/BMI2) to its own targets in one
+    # PublicProducts.cmake applies MKW_HOST_MARCH_FLAG (-march=x86-64-v3 by default, v2 for the compat exe) to its own targets in one
     # foreach right at the end of that file - which has already run by the time this file is
     # included, so it never sees these targets. Without it, the always-inline x86 SIMD intrinsics
     # in runtime/include/isa/ppc_isa_float.h and ppc_isa_quantized.h (_mm_fmadd_ps, _mm_shuffle_epi8)
@@ -154,7 +154,7 @@ if(MKW_BUILD_NSMBW)
     # was compiled without those target features enabled.
     foreach(nsmbw_target IN ITEMS nsmbw_translated nsmbw_native nsmbw_data_init nsmbw_runtime_common)
         if(TARGET ${nsmbw_target})
-            target_compile_options(${nsmbw_target} PRIVATE -march=x86-64-v3)
+            target_compile_options(${nsmbw_target} PRIVATE ${MKW_HOST_MARCH_FLAG})
         endif()
     endforeach()
 
@@ -199,7 +199,7 @@ if(MKW_BUILD_NSMBW)
         target_link_options(NSMBWCompiled PRIVATE -mwindows)
     endif()
     target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
-    target_compile_options(NSMBWCompiled PRIVATE -march=x86-64-v3 -g)
+    target_compile_options(NSMBWCompiled PRIVATE ${MKW_HOST_MARCH_FLAG} -g)
     # -g alone only affects compiling; the linker strips debug sections unless told to keep them.
     # Each translated guest call (MKW_STATIC_TRANSLATED_CALL/InvokeDirectCpu) is a real, nested
     # native C++ call - PPC call trees several dozen frames deep (seen repeatedly during NSMBW

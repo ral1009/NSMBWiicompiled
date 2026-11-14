@@ -794,9 +794,31 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: burst captures running right through 1-1 at 21:9; the ground reaches the right edge in every frame.
 - Scope: NSMBW-specific (address).
 
+## 2026-11-14 — CPUs without AVX2
+
+### The game could not start on a CPU without AVX2
+- Symptom: on any CPU older than Intel Haswell (2013) / AMD Excavator (2015), the exe showed "Unsupported Processor" and exited (README and PLAYING.txt listed AVX2 as a requirement).
+- Root cause: a build setting, not a game need. Upstream WiiCompiled compiles everything with `-march=x86-64-v3`, NSMBW's targets copied it, and `host_cpu_baseline.cpp` enforced it. The flag lets the compiler use AVX2/FMA/BMI anywhere, and 7 FMA intrinsics in `ppc_isa_float.h` (the paired-single madd family) needed it to compile.
+- Fix: `-DMKW_HOST_ISA=v2` (`runtime/CMakeLists.txt`, used by `PublicProducts.cmake` and `NsmbwProduct.cmake`) builds an `x86-64-v2` compat exe. `runtime/include/isa/ppc_isa_fma_compat.h` (new) emulates float fused multiply-add exactly with SSE2: the float product is exact in double, TwoSum recovers the add's rounding error, round-to-odd, then one rounding to float. `ppc_isa_float.h` picks it when `__FMA__` is not defined. The CPU check takes its feature list from the same level. On a failed check the v3 exe runs `<name>-compat.exe` from its folder with the same arguments, waits, and passes back the exit code. `package_nsmbw.ps1` ships the compat exe when one is built.
+- Verified:
+  - `projects/nsmbw/tools/test_fma_compat.cpp` (new): 320M lane results bit-identical to vfmaddps/vfmsubps, under FTZ/DAZ off/on, on random bit patterns and on generated near-tie cases. The only allowed difference is which NaN comes out when a and c are both NaN, which also varies per call site in the v3 build. The test does see errors: multiply-then-add was wrong on 75% of near-tie cases, and double without round-to-odd on about 47k of 20M.
+  - Hand-off tested with two probe exes (`MKW_FORCE_UNSUPPORTED_CPU=1`). The error message box itself was not triggered.
+  - `llvm-objdump` scan of the compat exe: no AVX/FMA/BMI/MOVBE/LZCNT in translated or runtime code (the v3 exe has 2.1M). What remains is zstd's runtime-dispatched `_bmi2` paths (source checked) and SDL's `...AVX2` blitters. About 700 instructions sit in stripped code in `webgpu_dawn.dll` / `dxcompiler.dll` / `dxil.dll`, not attributed.
+  - Speed: portable copy, 7 alternating 80 s self-test runs. Game-thread spare time on the map was v3 72.9% vs v2 73.3%, in the level 77.6% vs 78.7%. No measurable difference, but that only rules out a large slowdown on this CPU.
+- Not verified: no run on a real pre-AVX2 CPU or under Intel SDE.
+- Scope: General.
+
+### `msub` compat helper flipped the sign of a NaN addend (found in testing, before any use)
+- Symptom: `test_fma_compat` reported 2.7M NaN payload differences for msub, against 0.5M for madd.
+- Root cause: the first version negated b with a sign-bit XOR. vfmsubps returns a NaN b unchanged (measured with a probe).
+- Fix (`ppc_isa_fma_compat.h`): negate only the non-NaN lanes, the same rule as `PpcNegateNonNanLanesInline`.
+- Scope: General.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
+
+- Compat exe (2026-11-14): never run on a pre-AVX2 CPU. The ~700 above-v2 instructions in the prebuilt Dawn/DXC DLLs are assumed to be CPU-dispatched, not proven (Intel SDE `-snb` would settle it). Speed on old hardware is unmeasured. The release package has not been built with it yet.
 
 - Render-scale cap at 4x in `ResetPersistentStateForCleanRun` may read config before it is loaded (2026-09-26 entry); untested with 8x saved.
 - Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.

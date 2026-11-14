@@ -26,7 +26,11 @@ param(
     [string]$OutDir = "",
     [switch]$Private,
     [string]$DiscDir = "",        # -Private: extracted disc (sys\ + files\); default NSMBW-Files
-    [string]$TexturePackDir = ""  # -Private: folder holding the pack's SMN\; default build_nsmbw\nsmbw_data\texture_replacements
+    [string]$TexturePackDir = "", # -Private: folder holding the pack's SMN\; default build_nsmbw\nsmbw_data\texture_replacements
+    # The x86-64-v2 build for CPUs without AVX2 (configured like the main build plus
+    # -DMKW_HOST_ISA=v2). Shipped as NSMBWCompiled-compat.exe; the main exe starts it by itself
+    # on such a CPU (host_cpu_baseline.cpp). Default build_release_compat\, or build_compat\ for -Private.
+    [string]$CompatBuildDir = ""
 )
 $ErrorActionPreference = 'Stop'
 $tools = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -57,6 +61,19 @@ if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg -Confirm:$false }
 New-Item -ItemType Directory -Force $pkg | Out-Null
 Copy-Item (Join-Path $B 'NSMBWCompiled.exe'), (Join-Path $B 'dsp_coef.bin'), (Join-Path $B 'initial_pipeline_cache.db'), (Join-Path $B 'initial_texture_preload.txt') $pkg
 Get-ChildItem $B -Filter *.dll | Copy-Item -Destination $pkg
+# Optional: without it the package still works on AVX2 CPUs; older ones get the "unsupported
+# processor" box. Both exes use the same DLLs and data files, so only the exe is copied.
+if ($CompatBuildDir -eq "") { $CompatBuildDir = Join-Path $root $(if ($Private) { "build_compat" } else { "build_release_compat" }) }
+$compatExe = Join-Path $CompatBuildDir 'NSMBWCompiled.exe'
+if (Test-Path $compatExe) {
+    $gap = [Math]::Abs(((Get-Item $compatExe).LastWriteTime - (Get-Item (Join-Path $B 'NSMBWCompiled.exe')).LastWriteTime).TotalMinutes)
+    if ($gap -gt 60) {
+        Write-Warning ("the compat exe and the main exe were built {0:N0} minutes apart - rebuild both from the same commit" -f $gap)
+    }
+    Copy-Item $compatExe (Join-Path $pkg 'NSMBWCompiled-compat.exe')
+} else {
+    Write-Warning "no compat exe at $compatExe - CPUs without AVX2 will not run this package"
+}
 Copy-Item -Recurse (Join-Path $B 'wii_bootstrap') $pkg
 Copy-Item (Join-Path $tools 'PLAYING.txt') $pkg
 

@@ -21,6 +21,21 @@ endif()
 # aurora-main and its third-party tree stay unaffected.
 set(MKW_PROJECT_COMPILE_DEFINITIONS NOMINMAX)
 
+# Host CPU baseline for this project's own targets (runtime, translated shards, products; never
+# aurora or the third-party tree). v3 = AVX2/FMA/BMI2, Haswell 2013+ / Excavator 2015+, the
+# normal build. v2 = SSE4.2/SSSE3/POPCNT, the "compat" exe for CPUs without AVX2 (Sandy/Ivy
+# Bridge, AVX-less Pentiums and Celerons, AMD Bulldozer). v2 gets PowerPC's fused multiply-add
+# from the exact SSE2 emulation in include/isa/ppc_isa_fma_compat.h, so both builds compute the
+# same float results; it is slower, not less accurate. host_cpu_baseline.cpp checks the same level.
+set(MKW_HOST_ISA "v3" CACHE STRING "Host x86-64 microarchitecture level: v3 (AVX2) or v2 (compat)")
+set_property(CACHE MKW_HOST_ISA PROPERTY STRINGS v3 v2)
+if(NOT MKW_HOST_ISA MATCHES "^v[23]$")
+    message(FATAL_ERROR "MKW_HOST_ISA must be v3 or v2, got '${MKW_HOST_ISA}'")
+endif()
+set(MKW_HOST_MARCH_FLAG "-march=x86-64-${MKW_HOST_ISA}")
+string(SUBSTRING "${MKW_HOST_ISA}" 1 1 MKW_HOST_ISA_LEVEL)
+message(STATUS "Host CPU baseline: x86-64-${MKW_HOST_ISA}")
+
 set(CMAKE_CXX_STANDARD 17)
 
 # Declared before the vendored libraries so the third-party block below can

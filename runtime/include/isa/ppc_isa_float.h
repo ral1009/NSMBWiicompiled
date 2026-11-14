@@ -23,6 +23,7 @@
 
 #include "ppc_isa_config.h"
 #include "ppc_isa_context.h"
+#include "ppc_isa_fma_compat.h"
 
 #include <array>
 #include <cmath>
@@ -101,6 +102,37 @@ inline __m128 PpcBroadcastPs1Inline(double value)
 {
     const __m128 lanes = PpcPsToM128Inline(value);
     return _mm_shuffle_ps(lanes, lanes, _MM_SHUFFLE(0, 0, 0, 0));
+}
+
+// Fused float multiply-add for the paired-single family. The v3 exe has hardware FMA; the
+// compat (x86-64-v2) exe doesn't, and gets the exact SSE2 emulation instead - never a separate
+// mul and add, which rounds twice (see ppc_isa_fma_compat.h).
+inline __m128 PpcFmaddPsVecInline(__m128 a, __m128 c, __m128 b)
+{
+#if defined(__FMA__)
+    return _mm_fmadd_ps(a, c, b);
+#else
+    return PpcFmaddPairCompatInline(a, c, b);
+#endif
+}
+
+inline __m128 PpcFmsubPsVecInline(__m128 a, __m128 c, __m128 b)
+{
+#if defined(__FMA__)
+    return _mm_fmsub_ps(a, c, b);
+#else
+    return PpcFmsubPairCompatInline(a, c, b);
+#endif
+}
+
+inline float PpcFmaddFloatInline(float a, float c, float b)
+{
+#if defined(__FMA__)
+    return std::fma(a, c, b);
+#else
+    // Without -mfma, std::fma(float) is a call into the C library's software fmaf.
+    return PpcFmaddFloatCompatInline(a, c, b);
+#endif
 }
 
 inline __m128 PpcNegateNonNanLanesInline(__m128 value)
@@ -369,14 +401,14 @@ inline float PpcAccuratePsMaddLaneInline(float a, float c, float b)
     // explicit float FMA therefore matches Gekko's single rounding point;
     // multiplying and adding separately can differ by an ULP on ordinary
     // vector and matrix workloads.
-    return PpcFlushSingleForNiInline(std::fma(a, c, signedB));
+    return PpcFlushSingleForNiInline(PpcFmaddFloatInline(a, c, signedB));
 }
 
 template <bool Subtract>
 inline float PpcAccuratePsMaddLaneNoNiInline(float a, float c, float b)
 {
     const float signedB = Subtract ? -b : b;
-    return std::fma(a, c, signedB);
+    return PpcFmaddFloatInline(a, c, signedB);
 }
 
 template <bool Subtract>
@@ -487,7 +519,7 @@ inline double PPC_PsMulNoNiInline(double lhs, double rhs)
 
 inline double PPC_PsMsubInline(double multiplicand, double multiplier, double subtractor)
 {
-    return PpcM128ToPsInline(_mm_fmsub_ps(
+    return PpcM128ToPsInline(PpcFmsubPsVecInline(
         PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(subtractor)));
 }
 
@@ -498,7 +530,7 @@ inline double PPC_PsMsubNoNiInline(double multiplicand, double multiplier, doubl
 
 inline double PPC_PsMaddInline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
+    return PpcM128ToPsInline(PpcFmaddPsVecInline(
         PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(addend)));
 }
 
@@ -509,19 +541,19 @@ inline double PPC_PsMaddNoNiInline(double multiplicand, double multiplier, doubl
 
 inline double PPC_PsMadds0Inline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
+    return PpcM128ToPsInline(PpcFmaddPsVecInline(
         PpcPsToM128Inline(multiplicand), PpcBroadcastPs0Inline(multiplier), PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsMadds1Inline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
+    return PpcM128ToPsInline(PpcFmaddPsVecInline(
         PpcPsToM128Inline(multiplicand), PpcBroadcastPs1Inline(multiplier), PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsNmsubInline(double multiplicand, double multiplier, double subtractor)
 {
-    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_fmsub_ps(
+    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(PpcFmsubPsVecInline(
         PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(subtractor))));
 }
 
@@ -532,7 +564,7 @@ inline double PPC_PsNmsubNoNiInline(double multiplicand, double multiplier, doub
 
 inline double PPC_PsNmaddInline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_fmadd_ps(
+    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(PpcFmaddPsVecInline(
         PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(addend))));
 }
 

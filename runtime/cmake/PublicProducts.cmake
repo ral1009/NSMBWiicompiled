@@ -126,7 +126,7 @@ target_precompile_headers(mkw_runtime_common PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/
 mkw_apply_common_compile_options(mkw_runtime_common)
 
 # Host ISA guard. Everything in MKW_ALL_BUILD_TARGETS below is compiled with
-# -march=x86-64-v3; this object library deliberately is not, which
+# MKW_HOST_MARCH_FLAG (x86-64-v3 unless MKW_HOST_ISA=v2); this object library deliberately is not, which
 # is the whole point of keeping it out of mkw_runtime_common. It runs a CPUID
 # check from a C initializer so an unsupported machine gets a readable error
 # instead of an illegal-instruction crash. Excluded from the unity build and the
@@ -135,6 +135,8 @@ add_library(mkw_cpu_baseline OBJECT "${MKW_CPU_BASELINE_SOURCE}")
 target_compile_features(mkw_cpu_baseline PRIVATE cxx_std_17)
 set_target_properties(mkw_cpu_baseline PROPERTIES UNITY_BUILD OFF)
 target_compile_options(mkw_cpu_baseline PRIVATE -w)
+# Which feature list to require: the level the rest of the exe was compiled for.
+target_compile_definitions(mkw_cpu_baseline PRIVATE MKW_HOST_ISA_LEVEL=${MKW_HOST_ISA_LEVEL})
 
 if(NOT MKW_BASE_COMMON_SHARDS)
     message(FATAL_ERROR "Translator build graph contains no shared base shards")
@@ -303,6 +305,6 @@ set(MKW_ALL_BUILD_TARGETS
     mkw_retro_rewind_functions WiiCompiled RetroRewind)
 foreach(target IN LISTS MKW_ALL_BUILD_TARGETS)
     if(TARGET ${target})
-        target_compile_options(${target} PRIVATE -march=x86-64-v3)
+        target_compile_options(${target} PRIVATE ${MKW_HOST_MARCH_FLAG})
     endif()
 endforeach()

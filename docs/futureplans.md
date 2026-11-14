@@ -16,7 +16,7 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 | 4 | 4:3 mode as an F10 option | High: the game and our code already support it | Small to medium | **0.3.0** |
 | 5 | Swappable player 1 character | High: switch already works on the map | Medium (saves, results screen) | **0.3.0** |
 | 6 | Riivolution file mods | Medium-high: loader already in the shared runtime | Medium (wire into NSMBW, test with a real pack) | **0.3.0** |
-| 7 | No-AVX2 build | Medium: only 7 call sites need rewriting, but cannot be tested on a real old CPU here | Medium | **0.3.0** (as a separate build) |
+| 7 | No-AVX2 build | Built 2026-11-14 (compat exe, see section 2); not yet run on a pre-AVX2 CPU | Small now: ship and test | **0.3.0** (as a separate build) |
 | 8 | 16:10 and ultrawide (wider view) | Medium: the MKW code in this repo is a worked example; NSMBW's HUD and culling are the unknowns | Large | **0.3.0** for 16:10; ultrawide in 0.3.0 only if the spike below works, otherwise 0.4.0 |
 | 9 | 180 fps drop to ~40 fps on a fast PC | Unknown: needs the reporter's details | Unknown | **0.2.3** if the cause turns out small; otherwise 0.3.0 |
 | 10 | Rumble and gyro tilt | Medium-low: rumble goes through the Wii Remote motor calls, which are not bound | Medium | later (0.4.0) |
@@ -29,7 +29,7 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 ### What the repo investigation found
 
 - **CPU check already exists.** `runtime/src/host_cpu_baseline.cpp` runs before anything else and shows a message naming the missing instruction sets. The plan's "add a start-up check" step is already done; if we lower the requirement, update its list and message.
-- **AVX2 is a smaller problem than it looked.** The two instruction-set headers use only a handful of non-baseline instructions: `_mm_fmadd_ps` / `_mm_fmsub_ps` (FMA, 6 uses) and `_mm_shuffle_epi8` (SSSE3, 1 use) in `ppc_isa_float.h` and `ppc_isa_quantized.h`. Everything else in them is plain SSE2. The audio mixer (`runtime/src/hle/audio/ax_mix_kernels.h`) already has a non-AVX2 path behind `MKW_AX_MIX_AVX2`. The rest of the requirement is the `-march=x86-64-v3` flag itself, which lets the compiler use AVX2/BMI for all translated code. The cost of dropping it (slower translated code) can only be measured, not predicted.
+- **AVX2 is a smaller problem than it looked** (done 2026-11-14, see section 2). The two instruction-set headers use only a handful of non-baseline instructions: `_mm_fmadd_ps` / `_mm_fmsub_ps` (FMA, 6 uses) and `_mm_shuffle_epi8` (SSSE3, 1 use) in `ppc_isa_float.h` and `ppc_isa_quantized.h`. Everything else in them is plain SSE2. The audio mixer (`runtime/src/hle/audio/ax_mix_kernels.h`) already has a non-AVX2 path behind `MKW_AX_MIX_AVX2`. The rest of the requirement is the `-march=x86-64-v3` flag itself, which lets the compiler use AVX2/BMI for all translated code. The cost of dropping it (slower translated code) can only be measured, not predicted.
 - **4:3 already exists in the game.** NSMBW has native 4:3 and 16:9 modes (`EGG::Screen::TV_MODE_16_9`, `dGameCom::GetAspectRatio`, per the decomp). Our override of `SCGetAspectRatio` (`projects/nsmbw/native/nsmbw_sc_aspect_ratio.cpp`) already answers from the `widescreen` setting in Config.toml, and `nsmbw_product.cpp` locks the window to 16:9 when it is on. What is missing is an F10 option for it. Layouts and the wipe fader read the ratio when they are created, so a switch probably only takes effect on the next scene; not yet tested.
 - **The MKW project solved wider-than-16:9 already, in code we can reuse as a pattern.** `runtime/src/dynamic_aspect.cpp` and `runtime/src/hle/gx/gx_dynamic_aspect.h` rewrite the game's screen-size records so the view gets wider (Hor+) or taller (Vert+). NSMBW has the same kind of table (`EGG::Screen::sTVModeInfo` at 0x80350820 in `function_map.txt`). It is not a copy-paste: the HUD code in the decomp scales by fixed 4:3 and 16:9 widths (`d_2d.cpp`, `m_2d.cpp`, `m_wipe_fader.cpp`), and the game's off-screen culling (for example `chkOffScreen`) assumes the 16:9 width.
 - **The shared runtime already contains a Riivolution loader** (`runtime/src/hle/storage/riivolution.cpp`, hooked into `dvd.cpp` and `nand_fs.cpp`), written for Mario Kart Wii. It handles disc file overlays and redirecting the savegame. It does not apply Riivolution memory patches, which Newer needs. I did not check whether NSMBW's disc-file path goes through the same hooks.
@@ -90,15 +90,14 @@ Each constant is checked against its 16:9 value before it is written, and a log 
 
 ## 2. Lower CPU requirements (no AVX2)
 
-**Why it fails today:** `runtime/cmake/NsmbwProduct.cmake` (line ~155) builds the game with `-march=x86-64-v3`, which means AVX2, FMA and BMI2. The comment there says it is needed because `runtime/include/isa/ppc_isa_float.h` and `ppc_isa_quantized.h` use intrinsics (`_mm_fmadd_ps`, `_mm_shuffle_epi8`) that need those features to compile.
+**Status (2026-11-14): built, not yet shipped.** A second exe, `NSMBWCompiled-compat.exe`, is built for `x86-64-v2` (SSE4.2: Intel Nehalem 2008+, AMD Bulldozer 2011+) with `-DMKW_HOST_ISA=v2`. The main exe starts it by itself on a CPU without AVX2. How it works and how to build it: `docs/BUILDING.md`, *CPUs without AVX2*. The full story is in the MASTER_PLAN progress log, 2026-11-14.
 
-**How:**
-1. Rewrite those helpers so they have a plain-SSE2 version (fused multiply-add becomes a multiply plus an add).
-2. Build with `-march=x86-64` and compare behaviour against the current build. FMA rounds once and the replacement rounds twice, so results can differ in the last bit; check for visible or physics differences.
-3. Decide between one slower baseline build for everyone, or two builds (or a run-time switch) so fast CPUs keep the fast path. Measure the speed cost first.
-4. The start-up check that says "this CPU is not supported" already exists (`runtime/src/host_cpu_baseline.cpp`). Update its list of required features and its message to match whatever the new baseline is.
+What the earlier plan got wrong: it said fused multiply-add "becomes a multiply plus an add". That rounds twice where the Wii rounds once, and in a test it was wrong on 75% of near-tie inputs, which could desync recorded-input replays. The compat exe emulates the single rounding exactly with SSE2 instead. It was checked bit-for-bit against the FMA instruction on 320M inputs.
 
-*Check first:* whether Dawn or aurora (the graphics layers) have their own CPU requirement.
+Left to do:
+1. **Ship it.** Build `build_release_compat\` (configure line in BUILDING.md) next to `build_release\` and package. The README and PLAYING.txt CPU requirement should change in that release, not before.
+2. **Run it on a real pre-AVX2 CPU, or under Intel SDE** (`sde -snb -- NSMBWCompiled-compat.exe`, Sandy Bridge emulation; a download). A static scan found no AVX/FMA/BMI in our own code, and only CPU-checked paths in zstd and SDL. About 700 such instructions are in stripped code inside `webgpu_dawn.dll`, `dxcompiler.dll` and `dxil.dll`. Those are very likely chosen at run time, but only running it proves that.
+3. **Speed on an old CPU** is unknown. On this PC the compat exe showed no measurable difference (game-thread spare time, 7 alternating runs), but that test only rules out a large slowdown. Double-precision multiply-adds call the C library's software `fma` there; if a profile on old hardware shows that as hot, it is the first thing to speed up.
 
 **Not planned:** a DX8 or OpenGL fallback for pre-Vulkan GPUs. Very old hardware was suggested as a minimum-spec test bench; the missing Vulkan makes that not worth the work.
 

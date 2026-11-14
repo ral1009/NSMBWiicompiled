@@ -1276,3 +1276,33 @@ What I learned:
 What's next:
 - You tested all of it in your own play (2026-11-07): F10 pause, both skips and the hint list.
 - Check the hint-movie skip's fade and return to the list by eye.
+
+## 2026-11-14 — A second exe for CPUs without AVX2
+What I did:
+- Traced the AVX2 requirement. It is one compiler flag, `-march=x86-64-v3`, inherited from upstream WiiCompiled's first commit and copied onto NSMBW's targets on 2026-08-31. Nothing in the game needs it. It lets the compiler use AVX2/FMA/BMI2 everywhere, and 7 FMA intrinsics in `ppc_isa_float.h` needed it to compile. aurora, SDL and Crypto++ were already built without it.
+- The real constraint was accuracy, not instructions. Gekko's multiply-add instructions (`fmadd`, `ps_madd`, about 1,550 call sites in the translated code) are *fused*: they round once, at the end. The runtime got that from hardware FMA. The earlier futureplans idea ("becomes a multiply plus an add") would round twice and be off by one ULP on some inputs, enough to desync a recorded-input replay.
+  - *ULP* (unit in the last place): the gap between a float and the next float. "One ULP off" = the smallest possible error, but not zero.
+- Wrote an exact SSE2 replacement for the float lanes (`runtime/include/isa/ppc_isa_fma_compat.h`):
+  1. widen to double, where a float times a float is exact (24+24 bits fit in 53);
+  2. add in double (one rounding) and get that rounding's error exactly with *TwoSum* (six adds/subtracts that recover what the rounding threw away);
+  3. *round to odd*: if the error isn't zero, nudge the result to the neighbouring double whose last bit is 1, on the side of the true value. A value rounded this way, in at least 2 more bits than the target, rounds to float exactly as the true value would;
+  4. round once to float.
+  Double-precision `fmadd` in that build calls the C library's exact software `fma`.
+- Added `-DMKW_HOST_ISA=v2|v3` (default v3) in place of the three hard-coded flags. The CPU check (`host_cpu_baseline.cpp`) now takes its feature list from the same level. When the v3 exe finds the CPU lacking, it runs `NSMBWCompiled-compat.exe` from its own folder with the same arguments, so a player never picks an exe. `package_nsmbw.ps1` ships the compat exe when one is built; BUILDING.md has the commands.
+
+What broke / what I didn't expect:
+- My first `msub` helper flipped the sign of a NaN addend; the real instruction returns it as it was. The test caught it, and it's fixed.
+- The perf script failed twice: the exe it copied over was still locked after the game had exited (antivirus scanning the new 223 MB file is my guess). Each build now runs from its own exe name. Runs 5-7 then exited before the 80 s were up, with no crash event in Windows' log. That looks like the windows being closed; the blocks before each exit are kept.
+
+What I learned:
+- Verified, not assumed:
+  - `projects/nsmbw/tools/test_fma_compat.cpp` compares against the FMA instruction under all four FTZ/DAZ settings: 320M results, zero non-NaN differences.
+  - The same test shows the wrong methods failing: multiply-then-add on 75% of near-tie inputs, double-without-round-to-odd on 47k of 20M. So the round-to-odd step is load-bearing.
+  - One NaN case differs by design: when both multiplied inputs are NaN, which NaN comes out depends on operand order. The compiler picks that per call site in the v3 exe too.
+- `llvm-objdump` scan: the compat exe has no AVX/FMA/BMI/MOVBE/LZCNT in our own code (the v3 exe has 2.1 million). The rest is in zstd and SDL paths that check the CPU first. About 700 instructions sit in stripped code in the Dawn and DirectX-compiler DLLs; they are probably CPU-checked too, but that is not proven.
+  - *`tzcnt` is safe on old CPUs, `lzcnt` is not*: tzcnt is encoded as `rep bsf`, which an old CPU runs as `bsf` with the same answer for nonzero inputs; lzcnt runs as `bsr`, which answers differently.
+- Speed, 7 alternating 80 s self-test runs from a portable copy: game-thread spare time on the map was v3 72.9% vs v2 73.3%, in the level 77.6% vs 78.7%. No measurable cost on this PC. But the game thread only works about a quarter of each frame, so this rules out a big slowdown, not a small one.
+
+What's next:
+- Ship it in the next release: build `build_release_compat\`, package, and only then change the CPU line in README and PLAYING.txt.
+- Run it on a real pre-AVX2 CPU or under Intel SDE (`-snb`). That is the only way to prove the DLLs are safe and to see the speed there.
