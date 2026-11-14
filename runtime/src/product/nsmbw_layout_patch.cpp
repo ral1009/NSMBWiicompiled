@@ -462,6 +462,87 @@ Bytes PatchCourseSelectMenu(const Bytes& original) {
     return WriteArchive(arc);
 }
 
+// ---- Wide-screen backgrounds -------------------------------------------------------------------
+//
+// At ratios wider than 16:9 the game's 2D layouts are drawn 1:1 in canvas units for every pane
+// under a "location adjust" pane (pane flag bit 2; nsmbw_product.cpp ApplyAspectSetting sets the
+// adjust factor to 608 / canvas width). Menu backgrounds in those subtrees - black panels, shadows,
+// stripes, skies, framed windows - are about 900 units wide, enough to pass the edges of the 832-unit
+// 16:9 screen but not the 1092 units of 21:9: the developer's 21:9 screenshots (2026-11-07) showed
+// the file select, player count and course intro backgrounds ending at ~80% of the width, with
+// window borders visible. This widens every picture or window pane at least kWideMinWidth units
+// wide in such a subtree to the canvas width plus a margin, keeping its centre where it was (the
+// translation is moved by half the growth for left- or right-anchored panes). A window pane keeps
+// its border art at the ends, so its border goes back off-screen; a picture's texture is spread
+// over the wider pane, which is invisible for the flat and gradient fills and mild for the few
+// scenery strips (the course intro's world bars, 950 -> ~1160 units at 21:9).
+constexpr float kWideMinWidth = 790.0f;
+constexpr float kWideMargin = 64.0f;
+float g_wideCanvasWidth = 0.0f; // 0 = not wider than 16:9
+
+int WidenBackgroundsIn(Sectioned& lyt) {
+    int widened = 0;
+    std::vector<bool> stack;  // per open pas1: is everything under it in an adjusted subtree?
+    bool lastPaneAdjusted = false, inAdjusted = false;
+    for (Bytes& sec : lyt.sections) {
+        const std::string m = Magic(sec);
+        if (m == "pas1") {
+            stack.push_back(inAdjusted);
+            inAdjusted = lastPaneAdjusted;
+            continue;
+        }
+        if (m == "pae1") {
+            if (!stack.empty()) {
+                inAdjusted = stack.back();
+                stack.pop_back();
+            }
+            continue;
+        }
+        if (!IsPane(sec)) continue;
+        const bool adjusted = inAdjusted || (sec[8] & 0x04) != 0;
+        lastPaneAdjusted = adjusted;
+        if (!adjusted || (m != "pic1" && m != "wnd1")) continue;
+        const float width = GetF(sec, 68);
+        const float target = g_wideCanvasWidth + kWideMargin;
+        if (width < kWideMinWidth || width >= target) continue;
+        const float grow = target - width;
+        const int originX = sec[9] % 3;  // 0 left, 1 centre, 2 right
+        if (originX == 0) PutF(sec, 36, GetF(sec, 36) - grow / 2);
+        if (originX == 2) PutF(sec, 36, GetF(sec, 36) + grow / 2);
+        PutF(sec, 68, target);
+        ++widened;
+    }
+    return widened;
+}
+
+Bytes WidenBackgrounds(const Bytes& original) {
+    Archive arc = ReadArchive(original);
+    int widened = 0;
+    for (size_t i = 0; i < arc.path.size(); ++i) {
+        const std::string& p = arc.path[i];
+        if (p.size() < 6 || p.compare(p.size() - 6, 6, ".brlyt") != 0) continue;
+        Sectioned lyt = ReadSectioned(arc.data[i]);
+        const int n = WidenBackgroundsIn(lyt);
+        if (n > 0) {
+            arc.data[i] = WriteSectioned(lyt);
+            widened += n;
+        }
+    }
+    // Not an error: these layouts' wide panes sit outside the adjusted subtree, so the game already
+    // stretches them across the whole screen.
+    Require(widened > 0, "no adjusted background pane (already full width)");
+    return WriteArchive(arc);
+}
+
+// Layouts with ~900-unit backgrounds under a location-adjust pane (a survey of every layout on the
+// PAL disc, 2026-11-14). worldSelectMap has none adjusted (the whole layout stretches already).
+constexpr const char* kWideBackgroundLayouts[] = {
+    "MultiCourseSelect", "batteryInfo", "characterChange", "continue", "controllerInformation",
+    "corseSelectUIGuide", "easyPairing", "errorInfo", "fileSelectBase", "fileSelectPlayer",
+    "infoWindow", "letterWindow", "modelPlayGuide", "pointResultMulti", "preGame", "sequenceBG",
+    "stockItem", "timeUp", "wipeDokan", "worldCollectionCoin", "yesnoWindow",
+};
+
 std::optional<Bytes> ReadFile(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return std::nullopt;
@@ -472,7 +553,7 @@ bool Generate(const char* dvdPath, const char* outName, Bytes (*patch)(const Byt
     const fs::path source = RuntimeDvd::HostPathFor(dvdPath);
     const auto original = source.empty() ? std::nullopt : ReadFile(source);
     if (!original) {
-        std::fprintf(stderr, "[nsmbw][layout] %s not found; the Options button will be missing\n", dvdPath);
+        std::fprintf(stderr, "[nsmbw][layout] %s not found; served unpatched\n", dvdPath);
         return false;
     }
     try {
@@ -509,6 +590,20 @@ void GenerateFiles() {
     // The Wii Remote icon set keeps the game's own bubble: its hop belongs to the remote art.
     if (RuntimeConfigFile::ButtonIcons("auto") != "wii") {
         Generate("/Layout/fukidashiInfo/fukidashiInfo.arc", "fukidashiInfo.arc", &PatchFukidashi);
+    }
+    // Wider than 16:9: menu backgrounds widened to the canvas (see WidenBackgrounds). None of these
+    // layouts is patched above, so each starts from the disc's file.
+    const auto& aspect = RuntimeConfigFile::RunningAspect();
+    if (!aspect.fourThree && aspect.num * 9 > aspect.den * 16) {
+        g_wideCanvasWidth = float(832.0 * (double(aspect.num) / aspect.den) / (16.0 / 9.0));
+        int served = 0;
+        for (const char* name : kWideBackgroundLayouts) {
+            const std::string dvd = std::string("/Layout/") + name + "/" + name + ".arc";
+            const std::string out = std::string("wide_") + name + ".arc";
+            if (Generate(dvd.c_str(), out.c_str(), &WidenBackgrounds)) ++served;
+        }
+        std::fprintf(stderr, "[nsmbw][layout] wide backgrounds: %d of %zu layouts widened to %.0f units\n", served,
+                     std::size(kWideBackgroundLayouts), g_wideCanvasWidth + kWideMargin);
     }
 }
 

@@ -101,7 +101,7 @@ Defaults; change them in **Options → Controls**.
 
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
-- **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Known problems: the ground at the far edges can appear late while scrolling; some menu backgrounds (file select, player count, the course intro) do not reach the screen edges; the end of the Bowser-face wipe leaves the sides uncovered; on the title screen the ground ends before the right edge. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
+- **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Known problems: the ground at the far edges can appear late while scrolling; the end of the Bowser-face wipe leaves the sides uncovered; on the title screen the ground ends before the right edge. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
 - **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
 - Only the PAL disc, revision 1, is supported.

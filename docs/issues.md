@@ -780,6 +780,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Verified: captures at 21:9 of the title, map, 1-1 (running), pause menu; ? block square, HUD icons round; 16:9 unchanged. The world map also needed a perspective x-scale (it was still stretched, developer's screenshot). Still open (21:9 stays experimental): tile pop-in at the sides, menu backgrounds narrower than the screen, the end of the wipe, the title's ground edge - docs/futureplans.md 1b.
 - Scope: NSMBW-specific (addresses). The class is general: a widescreen hack has to find every place a game hard-codes its screen width, not just the canvas record.
 
+### 21:9 menu backgrounds stopped short of the screen edges
+- Symptom: at 21:9 the file select, player count and course intro backgrounds ended at about 80% of the width, with window borders visible (developer's screenshots).
+- Root cause: those panes are ~900 layout units wide (past the 832-unit 16:9 screen) and sit under a "location adjust" pane, which the 21:9 fix draws 1:1 in canvas units, so they cover 900 of 1092 units.
+- Fix (`runtime/src/product/nsmbw_layout_patch.cpp`, WidenBackgrounds): at wider ratios, serve copies of 9 layouts with those panes widened to the canvas width + 64, centre kept.
+- Verified: captures of the file select and player count at 21:9 fill the width; the developer confirmed it on their screen.
+- Scope: NSMBW-specific (layout names, the 790-unit threshold).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
