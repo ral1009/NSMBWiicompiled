@@ -38,6 +38,7 @@
 // name-mangle plain global-namespace data the way it mangles functions, so no extern "C" is
 // needed (unlike g_nsmbwCurrentSceneProfile, which nsmbw_create_next_scene_diag.cpp DOES define
 // extern "C", so gx_fifo.cpp's own redeclaration matches that instead).
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -76,7 +77,7 @@ bool ShouldLog() {
 //     LytBase_c::SetScissorMask 0x800C9770 and the save/restore helper 0x8008A230) decodes
 //     __gx+0x148/0x14C (suScis0/1, BP 0x20/0x21).
 // __GXData lives at *(0x8042E468) (lwz rX,-0x4EF8(r2) with r2=0x80433360 - see gx_internal.h).
-constexpr uint32_t kGxDataPtrAddr = 0x8042E468u;
+constexpr uint32_t kGxDataPtrAddr = NSMBW_VA(0x8042E468u);
 constexpr uint32_t kGxVpOff = 0x544u;          // float vpLeft, vpTop, vpWd, vpHt, vpNearz, vpFarz
 constexpr uint32_t kGxSuScis0Off = 0x148u;     // BP 0x20 word: (y0+342)<<12 | (x0+342)
 constexpr uint32_t kGxSuScis1Off = 0x14Cu;     // BP 0x21 word: (y1+342)<<12 | (x1+342)

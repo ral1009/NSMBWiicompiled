@@ -25,6 +25,7 @@
 // address (r13-20248, populated by a prior successful probe) for the (channel==0, device==2)
 // case - reproduced here so a second probe of an already-identified device still reports it
 // consistently, matching loc_801BA100/801BA10C's own cache-hit behavior.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -38,7 +39,7 @@ extern "C" void EXIProbe_NSMBW_801BA0C0(CpuContext* ctx)
     const uint32_t r13 = ctx->gpr[13];
 
     if (channel == 0 && device == 2) {
-        const uint32_t cached = Memory::Read32(static_cast<uint32_t>(r13 - 20248));
+        const uint32_t cached = Memory::Read32(static_cast<uint32_t>(r13 - NSMBW_SDA13(20248)));
         if (cached != 0) {
             Memory::Write32(outPtr, cached);
             ctx->gpr[3] = 1;

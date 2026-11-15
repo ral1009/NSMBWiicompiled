@@ -12,11 +12,13 @@ param(
     [int]$Seconds = 120,
     [int]$ShotEvery = 15,
     [string[]]$EnvVars = @(),
-    [string]$ShotDir = ""
+    [string]$ShotDir = "",
+    # Another build folder, e.g. build_nsmbw-E1 for the USA build (default build_nsmbw).
+    [string]$BuildDir = "build_nsmbw"
 )
 $tools = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Resolve-Path (Join-Path $tools "..\..\..")
-$B = Join-Path $root "build_nsmbw"
+$B = Join-Path $root $BuildDir
 if ($ShotDir -eq "") { $ShotDir = Join-Path $B "shots" }
 New-Item -ItemType Directory -Force $ShotDir | Out-Null
 foreach ($kv in $EnvVars) { $k, $v = $kv.Split('=', 2); [Environment]::SetEnvironmentVariable($k, $v, 'Process') }

@@ -44,6 +44,7 @@
 // data), computed once from its `lis r28,-0x7fcd; addi r28,r28,-0x6968` load: preCreate triple at
 // 0x80329698, create triple at 0x803296A4, postCreate triple at 0x803296B0 - safe to hardcode
 // since they're literal immediates in the original binary, not runtime-computed.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -54,10 +55,10 @@
 extern "C" uint32_t g_nsmbwGameSetupScenePtr;
 
 namespace {
-constexpr uint32_t kCommonPackAddr = 0x80161E00u;
-constexpr uint32_t kPreCreateTriple = 0x80329698u;
-constexpr uint32_t kCreateTriple = 0x803296A4u;
-constexpr uint32_t kPostCreateTriple = 0x803296B0u;
+constexpr uint32_t kCommonPackAddr = NSMBW_VA(0x80161E00u);
+constexpr uint32_t kPreCreateTriple = NSMBW_VA(0x80329698u);
+constexpr uint32_t kCreateTriple = NSMBW_VA(0x803296A4u);
+constexpr uint32_t kPostCreateTriple = NSMBW_VA(0x803296B0u);
 }
 
 extern "C" uint32_t GameSetupCreatePack_Diag_80161F80(uint32_t thisPtr)

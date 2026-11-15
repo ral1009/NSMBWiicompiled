@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 
 #include "console_identity.h"
@@ -12,7 +13,9 @@
 
 namespace {
 
-constexpr uint32_t kPalProductRegion = 2;
+// The console's region for SCGetProductArea / SCGetProductGameRegion: EUR/EU = 2 for the PAL game,
+// USA/US = 1 for the USA one (the SDK tables noted below use the same numbers for both).
+constexpr uint32_t kPalProductRegion = NSMBW_BY_VERSION(2, 1);
 
 } // namespace
 
@@ -75,7 +78,7 @@ PPC_NATIVE_OVERRIDE(801B23A0, SCGetProductArea_HLE, uint32_t, (), ());
 extern "C" uint32_t SCGetProductCode_HLE()
 {
     // Original PAL SC storage for the six-byte CODE value.
-    constexpr uint32_t kProductCodeAddress = 0x803869E0u;
+    constexpr uint32_t kProductCodeAddress = NSMBW_VA(0x803869E0u);
     static constexpr char kProductCode[] = "LEH";
     if (!Memory::Contains(kProductCodeAddress, sizeof(kProductCode))) {
         return 0;

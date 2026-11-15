@@ -17,6 +17,7 @@
 // to preserve whatever bookkeeping the real function did (table-entry validation against
 // r7+r9*32, per static trace) - if that bookkeeping turns out to matter downstream, the next
 // blocker will show it.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -37,8 +38,8 @@ extern "C" void nsmbw_disk_id_check_sync_801d2d60(CpuContext* ctx)
     // in-game code path on real data, not a forced branch - but it is only "correct" as long as
     // that table stays zero; if something later populates it, this needs the actual 0x40 bytes
     // that 0x801D2D60's real body would have fetched.
-    ::Memory::Write32(ctx->gpr[13] - 0x4CC8u, 1u);
-    ::Memory::Write32(ctx->gpr[13] - 0x6048u, 1u);
+    ::Memory::Write32(ctx->gpr[13] - NSMBW_SDA13(0x4CC8u), 1u);
+    ::Memory::Write32(ctx->gpr[13] - NSMBW_SDA13(0x6048u), 1u);
 }
 
 PPC_NATIVE_OVERRIDE_VOID(801D2D60, nsmbw_disk_id_check_sync_801d2d60, (CpuContext* ctx), (ctx));
@@ -61,8 +62,8 @@ extern "C" void nsmbw_async_complete_sync_801d07e0(CpuContext* ctx)
 {
     const uint32_t magic = ctx->gpr[3];
     const uint32_t callback = ctx->gpr[4];
-    ::Memory::Write32(0x80395D40u + 8u, magic);
-    ::Memory::Write32(ctx->gpr[13] - 0x4CE0u, callback);
+    ::Memory::Write32(NSMBW_VA(0x80395D40u) + 8u, magic);
+    ::Memory::Write32(ctx->gpr[13] - NSMBW_SDA13(0x4CE0u), callback);
     if (callback != 0u) {
         ctx->gpr[3] = 1u;
         InvokeIndirectCpu(callback, ctx);

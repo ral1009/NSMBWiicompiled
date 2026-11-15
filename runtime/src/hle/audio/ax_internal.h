@@ -3,6 +3,7 @@
 // AX/DSP HLE internals shared within this directory; ax_dsp.h is the public surface.
 // Hot accessors stay header-inline because the shipped build links runtime shards without LTO.
 
+#include "nsmbw_va.h"  // NSMBW_VA: NSMBW addresses below are PAL rev 1, mapped per game version
 #include "isa/big_endian.h"
 #include "memory.h"
 
@@ -41,21 +42,21 @@ constexpr uint32_t kAxSamplesPerFrame = 96u;
 // kAxDramLength and kAxDramDspAddr are immediates in both builds and agree exactly: NSMBW's
 // __AXOutInitDSP loads `li r10, 0x40` and `li r9, 0xcd2` into task+0x1C and task+0x20.
 #ifdef MKW_RUNTIME_PRODUCT_NSMBW
-constexpr uint32_t kAxDspTaskAddr = 0x8037D000u;
-constexpr uint32_t kDspInitializedAddr = 0x8042ACF8u;
-constexpr uint32_t kDspAssertPendingAddr = 0x8042AD00u;
-constexpr uint32_t kDspAssertTaskAddr = 0x8042AD04u;
-constexpr uint32_t kDspCurrentTaskAddr = 0x8042AD0Cu;
-constexpr uint32_t kDspFirstTaskAddr = 0x8042AD10u;
-constexpr uint32_t kDspRunningTaskAddr = 0x8042AD14u;
-constexpr uint32_t kAxIramMmemAddr = 0x8032F740u;
-constexpr uint32_t kAxDramMmemAddr = 0x8037D060u;
+constexpr uint32_t kAxDspTaskAddr = NSMBW_VA(0x8037D000u);
+constexpr uint32_t kDspInitializedAddr = NSMBW_VA(0x8042ACF8u);
+constexpr uint32_t kDspAssertPendingAddr = NSMBW_VA(0x8042AD00u);
+constexpr uint32_t kDspAssertTaskAddr = NSMBW_VA(0x8042AD04u);
+constexpr uint32_t kDspCurrentTaskAddr = NSMBW_VA(0x8042AD0Cu);
+constexpr uint32_t kDspFirstTaskAddr = NSMBW_VA(0x8042AD10u);
+constexpr uint32_t kDspRunningTaskAddr = NSMBW_VA(0x8042AD14u);
+constexpr uint32_t kAxIramMmemAddr = NSMBW_VA(0x8032F740u);
+constexpr uint32_t kAxDramMmemAddr = NSMBW_VA(0x8037D060u);
 constexpr uint32_t kAxDramLength = 64u;
 constexpr uint32_t kAxDramDspAddr = 3282u;
-constexpr uint32_t kAxInitCallback = 0x801A1D90u;
-constexpr uint32_t kAxResumeCallback = 0x801A1DA0u;
-constexpr uint32_t kAxDoneCallback = 0x801A1E00u;
-constexpr uint32_t kAxRequestCallback = 0x801A1E10u;
+constexpr uint32_t kAxInitCallback = NSMBW_VA(0x801A1D90u);
+constexpr uint32_t kAxResumeCallback = NSMBW_VA(0x801A1DA0u);
+constexpr uint32_t kAxDoneCallback = NSMBW_VA(0x801A1E00u);
+constexpr uint32_t kAxRequestCallback = NSMBW_VA(0x801A1E10u);
 // r13-relative fields __AXOutInitDSP itself reads/writes: the two u16 sample-rate style fields
 // it copies into task+0x24/+0x26, the u16 it copies into task+0x10, and the "DSP task is live"
 // flag pair the guest spins on immediately after DSPAddTask returns.
@@ -65,21 +66,21 @@ constexpr uint32_t kAxTaskField26Sda = 0x61CEu;
 constexpr uint32_t kAxDspLiveFlagSda = 0x5100u;
 constexpr uint32_t kAxDspLiveAuxSda = 0x5104u;
 #else
-constexpr uint32_t kAxDspTaskAddr = 0x802F81A0u;
-constexpr uint32_t kDspInitializedAddr = 0x80386608u;
-constexpr uint32_t kDspAssertPendingAddr = 0x80386610u;
-constexpr uint32_t kDspAssertTaskAddr = 0x80386614u;
-constexpr uint32_t kDspCurrentTaskAddr = 0x8038661Cu;
-constexpr uint32_t kDspFirstTaskAddr = 0x80386620u;
-constexpr uint32_t kDspRunningTaskAddr = 0x80386624u;
-constexpr uint32_t kAxIramMmemAddr = 0x8027F820u;
-constexpr uint32_t kAxDramMmemAddr = 0x802F8200u;
+constexpr uint32_t kAxDspTaskAddr = NSMBW_VA(0x802F81A0u);
+constexpr uint32_t kDspInitializedAddr = NSMBW_VA(0x80386608u);
+constexpr uint32_t kDspAssertPendingAddr = NSMBW_VA(0x80386610u);
+constexpr uint32_t kDspAssertTaskAddr = NSMBW_VA(0x80386614u);
+constexpr uint32_t kDspCurrentTaskAddr = NSMBW_VA(0x8038661Cu);
+constexpr uint32_t kDspFirstTaskAddr = NSMBW_VA(0x80386620u);
+constexpr uint32_t kDspRunningTaskAddr = NSMBW_VA(0x80386624u);
+constexpr uint32_t kAxIramMmemAddr = NSMBW_VA(0x8027F820u);
+constexpr uint32_t kAxDramMmemAddr = NSMBW_VA(0x802F8200u);
 constexpr uint32_t kAxDramLength = 64u;
 constexpr uint32_t kAxDramDspAddr = 3282u;
-constexpr uint32_t kAxInitCallback = 0x80126948u;
-constexpr uint32_t kAxResumeCallback = 0x80126954u;
-constexpr uint32_t kAxDoneCallback = 0x801269A8u;
-constexpr uint32_t kAxRequestCallback = 0x801269B8u;
+constexpr uint32_t kAxInitCallback = NSMBW_VA(0x80126948u);
+constexpr uint32_t kAxResumeCallback = NSMBW_VA(0x80126954u);
+constexpr uint32_t kAxDoneCallback = NSMBW_VA(0x801269A8u);
+constexpr uint32_t kAxRequestCallback = NSMBW_VA(0x801269B8u);
 constexpr uint32_t kAxTaskField10Sda = 0x73FCu;
 constexpr uint32_t kAxTaskField24Sda = 0x7400u;
 constexpr uint32_t kAxTaskField26Sda = 0x73FEu;

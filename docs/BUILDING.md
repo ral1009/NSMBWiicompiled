@@ -76,6 +76,21 @@ This writes `dist\NSMBWCompiled-v<version>-<commit>.zip` from the release build 
 
 On first launch the launcher shows a setup window (`runtime/src/product/nsmbw_launcher_setup.cpp`; all builds since 2026-11-14): the disc (a disc image, extracted next to the exe with the bundled DolphinTool.exe, or a folder already extracted with Dolphin), an optional HD texture pack, and a placeholder for Riivolution mods. The disc ID in `sys\boot.bin` chooses the game DLL; a disc this build has no DLL for (USA today) is named and refused. It reopens when Shift is held while starting the game. `NSMBW_SETUP_IMAGE=<rvz>`, `NSMBW_SETUP_FOLDER=<folder>` and `NSMBW_SETUP_TEXTURES=<dir>` script it, and `NSMBW_SETUP_SHOW=1` forces the window. Release builds have no console window and log to `nsmbw_data\NSMBWCompiled.log`, and they need a D3D12 or Vulkan GPU. Since 2026-11-14 the game is a DLL, `NSMBWCompiled-P1.dll` (P1 = PAL rev 1), and `NSMBWCompiled.exe` is a small launcher (`runtime/src/product/nsmbw_launcher.cpp`) that checks the CPU, loads the right DLL and calls its `NsmbwGameMain()`. Building the `NSMBWCompiled` target builds both. The main DLL needs an AVX2 CPU (it targets `x86-64-v3`); the compat DLL below removes that requirement. To profile, resolve against the DLL (`resolve_profile.py`'s default), not the exe. `package_nsmbw.ps1 -Private` builds the developer's own no-setup folder instead, which contains the game and must never be shared.
 
+### Other game versions (USA rev 1, "E1")
+
+Work in progress: the USA DLL builds and boots, but does not reach the title yet. Every guest address in the C++ is written as a PAL address; `runtime/include/nsmbw_va.h` maps them for another version. Steps, from the repo root (Python with `-I`; the USA disc extracted with Dolphin):
+
+```
+python -I projects/nsmbw/tools/unpack_game_code.py <extracted USA disc> NSMBW-Versions/E1
+python -I projects/nsmbw/tools/map_function_map.py E1 NSMBW-Versions/E1 NSMBW-Versions/E1/function_map.txt --prove
+python -I projects/nsmbw/tools/va_codemod.py --check        # every address routed (0 files would change)
+python -I projects/nsmbw/tools/gen_version_tables.py E1      # writes generated_nsmbw-E1/
+```
+
+Then translate with the generated projects (`generated_nsmbw-E1/projects/*.yml`, outputs `build/nsmbw-E1*`): `translate-recursive 0x80004050` for `nsmbw.yml`; for each REL its `_prolog` (USA: d_profileNP 0x807684C0, d_basesNP 0x8076D680, d_enemiesNP 0x809A2CC0, d_en_bossNP 0x80B1C940) with `--rel-projects` listing all four. Then `generate-nsmbw-data-init ... --out generated_nsmbw-E1/data_sections_init.cpp --runtime-config-out generated_nsmbw-E1/RuntimeConfig.h` (copy that header into `generated_nsmbw-E1/generated/`), `emit-nsmbw-build-shards --project generated_nsmbw-E1/projects/nsmbw.yml --modules-file generated_nsmbw-E1/projects/modules.txt --native-source-dir generated_nsmbw-E1/native_scan --out generated_nsmbw-E1/build_shards`, and configure `build_nsmbw-E1` with `-DNSMBW_GAME_VERSION=E1`. Re-run `gen_version_tables.py` after changing overrides. `run_nsmbw.ps1 -BuildDir build_nsmbw-E1` runs it (give that folder a `portable.txt`).
+
+When adding a guest address to C++: write the PAL value, run `va_codemod.py`. In shared runtime files outside `projects/nsmbw/native` and `runtime/src/product`, wrap it with `NSMBW_VA(...)` by hand. A literal that is not an address gets `// nsmbw-va: not an address`.
+
 ### CPUs without AVX2 (the compat DLL)
 
 `-DMKW_HOST_ISA=v2` builds the same game, as `NSMBWCompiled-P1-compat.dll`, for `x86-64-v2` (SSE4.2: Intel Nehalem 2008+, AMD Bulldozer 2011+) instead of `x86-64-v3`. Configure it in its own folder with the same options as the build it pairs with, plus that flag: `build_release_compat\` next to `build_release\`, or `build_compat\` next to `build_nsmbw\`:
@@ -85,7 +100,9 @@ cmake -S runtime -B build_release_compat -G Ninja -DCMAKE_BUILD_TYPE=Release -DM
 cmake --build build_release_compat --target NSMBWCompiled
 ```
 
-`package_nsmbw.ps1` copies `NSMBWCompiled-P1-compat.dll` into the package when it finds it, and warns when it doesn't or when the two DLLs were built more than an hour apart. Players never choose: on a CPU without AVX2 the launcher loads the compat DLL instead of the main one (`nsmbw_launcher.cpp`, using `MkwHostCpuMeetsLevel` from `runtime/src/host_cpu_baseline.cpp`). `MKW_FORCE_UNSUPPORTED_CPU=1` makes the launcher treat the CPU as lacking AVX2. (Before 2026-11-14 the compat build was a second exe that the main exe started; that hand-off is gone.)
+The USA game has its own compat folder, `build_release_compat-E1\`: the same line plus `-DNSMBW_GAME_VERSION=E1` (it makes `NSMBWCompiled-E1-compat.dll`, which `package_nsmbw.ps1` also ships).
+
+`package_nsmbw.ps1` also copies the USA game, `NSMBWCompiled-E1.dll`, from `build_release-E1\` (configured like `build_release\` plus `-DNSMBW_GAME_VERSION=E1`; `-UsaBuildDir` to override) and warns when it is missing. It copies `NSMBWCompiled-P1-compat.dll` into the package when it finds it, and warns when it doesn't or when the two DLLs were built more than an hour apart. Players never choose: on a CPU without AVX2 the launcher loads the compat DLL instead of the main one (`nsmbw_launcher.cpp`, using `MkwHostCpuMeetsLevel` from `runtime/src/host_cpu_baseline.cpp`). `MKW_FORCE_UNSUPPORTED_CPU=1` makes the launcher treat the CPU as lacking AVX2. (Before 2026-11-14 the compat build was a second exe that the main exe started; that hand-off is gone.)
 
 The compat exe computes the same float results. PowerPC's fused multiply-add (one rounding) is emulated exactly with SSE2 (`runtime/include/isa/ppc_isa_fma_compat.h`), not as a multiply followed by an add, which rounds twice. `projects/nsmbw/tools/test_fma_compat.cpp` checks it bit for bit against the FMA instruction (build line at its top; needs an FMA CPU). Double-precision multiply-adds call the C library's exact software `fma` in that build.
 

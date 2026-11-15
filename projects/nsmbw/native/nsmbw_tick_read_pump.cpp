@@ -15,6 +15,7 @@
 // the tick to move" loop (not particular to func_801AF710; anything else reading ticks through
 // this same accessor benefits too), consistent with the SelectThread fix's own approach of running
 // VI's real retrace-advance logic rather than inventing a fake counter increment.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "fiber_manager.h"
@@ -52,11 +53,11 @@ void NsmbwWatchWmObject() {
     if (!enabled) return;
     static uint32_t lastObj = 0, lastVtable = 0xFFFFFFFFu;
     uint32_t obj = 0, vtable = 0xFFFFFFFFu;
-    Memory::TryRead32(0x8099FDFCu, obj);
+    Memory::TryRead32(NSMBW_VA(0x8099FDFCu), obj);
     if (obj != 0) Memory::TryRead32(obj, vtable);
     if (obj != lastObj || vtable != lastVtable) {
         uint32_t tick = 0;
-        Memory::TryRead32(0x8042AB4Cu, tick);
+        Memory::TryRead32(NSMBW_VA(0x8042AB4Cu), tick);
         std::fprintf(stderr, "[nsmbw][wmobj] tick=%u scene=%u obj=0x%08X vtable=0x%08X (was obj=0x%08X vtable=0x%08X)\n",
                      tick, g_nsmbwCurrentSceneProfile, obj, vtable, lastObj, lastVtable);
         std::fflush(stderr);
@@ -75,8 +76,8 @@ void NsmbwDiagWatch() {
     if (logCoin && (++coinTicks % 60) == 0) {
         uint32_t frame = 0, angleY = 0;
         try {
-            frame = Memory::Read8(0x8042A16Eu);
-            angleY = Memory::Read16(0x8042A162u);
+            frame = Memory::Read8(NSMBW_VA(0x8042A16Eu));
+            angleY = Memory::Read16(NSMBW_VA(0x8042A162u));
         } catch (...) {}
         CpuContext* liveCtx = TryGetCpuContext();
         std::fprintf(stderr, "[nsmbw][coin] thread=%08X gqr3=%08X scene=%u m_frame=%u m_shapeAngle.y=0x%04X\n",
@@ -90,7 +91,7 @@ void NsmbwDiagWatch() {
     static bool profilesDumped = false;
     if (dumpProfiles && !profilesDumped) {
         uint32_t list = 0;
-        Memory::TryRead32(0x8042A698u, list);
+        Memory::TryRead32(NSMBW_VA(0x8042A698u), list);
         if (list != 0) {
             profilesDumped = true;
             for (uint32_t id = 594; id <= 600; ++id) {
@@ -102,7 +103,7 @@ void NsmbwDiagWatch() {
                 }
                 if (id == 600) {
                     // AC_BG_WATER's two m3d::proc_c vtables (stored by its ctor, 0x807B40A0).
-                    for (uint32_t vt : {0x80950C28u, 0x80950C48u}) {
+                    for (uint32_t vt : {NSMBW_VA(0x80950C28u), NSMBW_VA(0x80950C48u)}) {
                         uint32_t w[8] = {};
                         for (int i = 0; i < 8; ++i) Memory::TryRead32(vt + 4u * i, w[i]);
                         std::fprintf(stderr, "[nsmbw][profile] vtable 0x%08X: %08X %08X %08X %08X %08X %08X %08X %08X%c", vt,
@@ -126,7 +127,7 @@ void NsmbwDiagWatch() {
         if (dumpDir && !dumped && mapTicks == 300) {
             dumped = true;
             for (uint32_t i = 0; i < 4; ++i) {
-                const uint32_t addr = 0x80F67700u + i * 0x13E0u;
+                const uint32_t addr = NSMBW_VA(0x80F67700u) + i * 0x13E0u;
                 char path[512];
                 std::snprintf(path, sizeof(path), "%s/lighttex_%u_%08X.bin", dumpDir, i, addr);
                 if (FILE* f = std::fopen(path, "wb")) {
@@ -154,7 +155,7 @@ void NsmbwDiagWatch() {
         // build regardless of what its doc comment says. Kept here only as a settled
         // negative result, not a live lead.
         std::printf("[nsmbw][diag] dScCrsin_c::m_isDispOff=%u (write-only, not the cause)\n",
-            Memory::Read8(0x8042A490u));
+            Memory::Read8(NSMBW_VA(0x8042A490u)));
 
         // Real lead: dFader_c::calc() (0x800B0B00, disassembled offline) reads its
         // static current-fader pointer from r13-0x5260 = 0x8042A720, then dispatches
@@ -166,7 +167,7 @@ void NsmbwDiagWatch() {
         // if the fader is stuck at OPAQUE, that alone produces a pure black screen
         // regardless of what's actually being rendered underneath.
         uint32_t faderPtr = 0;
-        Memory::TryRead32(0x8042A720u, faderPtr);
+        Memory::TryRead32(NSMBW_VA(0x8042A720u), faderPtr);
         uint32_t faderStatus = 0xFFFFFFFFu;
         if (faderPtr != 0) {
             Memory::TryRead32(faderPtr + 4u, faderStatus);
@@ -187,7 +188,7 @@ void NsmbwDiagWatch() {
         // function has (skips the fade-in check entirely while the scene's child
         // actors/archives haven't finished being created) - a full pipeline hang, not a
         // fader-specific one.
-        std::printf("[nsmbw][diag] dScene_c::m_isAutoFadeIn=%u\n", Memory::Read8(0x80428A4Cu));
+        std::printf("[nsmbw][diag] dScene_c::m_isAutoFadeIn=%u\n", Memory::Read8(NSMBW_VA(0x80428A4Cu)));
     }
 
     // SELF-TEST ONLY, opt-in via NSMBW_AUTO_PRESS_SELFTEST: hand KPADRead one frame of "A held"
@@ -323,7 +324,7 @@ void NsmbwLogBgParam() {
     static const uint32_t every = [] { const char* v = AURORA_ENV("NSMBW_LOG_BGPARAM"); return v && std::atoi(v) > 1 ? uint32_t(std::atoi(v)) : 60u; }();
     if (!enabled || g_nsmbwCurrentViTick % every != 0u) return;
     uint32_t p = 0;
-    if (!Memory::TryRead32(0x8042A0E0u, p) || p == 0 || !Memory::Contains(p, 0x80)) return;
+    if (!Memory::TryRead32(NSMBW_VA(0x8042A0E0u), p) || p == 0 || !Memory::Contains(p, 0x80)) return;
     std::fprintf(stderr, "[nsmbw][bgparam] tick %u scene %u inst=%08X pos=(%.3f,%.3f) size=(%.3f,%.3f) m48=%.3f\n",
                  g_nsmbwCurrentViTick, g_nsmbwCurrentSceneProfile, p, Memory::ReadFloat32(p + 0x38),
                  Memory::ReadFloat32(p + 0x3C), Memory::ReadFloat32(p + 0x40), Memory::ReadFloat32(p + 0x44),
@@ -340,7 +341,7 @@ void NsmbwDebugP1Character() {
         return v ? std::strtol(v, nullptr, 10) : -1L;
     }();
     if (want < 0 || want > 3 || g_nsmbwCurrentSceneProfile != 3u) return;
-    constexpr uint32_t kPlayerTypeAddr = 0x80355160u;
+    constexpr uint32_t kPlayerTypeAddr = NSMBW_VA(0x80355160u);
     uint32_t cur = 0;
     if (!Memory::TryRead32(kPlayerTypeAddr, cur) || cur == static_cast<uint32_t>(want)) return;
     Memory::Write32(kPlayerTypeAddr, static_cast<uint32_t>(want));
@@ -358,7 +359,7 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
     NsmbwWatchWrite();
     NsmbwLogBgParam();
     NsmbwDumpScnObjs();
-    ctx->gpr[3] = ::Memory::Read32(0x8042AB4Cu);
+    ctx->gpr[3] = ::Memory::Read32(NSMBW_VA(0x8042AB4Cu));
     g_nsmbwCurrentViTick = ctx->gpr[3];
 }
 
@@ -383,11 +384,11 @@ extern "C" uint32_t StartFadeIn_800B0A20_Diag(uint32_t duration)
     std::fflush(stderr);
 
     uint32_t skipFlagWord = 0;
-    Memory::TryRead32(0x8042A260u, skipFlagWord);
+    Memory::TryRead32(NSMBW_VA(0x8042A260u), skipFlagWord);
     const bool forceInstant = (skipFlagWord & 0x04000000u) != 0;
 
     uint32_t faderPtr = 0;
-    Memory::TryRead32(0x8042A720u, faderPtr);
+    Memory::TryRead32(NSMBW_VA(0x8042A720u), faderPtr);
     if (faderPtr == 0) {
         std::fprintf(stderr, "[nsmbw][diag] dFader_c::startFadeIn: mFader is null, nothing to do\n");
         std::fflush(stderr);
@@ -397,7 +398,7 @@ extern "C" uint32_t StartFadeIn_800B0A20_Diag(uint32_t duration)
     auto& cpu = GetPersistentCpuContext();
     cpu.gpr[3] = faderPtr;
     cpu.gpr[4] = forceInstant ? 1u : duration;
-    InvokeIndirectCpu(0x8016DE20u, &cpu); // mFaderBase_c::setFrame(duration)
+    InvokeIndirectCpu(NSMBW_VA(0x8016DE20u), &cpu); // mFaderBase_c::setFrame(duration)
 
     uint32_t vtable = 0;
     Memory::TryRead32(faderPtr, vtable);
@@ -433,7 +434,7 @@ extern "C" void Calc_800B0B00_Diag()
     ++callCount;
 
     uint32_t faderPtr = 0;
-    Memory::TryRead32(0x8042A720u, faderPtr);
+    Memory::TryRead32(NSMBW_VA(0x8042A720u), faderPtr);
     uint32_t statusBefore = 0xFFFFFFFFu;
     if (faderPtr != 0) {
         Memory::TryRead32(faderPtr + 4u, statusBefore);

@@ -16,7 +16,7 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 | 4 | 4:3 mode as an F10 option | High: the game and our code already support it | Small to medium | **0.3.0** |
 | 5 | Swappable player 1 character | High: switch already works on the map | Medium (saves, results screen) | **0.3.0** |
 | 6 | Riivolution file mods | Medium-high: loader already in the shared runtime | Medium (wire into NSMBW, test with a real pack) | **0.3.0** |
-| 7 | No-AVX2 build | Built 2026-11-14 (compat exe, see section 2); not yet run on a pre-AVX2 CPU | Small now: ship and test | **0.3.0** (as a separate build) |
+| 7 | No-AVX2 build | Built 2026-11-14; packaged 2026-11-15 as compat DLLs for PAL and USA, chosen by the launcher; not yet run on a pre-AVX2 CPU | Small now: test | **0.3.0** |
 | 8 | 16:10 and ultrawide (wider view) | Medium: the MKW code in this repo is a worked example; NSMBW's HUD and culling are the unknowns | Large | **0.3.0** for 16:10; ultrawide in 0.3.0 only if the spike below works, otherwise 0.4.0 |
 | 9 | 180 fps drop to ~40 fps on a fast PC | Unknown: needs the reporter's details | Unknown | **0.2.3** if the cause turns out small; otherwise 0.3.0 |
 | 10 | Rumble and gyro tilt | Medium-low: rumble goes through the Wii Remote motor calls, which are not bound | Medium | later (0.4.0) |
@@ -95,7 +95,7 @@ Each constant is checked against its 16:9 value before it is written, and a log 
 What the earlier plan got wrong: it said fused multiply-add "becomes a multiply plus an add". That rounds twice where the Wii rounds once, and in a test it was wrong on 75% of near-tie inputs, which could desync recorded-input replays. The compat exe emulates the single rounding exactly with SSE2 instead. It was checked bit-for-bit against the FMA instruction on 320M inputs.
 
 Left to do:
-1. **Ship it.** Build `build_release_compat\` (configure line in BUILDING.md) next to `build_release\` and package. The README and PLAYING.txt CPU requirement should change in that release, not before.
+1. **Ship it.** *Done 2026-11-15:* `build_release_compat\` and `build_release_compat-E1\` are packaged, and README / PLAYING.txt now list SSE4.2 as the minimum (marked untested). Originally: build `build_release_compat\` (configure line in BUILDING.md) next to `build_release\` and package. The README and PLAYING.txt CPU requirement should change in that release, not before.
 2. **Run it on a real pre-AVX2 CPU, or under Intel SDE** (`sde -snb -- NSMBWCompiled-compat.exe`, Sandy Bridge emulation; a download). A static scan found no AVX/FMA/BMI in our own code, and only CPU-checked paths in zstd and SDL. About 700 such instructions are in stripped code inside `webgpu_dawn.dll`, `dxcompiler.dll` and `dxil.dll`. Those are very likely chosen at run time, but only running it proves that.
 3. **Speed on an old CPU** is unknown. On this PC the compat exe showed no measurable difference (game-thread spare time, 7 alternating runs), but that test only rules out a large slowdown. Double-precision multiply-adds call the C library's software `fma` there; if a profile on old hardware shows that as hot, it is the first thing to speed up.
 
@@ -138,6 +138,10 @@ What the split needs (read in source, not tried):
 *Order:* do the split first with PAL only, and check that it plays the same as before (self-test to a level, crash log addresses resolve) before starting on the address layer. A break then points at the split, not the region work.
 
 *Status (2026-11-14):* the split is built and runs (steps 1-6 above; see the MASTER_PLAN entry of that date). Self-test reached a level twice; window close exits cleanly; the profiler resolves against the DLL. Not yet run: the compat DLL, the release launcher, `package_nsmbw.ps1`. The setup screen is built too (game files, HD pack, Riivolution placeholder) and was tested with the developer's USA and PAL discs: USA is recognised and refused until its DLL exists, PAL extracts and plays. Next: the address layer.
+
+*Status (later the same day):* the address layer is in and PAL plays unchanged; the USA code is translated and `NSMBWCompiled-E1.dll` builds and boots through the launcher, but hangs before the first scene in EGG::AsyncDisplay (MASTER_PLAN entry "USA (E1) build").
+
+*Status (2026-11-15):* the USA version plays: title, map and levels, its own save folder (MASTER_PLAN entry of that date). Left: check the remaining features on USA, and package both DLLs together. Building it is in docs/BUILDING.md.
 
 ## 4. Save carry-over
 

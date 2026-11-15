@@ -1,5 +1,8 @@
 // OSAlarm queue HLE.
 
+#include <cstdio>
+#include <cstdlib>
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -54,10 +57,19 @@ void EnsureSda1Base(CpuContext* cpu, bool logOnce = false)
     cpu->gpr[13] = RuntimeConfig::SDA1_BASE;
 }
 
+// NSMBW_LOG_SCHED_DISABLE=1: log every change of the scheduler-disable count made around alarm
+// callbacks, and every SelectThread that returns early because of it (os_scheduler.cpp).
+bool LogSchedulerDisable()
+{
+    static const bool on = std::getenv("NSMBW_LOG_SCHED_DISABLE") != nullptr;
+    return on;
+}
+
 void IncrementSchedulerDisableCount()
 {
     const uint32_t count = ::Memory::Read32(kSchedulerIdleFlagAddr);
     ::Memory::Write32(kSchedulerIdleFlagAddr, count + 1u);
+    if (LogSchedulerDisable()) std::fprintf(stderr, "[os] scheduler disable count %u -> %u (alarm callback)\n", count, count + 1u);
 }
 
 void DecrementSchedulerDisableCount()
@@ -68,6 +80,7 @@ void DecrementSchedulerDisableCount()
         return;
     }
     ::Memory::Write32(kSchedulerIdleFlagAddr, count - 1u);
+    if (LogSchedulerDisable()) std::fprintf(stderr, "[os] scheduler disable count %u -> %u (alarm callback done)\n", count, count - 1u);
 }
 
 void RunDeferredReschedule(CpuContext* cpu)
@@ -487,7 +500,7 @@ extern "C" uint32_t RFLiIsWorking_HLE_800bd860()
     ProcessAlarmQueue(cpu, 32);
 
     // Now return the actual "working" status
-    constexpr uint32_t kRflManagerPtrAddr = 0x80386298u;
+    constexpr uint32_t kRflManagerPtrAddr = NSMBW_VA(0x80386298u);
     constexpr uint32_t kWorkingFlagOffset = 0x1b34u;
 
     try {

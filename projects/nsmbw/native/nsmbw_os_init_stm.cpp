@@ -27,6 +27,7 @@
 // unconditional registration at MKW's address would either be dead (if NSMBW has nothing there) or
 // hijack a real, unrelated NSMBW function - so this lives here, at NSMBW's own address, instead of
 // being added to the shared override.
+#include "nsmbw_va.h"
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -38,9 +39,9 @@ extern "C" uint32_t OSInitSTM_NSMBW_801B6960(CpuContext* ctx)
 
     // Fake non-zero handles so callers' zero/negative-checks pass - same sentinel shape as MKW's
     // own override (real fd values are small positive integers; any non-negative value works).
-    Memory::Write32(r13 - 20352u, 0x00535401u); // "ST\x01" - /dev/stm/immediate
-    Memory::Write32(r13 - 20348u, 0x00535402u); // "ST\x02" - /dev/stm/eventhook
-    Memory::Write32(r13 - 20356u, 1u);          // STM_Initialized
+    Memory::Write32(r13 - NSMBW_SDA13(20352u), 0x00535401u); // "ST\x01" - /dev/stm/immediate
+    Memory::Write32(r13 - NSMBW_SDA13(20348u), 0x00535402u); // "ST\x02" - /dev/stm/eventhook
+    Memory::Write32(r13 - NSMBW_SDA13(20356u), 1u);          // STM_Initialized
 
     return 1;
 }

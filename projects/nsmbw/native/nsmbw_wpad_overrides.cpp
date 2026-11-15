@@ -25,6 +25,7 @@
 //
 // Lives here, not in the shared runtime tree, because the translator's override-skip
 // detection only scans this project's native_registration_root (projects/nsmbw/native).
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -58,8 +59,8 @@ extern "C" uint32_t WPADSetSyncDeviceCallback_HLE(uint32_t callback);
 // overridden - sees a consistent, already-connected controller from boot, instead of
 // needing the game's own Bluetooth pairing state machine (dConnect_c) to run at all.
 namespace {
-constexpr uint32_t kWpadCbTableAddr = 0x8039E630u;
-constexpr uint32_t kWpadCbStorageAddr = 0x8039F660u;
+constexpr uint32_t kWpadCbTableAddr = NSMBW_VA(0x8039E630u);
+constexpr uint32_t kWpadCbStorageAddr = NSMBW_VA(0x8039F660u);
 constexpr uint32_t kWpadCbStride = 0x9C0u;
 
 // _wpdcb[chan] = &_wpd[chan] for all four channels, as 0x801DF930's linking loop does. Which
@@ -87,7 +88,7 @@ uint32_t g_connectedCount = 0;
 // argument is 0.
 void SeedMPadPlayerCount()
 {
-    Memory::Write32(0x8042A758u, 1);
+    Memory::Write32(NSMBW_VA(0x8042A758u), 1);
 }
 } // namespace
 
@@ -221,9 +222,9 @@ extern "C" int32_t WPADGetInfoAsync_NSMBW_HLE(uint32_t chan, uint32_t infoPtr, u
                 "[nsmbw][diag] WPADGetInfoAsync chan0 call #%d: g_currentCore=0x%08X "
                 "g_core[0..3]=0x%08X,0x%08X,0x%08X,0x%08X\n",
                 diagCallCount,
-                Memory::Read32(0x8042A748u),
-                Memory::Read32(0x80377F88u), Memory::Read32(0x80377F8Cu),
-                Memory::Read32(0x80377F90u), Memory::Read32(0x80377F94u));
+                Memory::Read32(NSMBW_VA(0x8042A748u)),
+                Memory::Read32(NSMBW_VA(0x80377F88u)), Memory::Read32(NSMBW_VA(0x80377F8Cu)),
+                Memory::Read32(NSMBW_VA(0x80377F90u)), Memory::Read32(NSMBW_VA(0x80377F94u)));
         }
     }
     return result;

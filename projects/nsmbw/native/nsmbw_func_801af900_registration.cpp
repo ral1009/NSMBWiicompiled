@@ -31,6 +31,7 @@
 // these are honest "not implemented" stubs (this project's existing pattern - see
 // runtime/src/hle/gx/gx_fatal_stubs.cpp) rather than a guess: if the guest actually reaches one, it
 // aborts loudly with the address instead of running with a missing or fabricated body.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "runtime_log.h"
 #include "memory.h"
@@ -78,15 +79,15 @@ NSMBW_MISSING_STATEFREE_BODY_STUB(801AC980) PPC_NATIVE_OVERRIDE_VOID(801AC980, f
 // color table, this one's table entries are arbitrary init callbacks, so a no-op risks skipping
 // something that matters. Its control flow is trivial enough to reimplement faithfully instead of
 // guessing whether skipping it is safe.
-extern "C" void func_801A9CE0(CpuContext* ctx);
+extern "C" void NSMBW_FUNC(801A9CE0)(CpuContext* ctx);
 extern "C" void func_801B8B20_table_walker(CpuContext* ctx)
 {
-    for (uint32_t entry = 0x802EDFC0u;; entry += 4u) {
+    for (uint32_t entry = NSMBW_VA(0x802EDFC0u);; entry += 4u) {
         const uint32_t fn = ::Memory::Read32(entry);
         if (fn == 0u) break;
         InvokeIndirectCpu(fn, ctx);
     }
-    InvokeIndirectCpu(0x801A9CE0u, ctx);
+    InvokeIndirectCpu(NSMBW_VA(0x801A9CE0u), ctx);
 }
 PPC_NATIVE_OVERRIDE_VOID(801B8B20, func_801B8B20_table_walker, (CpuContext* ctx), (ctx));
 

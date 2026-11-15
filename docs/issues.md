@@ -839,6 +839,46 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: `nsmbw_launcher.cpp` and `nsmbw_launcher_setup.cpp` added to the `REMOVE_ITEM` list.
 - Scope: General (any new file under `runtime/src/` lands in the runtime unless excluded).
 
+## 2026-11-14 — USA build bring-up
+
+### Copied overrides read small globals 0x20 bytes off on USA (`r13 + -N`)
+- Symptom: the first USA boot read a pointer whose value was the text "Expi" (0x45787069) inside the EXIInit override.
+- Root cause: copied translated code reaches small globals as `r13 + -N`. The USA `r13` is 0x300 lower than PAL's, but those globals moved by other amounts (0x2E0, 0x2F8, ...), so each PAL offset misses its object.
+- Fix: `va_codemod.py` rewrites them to `r13 + -NSMBW_SDA13(N)` (22 sites in `nsmbw_exi_init.cpp`, `nsmbw_pause_options.cpp`, `nsmbw_dylink_heap_reserve.cpp`); the four `ctx->gpr[13] - 0x...` sites by hand.
+- Scope: General (any copy of translated code, any second game version).
+
+### Shared runtime called NSMBW functions by their PAL address outside the version layer
+- Symptom: USA boot stopped at `missing_target 0x801AD0F0` (OSInitContext) from `main`.
+- Root cause: `os_thread.cpp`, `gx_fifo.cpp` and `vi.cpp` hold NSMBW addresses outside any NSMBW `#if`, so the codemod (which covers projects/nsmbw/native and the product files) did not see them.
+- Fix: wrapped in `NSMBW_VA`. Found by listing shared-runtime literals that are PAL NSMBW function addresses or sit next to an NSMBW comment.
+- Scope: General.
+
+## 2026-11-15 — USA build reaches the game
+
+### USA exited at boot: our __OSInitSTM wrote PAL r13 offsets
+- Symptom: USA ran the game's global destructors right after creating the main thread; `NSMBW_LOG_SCHED_DISABLE` showed SelectThread returning early with a "scheduler disable count" of 0x00535401.
+- Root cause: `nsmbw_os_init_stm.cpp` writes the STM markers ("ST" 01 / 02) and an initialized flag at `r13 - 20352/20348/20356`, PAL offsets the codemod did not recognise in that spelling. On USA `r13 - 20352` is the scheduler-disable count (0x8042A700).
+- Fix: `NSMBW_SDA13(...)` on those offsets; `va_codemod.py` now rewrites `r13 - N` too (found 5 more: `nsmbw_exi_probe.cpp`, `os_init.cpp`, `os_interrupt.cpp`).
+- Scope: General (any second game version; any hand-written r13-relative access).
+
+### Runtime scheduler read PAL's run-queue globals on USA
+- Symptom: USA's main thread slept in EGG::AsyncDisplay forever although its waker ran every frame.
+- Root cause: `os_internal.h` holds the scheduler globals NSMBW's SelectThread uses (run queues, pending mask, reschedule counter, disable count, switch callback) as PAL addresses, outside the version layer. The game woke the thread onto USA's run queue; the runtime looked at PAL's.
+- Fix: the shared runtime's literals are mapped (`va_codemod.py --shared`).
+- Scope: General.
+
+### World-map cursor stayed behind the options menu
+- Symptom: choosing Options in the world-map menu opened the options menu with the map menu's yellow selection brackets still drawn behind it (reported by the developer, both versions). F10 and the pause menu's Options were fine.
+- Root cause: `nsmbw_map_options.cpp` hid the cursor with `dSelectCursor_c::Cancel(0)`, copied from the pause window, whose cursor is slot 0. The map menu's cursor is slot 4 (its `SelectCursorSetup(..., 4, false)`; the game's own close, `func_8077B190`, calls `Cancel(4)`).
+- Fix: `Cancel(4)` in `nsmbw_map_options.cpp`. Built for PAL; not yet checked on screen.
+- Scope: NSMBW-specific.
+
+### Compat DLL refused to load when forced with the test switch
+- Symptom: with `MKW_FORCE_UNSUPPORTED_CPU=1` the launcher loaded `NSMBWCompiled-*-compat.dll`, which then stopped at an "unsupported processor" box while loading; no log was written.
+- Root cause: the switch was inherited by the DLL, whose load-time CPU check honours it too. Test-only: a real older CPU passes the DLL's own (level 2) check.
+- Fix: `nsmbw_launcher.cpp` clears the variable after reading it. Verified: both compat DLLs from the zip reach the opening movie with the switch set.
+- Scope: General.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -877,5 +917,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Full-target resolve snapshots (2026-10-25): cropped for sampled/converted copies; MKW's depth-of-field chain, which the upstream comment says needed them, is untested with the crop (`NSMBW_FULL_RESOLVE_SNAPSHOT=1` to compare).
 - GPU timer resolve alignment (2026-10-26): why Dawn reported the unaligned offset despite `skip_validation` in one run (after an injected out-of-memory error) is unexplained.
 - HD-pack preload (2026-11-07): a scene's list records only files that were not already in the replacement cache, so it depends on the order scenes were visited (1-1 recorded 6 files after the title had loaded the shared ones). The first world-map visit after the title is keyed by the title demo's world (0). A 36 ms frame on world-map entry remains; it is not pack loading and was not investigated.
+- `vi.cpp` `WriteGuestStateLocked` writes Mario Kart Wii addresses into NSMBW memory every retrace (initialized flag 0x80386B38, TV format, render/XFB sizes, frame-buffer pointers) and gates the post-retrace callback on MKW's `sSystem` (0x80386F60). Harmless in practice so far (NSMBW registers no post-retrace callback), but they overwrite whatever NSMBW keeps there. Mapped per version on 2026-11-14 so USA behaves as PAL; not removed.
+- USA (E1) build: plays title, map and levels (2026-11-15). Not yet checked there: French/Spanish text, F10 menu fonts, the extra pause/map buttons, full save, HD pack, BCA disc check, later worlds, 180 FPS.
 - DLL split and launcher setup (2026-11-14): compat DLL, the CPU-too-old message boxes, a release build of the launcher, `package_nsmbw.ps1` and the setup window at other DPI settings not yet run.
 - Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.

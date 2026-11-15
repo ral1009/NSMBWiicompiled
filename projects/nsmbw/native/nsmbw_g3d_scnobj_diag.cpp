@@ -17,6 +17,7 @@
 //   (scnRoot->vtable[0x34/4])(scnRoot, idx, obj)   [ScnGroup::Insert(idx, obj), virtual]
 // ScnObj layout per NSMBW-Decomp include/lib/nw4r/g3d/g3d_scnobj.h: mMtxArray @0xC (LOCAL 0xC,
 // WORLD 0x3C, VIEW 0x6C, 0x30 bytes each), mScnObjFlags @0xCC. New address -> shard regen.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -29,7 +30,7 @@
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 namespace {
-constexpr uint32_t kScnRootPtrAddr = 0x8042F980u - 0x52D4u; // l_scnRoot_p
+constexpr uint32_t kScnRootPtrAddr = NSMBW_VA(0x8042F980u) - 0x52D4u; // l_scnRoot_p
 constexpr int kMaxTracked = 64;
 uint32_t g_tracked[kMaxTracked];
 int g_trackedCount = 0;
@@ -70,7 +71,7 @@ extern "C" void M3dPushBack_Diag_80164F90(uint32_t obj) {
         if (logLiquid && logged < 40) {
             const CpuContext* c = TryGetCpuContext();
             const uint32_t lr = c ? static_cast<uint32_t>(c->lr) : 0u;
-            if (lr >= 0x807B3000u && lr < 0x807B8000u) {
+            if (lr >= NSMBW_VA(0x807B3000u) && lr < NSMBW_VA(0x807B8000u)) {
                 ++logged;
                 std::fprintf(stderr, "[nsmbw][liquid] pushBack obj=0x%08X from LR=0x%08X (scene list size %u)\n", obj, lr, idx);
             }
@@ -108,13 +109,13 @@ extern "C" void NsmbwDumpScnObjs() {
         Memory::TryRead32(obj + 0xF4u, viewPos);
         numViewMtx = Memory::Read16(obj + 0x102u);
         float NW[12] = {}, VP[12] = {}, VP1[12] = {};
-        if (nodeWorld >= 0x80000000u && nodeWorld < 0x94000000u) ReadMtx(nodeWorld, NW);
-        if (viewPos >= 0x80000000u && viewPos < 0x94000000u) ReadMtx(viewPos, VP);
+        if (nodeWorld >= NSMBW_VA(0x80000000u) && nodeWorld < 0x94000000u) ReadMtx(nodeWorld, NW);
+        if (viewPos >= NSMBW_VA(0x80000000u) && viewPos < 0x94000000u) ReadMtx(viewPos, VP);
         // The CALC_VIEW handler writes buffer mCurView (@0x101) of mNumView (@0x100) buffers, each
         // numMtx*0x30 rounded up to 32 bytes; the draw binds the base. Read buffer 1 too.
         const uint32_t numView = Memory::Read8(obj + 0x100u), curView = Memory::Read8(obj + 0x101u);
         const uint32_t bufStride = (numViewMtx * 0x30u + 0x1Fu) & ~0x1Fu;
-        if (numView > 1 && viewPos >= 0x80000000u && viewPos < 0x94000000u) ReadMtx(viewPos + bufStride, VP1);
+        if (numView > 1 && viewPos >= NSMBW_VA(0x80000000u) && viewPos < 0x94000000u) ReadMtx(viewPos + bufStride, VP1);
         if (i < 8) {
             std::fprintf(stderr, "[g3d]     (views: num=%u cur=%u bufStride=%u buf1[0]=(%.3f,%.3f,%.3f|%.1f,%.1f,%.1f))\n", numView,
                          curView, bufStride, VP1[0], VP1[5], VP1[10], VP1[3], VP1[7], VP1[11]);

@@ -53,6 +53,9 @@ int main() {
     const bool forceCompat = ::GetEnvironmentVariableA("MKW_FORCE_UNSUPPORTED_CPU", forced, sizeof(forced)) > 0 &&
                              forced[0] != '0';
     const bool cpuIsV3 = MkwHostCpuMeetsLevel(3, missing, sizeof(missing)) && !forceCompat;
+    // The game DLL runs its own CPU check while loading (host_cpu_baseline.cpp), which honours the
+    // same test switch: left set, the compat DLL would report this CPU as unsupported too.
+    ::SetEnvironmentVariableA("MKW_FORCE_UNSUPPORTED_CPU", nullptr);
     if (!cpuIsV3 && !MkwHostCpuMeetsLevel(2, missing, sizeof(missing))) {
         const std::string m(missing);
         Fail(L"This processor is too old for NSMBWCompiled. It needs SSE4.2 and the rest of the x86-64-v2 "

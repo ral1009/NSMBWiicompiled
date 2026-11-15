@@ -11,8 +11,21 @@
 option(MKW_BUILD_NSMBW "Build the experimental NSMBW recompiled product" OFF)
 
 if(MKW_BUILD_NSMBW)
+    # Which game version this build translates (docs/futureplans.md section 3). P1 = PAL rev 1, the
+    # version the tree is written against: everything as before. Any other (E1 = USA rev 1) reads
+    # generated_nsmbw-<version>/ (projects/nsmbw/tools/gen_version_tables.py and the translator
+    # steps in docs/BUILDING.md) and turns on the address layer (runtime/include/nsmbw_va.h).
+    set(NSMBW_GAME_VERSION "P1" CACHE STRING "Game version this build translates (P1 = PAL rev 1, E1 = USA rev 1)")
+    if(NSMBW_GAME_VERSION STREQUAL "P1")
+        set(NSMBW_GEN_DIR "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw")
+    else()
+        set(NSMBW_GEN_DIR "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw-${NSMBW_GAME_VERSION}")
+        if(NOT EXISTS "${NSMBW_GEN_DIR}/version/nsmbw_va_tokens.h")
+            message(FATAL_ERROR "Missing ${NSMBW_GEN_DIR}/version: run projects/nsmbw/tools/gen_version_tables.py ${NSMBW_GAME_VERSION}")
+        endif()
+    endif()
     set(NSMBW_SHARD_MANIFEST
-        "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw/build_shards/shards.cmake"
+        "${NSMBW_GEN_DIR}/build_shards/shards.cmake"
         CACHE FILEPATH "Translator-owned NSMBW combined shard manifest")
     if(NOT EXISTS "${NSMBW_SHARD_MANIFEST}")
         message(FATAL_ERROR
@@ -47,9 +60,9 @@ if(MKW_BUILD_NSMBW)
     # about a single dol+rel pair, and every one of those separately-generated files defines the
     # same extern "C" InitializeDataSections()/IsDataSectionsInitialized() symbols, which would
     # collide at link time the moment more than one was included.
-    set(NSMBW_DATA_INIT_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw/data_sections_init.cpp")
-    set(NSMBW_DATA_INIT_BLOB_ASM "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw/data_sections_init_blobs.S")
-    set(NSMBW_GUEST_SYMBOL_TABLE_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw/guest_symbol_table.cpp")
+    set(NSMBW_DATA_INIT_FILE "${NSMBW_GEN_DIR}/data_sections_init.cpp")
+    set(NSMBW_DATA_INIT_BLOB_ASM "${NSMBW_GEN_DIR}/data_sections_init_blobs.S")
+    set(NSMBW_GUEST_SYMBOL_TABLE_FILE "${NSMBW_GEN_DIR}/guest_symbol_table.cpp")
     if(NOT EXISTS "${NSMBW_DATA_INIT_FILE}")
         message(FATAL_ERROR
             "Missing combined NSMBW data initializer: ${NSMBW_DATA_INIT_FILE}. Run "
@@ -127,7 +140,7 @@ if(MKW_BUILD_NSMBW)
     add_library(nsmbw_runtime_common OBJECT ${NSMBW_RUNTIME_COMMON_SOURCES})
     mkw_configure_object_target(nsmbw_runtime_common)
     target_include_directories(nsmbw_runtime_common BEFORE PRIVATE
-        "${MKW_RUNTIME_SOURCE_DIR}/../generated_nsmbw")
+        "${NSMBW_GEN_DIR}")
     target_compile_features(nsmbw_runtime_common PRIVATE cxx_std_20)
     # MKW_RUNTIME_PRODUCT_NSMBW: distinguishes this compile of the shared runtime/src tree from
     # mkw_runtime_common's. Needed where a guest-code-address native override in a shared file is
@@ -159,6 +172,10 @@ if(MKW_BUILD_NSMBW)
         endif()
     endforeach()
 
+    # The address layer's tables for a non-PAL build (nsmbw_va.h). Every NSMBW target gets them,
+    # including the game DLL target defined below.
+    set(NSMBW_VERSION_TARGETS nsmbw_translated nsmbw_native nsmbw_data_init nsmbw_runtime_common)
+
     # Debug info for interactive debugging (Visual Studio, etc.) of the boot-sequence crash this
     # is currently stuck on. Deliberately not on nsmbw_translated - 30,000+ generated functions'
     # worth of debug info would bloat the build a lot for no benefit here, since the crash lives
@@ -176,7 +193,6 @@ if(MKW_BUILD_NSMBW)
     # launcher target below) loads one DLL per game version and CPU level and calls its exported
     # NsmbwGameMain() (nsmbw_product.cpp). The file is NSMBWCompiled-<version>[-compat].dll; the
     # version is P1 (PAL rev 1), the only one built so far, and -compat marks an MKW_HOST_ISA=v2 build.
-    set(NSMBW_GAME_VERSION "P1" CACHE STRING "Game version this build translates (P1 = PAL rev 1)")
     set(NSMBW_GAME_DLL_NAME "NSMBWCompiled-${NSMBW_GAME_VERSION}")
     if(MKW_HOST_ISA_LEVEL LESS 3)
         string(APPEND NSMBW_GAME_DLL_NAME "-compat")
@@ -201,6 +217,16 @@ if(MKW_BUILD_NSMBW)
         target_compile_definitions(NSMBWGame PRIVATE NSMBW_RELEASE)
     endif()
     target_compile_features(NSMBWGame PRIVATE cxx_std_20)
+    list(APPEND NSMBW_VERSION_TARGETS NSMBWGame)
+    if(NOT NSMBW_GAME_VERSION STREQUAL "P1")
+        foreach(nsmbw_target IN LISTS NSMBW_VERSION_TARGETS)
+            if(TARGET ${nsmbw_target})
+                target_include_directories(${nsmbw_target} PRIVATE "${NSMBW_GEN_DIR}/version")
+                target_compile_definitions(${nsmbw_target} PRIVATE
+                    NSMBW_VERSION_TABLES NSMBW_VERSION_${NSMBW_GAME_VERSION})
+            endif()
+        endforeach()
+    endif()
     target_compile_options(NSMBWGame PRIVATE ${MKW_HOST_MARCH_FLAG} -g)
     # -g alone only affects compiling; the linker strips debug sections unless told to keep them.
     # The 16 MB stack is on the launcher: Windows takes a thread's default stack size from the exe.

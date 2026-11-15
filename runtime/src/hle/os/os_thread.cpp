@@ -1,6 +1,7 @@
 // Guest thread lifecycle HLE (fiber-backed) plus the thread-list/priority-queue
 // helpers shared with the scheduler.
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <cstdint>
 #include <iostream>
 
@@ -76,8 +77,8 @@ int32_t ComputeThreadEffectivePriority(uint32_t threadPtr)
 bool IsThpVideoDecoderEntry(uint32_t entryFunc)
 {
     switch (entryFunc) {
-    case 0x805529A8u:
-    case 0x80552A74u:
+    case NSMBW_VA(0x805529A8u):
+    case NSMBW_VA(0x80552A74u):
         return true;
     default:
         return false;
@@ -218,7 +219,7 @@ void UnlockAllThreadMutexes(CpuContext* cpu, uint32_t threadPtr)
     }
     CpuContextScope scope(cpu);
     cpu->gpr[3] = threadPtr;
-    InvokeIndirectCpu(0x801A8088u, cpu); // __OSUnlockAllMutex
+    InvokeIndirectCpu(NSMBW_VA(0x801A8088u), cpu); // __OSUnlockAllMutex
 }
 
 // Shared tail of OSExitThread/OSCancelThread: clears context, delists if detached, marks
@@ -342,7 +343,7 @@ extern "C" void OSCreateThread_HLE_801b5270(CpuContext* ctx)
             // then it zeroes the remaining GPR slots. 0x801A20BC is mid-function code (it starts
             // on a `bl`, with no prologue), so the created thread's context - including its stack
             // pointer - was never initialized, and the game thread began executing with r1 = 0.
-            InvokeIndirectCpu(0x801AD0F0u, cpu);
+            InvokeIndirectCpu(NSMBW_VA(0x801AD0F0u), cpu);  // PAL address; USA 0x801ACFB0 (nsmbw_va.h)
         }
 
         if (IsThpVideoDecoderEntry(entryFunc)) {
@@ -356,7 +357,7 @@ extern "C" void OSCreateThread_HLE_801b5270(CpuContext* ctx)
 
         }
 
-        ::Memory::Write32(threadPtr + 0x84u, 0x801AA0F0u); // LR = OSExitThread
+        ::Memory::Write32(threadPtr + 0x84u, NSMBW_VA(0x801AA0F0u)); // LR = OSExitThread
         ::Memory::Write32(threadPtr + 0x0Cu, entryArg);    // r3 = argument
 
         // Stack info
@@ -372,8 +373,8 @@ extern "C" void OSCreateThread_HLE_801b5270(CpuContext* ctx)
         // Match the original OSCreateThread slow-path initialization that runs
         // once scheduler globals are live. THP worker threads depend on these
         // queue/list blocks being fully zeroed.
-        constexpr uint32_t kSchedulerInitFlagAddr = 0x80347130u;
-        constexpr uint32_t kThreadAttrSourceAddr = 0x80385AA8u;
+        constexpr uint32_t kSchedulerInitFlagAddr = NSMBW_VA(0x80347130u);
+        constexpr uint32_t kThreadAttrSourceAddr = NSMBW_VA(0x80385AA8u);
         if (Memory::Contains(kSchedulerInitFlagAddr, 4) &&
             ::Memory::Read32(kSchedulerInitFlagAddr) != 0) {
             uint32_t srr1 = ::Memory::Read32(threadPtr + 0x19Cu);

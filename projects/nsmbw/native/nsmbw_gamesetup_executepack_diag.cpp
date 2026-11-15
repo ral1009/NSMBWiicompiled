@@ -21,6 +21,7 @@
 // `lis r28,-0x7fcd; addi r28,r28,-0x6968` base = 0x80329698 seen in createPack()'s disassembly,
 // confirmed by re-disassembling executePack() itself): preExecute triple @0x803296E0, execute
 // triple @0x803296EC, postExecute triple @0x803296F8.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -36,14 +37,14 @@ extern "C" uint32_t g_nsmbwCurrentScenePtr;
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 namespace {
-constexpr uint32_t kCommonPackAddr = 0x80161E00u;
-constexpr uint32_t kPreExecuteTriple = 0x803296E0u;
-constexpr uint32_t kExecuteTriple = 0x803296ECu;
-constexpr uint32_t kPostExecuteTriple = 0x803296F8u;
+constexpr uint32_t kCommonPackAddr = NSMBW_VA(0x80161E00u);
+constexpr uint32_t kPreExecuteTriple = NSMBW_VA(0x803296E0u);
+constexpr uint32_t kExecuteTriple = NSMBW_VA(0x803296ECu);
+constexpr uint32_t kPostExecuteTriple = NSMBW_VA(0x803296F8u);
 // dScene_c::setNextScene(ProfileName nextScene, unsigned long param, bool forceChange) - real,
 // fully-decompiled address (NSMBW-Decomp source/dol/bases/d_scene.cpp), confirmed via
 // function_map.txt. Used by the NSMBW_FORCE_GAMESETUP_ADVANCE experiment below.
-constexpr uint32_t kSetNextSceneAddr = 0x800E1F50u;
+constexpr uint32_t kSetNextSceneAddr = NSMBW_VA(0x800E1F50u);
 }
 
 extern "C" uint32_t GameSetupExecutePack_Diag_80162260(uint32_t thisPtr)
@@ -161,8 +162,8 @@ extern "C" uint32_t GameSetupExecutePack_Diag_80162260(uint32_t thisPtr)
                     // execute() as this file assumed earlier. The REAL, still-unexamined execute()
                     // is [+0x20]=0x809183F0, and create() is [+0x08]=0x80918330 - dumping both live
                     // (same REL-relocation-avoidance reasoning as before).
-                    constexpr uint32_t kRealExecuteAddr = 0x809183F0u;
-                    constexpr uint32_t kRealCreateAddr = 0x80918330u;
+                    constexpr uint32_t kRealExecuteAddr = NSMBW_VA(0x809183F0u);
+                    constexpr uint32_t kRealCreateAddr = NSMBW_VA(0x80918330u);
                     // create()'s own body calls 0x80919560(this) directly (not virtually) - a
                     // REL-resident (GAME_SETUP-class-specific) function, distinct from the
                     // generic-looking main.dol utility calls around it (0x800b0db0, 0x800e4940,
@@ -171,7 +172,7 @@ extern "C" uint32_t GameSetupExecutePack_Diag_80162260(uint32_t thisPtr)
                     // gate being preExecute() (already read), this is the next most promising
                     // still-unexamined GAME_SETUP-specific function - possibly where the actual
                     // "load save data, then decide what's next" work happens.
-                    constexpr uint32_t kCreateHelperAddr = 0x80919560u;
+                    constexpr uint32_t kCreateHelperAddr = NSMBW_VA(0x80919560u);
                     for (auto pair : {std::pair<const char*, uint32_t>{"execute()", kRealExecuteAddr},
                                        std::pair<const char*, uint32_t>{"create()", kRealCreateAddr},
                                        std::pair<const char*, uint32_t>{"create()'s 0x80919560 helper", kCreateHelperAddr}}) {

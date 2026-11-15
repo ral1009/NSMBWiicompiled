@@ -35,6 +35,7 @@
 // FlatRead32/FlatRead8/FlatWrite32/FlatWriteRam32/ReadResolved8 call here (stack spill/restore,
 // the per-channel RAM state struct, the caller's own buffer) is genuine RAM access, left
 // untouched.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -140,7 +141,7 @@ loc_801B8C60:
     r25 = r7;
     r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(6));
     r0 = (r0_rot_0 & -64);
-    r3 = 0x80390000u;
+    r3 = NSMBW_VA_PAIR(0x80390000u, -1520);
     r3 = (r3 + -1520);
     r31 = (r3 + r0);
     // inline leaf 0x801B1280 (5 guest instruction(s))
@@ -250,7 +251,7 @@ loc_801B8CE8:
     r0 = (r0_rot_1 & -4);
     r0 = (r0 - r26);
     r3 = PPC_Srw(static_cast<uint32_t>(r3), static_cast<uint32_t>(r0));
-    ctx->lr = 0x801B8D04u;
+    ctx->lr = NSMBW_VA(0x801B8D04u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -261,7 +262,7 @@ loc_801B8CE8:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->xer = xer;
-    InvokeDirectCpu<0x801B16D0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B16D0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -323,7 +324,7 @@ loc_801B8D34:
 
 loc_801B8D3C:
 {
-    r3 = 0x80000000u;
+    r3 = NSMBW_VA(0x80000000u);
     r3 = (r3 + -2);
 }
 
@@ -486,7 +487,7 @@ loc_801B8E78:
     {
         const uint32_t ppcCarryValue = static_cast<uint32_t>(r0);
         const uint32_t ppcCarryShift = static_cast<uint32_t>(31) & 0x3Fu;
-        const bool ppcCarryNegative = (ppcCarryValue & 0x80000000u) != 0;
+        const bool ppcCarryNegative = (ppcCarryValue & NSMBW_VA(0x80000000u)) != 0;
         const uint32_t ppcCarry = ppcCarryShift == 0 ? 0u : (ppcCarryShift >= 32 ? (ppcCarryNegative && ppcCarryValue != 0 ? 1u : 0u) : (ppcCarryNegative && (ppcCarryValue & ((1u << ppcCarryShift) - 1u)) != 0 ? 1u : 0u));
         xer = (xer & 0xDFFFFFFFu) | (ppcCarry << 29);
     }

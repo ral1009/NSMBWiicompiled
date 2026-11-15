@@ -9,6 +9,7 @@
 // No window, no aurora, no input: whatever the guest code needs from those will fail loudly
 // through RuntimeCrash::FatalMissingGuestTarget (unimplemented HLE calls) rather than silently -
 // that failure, once we see it, is Phase 6's actual starting point.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "aurora_events.h"
 #include "abi_bridge.h"
 #include <aurora/env.hpp>
@@ -115,7 +116,7 @@ void ApplyAspectSetting() {
                     aspect.fourThree ? "4:3" : "16:9");
         return;
     }
-    constexpr uint32_t kTvModeInfo169Width = 0x80350820u + 12u;  // mode 1 (16:9), u16 width
+    constexpr uint32_t kTvModeInfo169Width = NSMBW_VA(0x80350820u) + 12u;  // mode 1 (16:9), u16 width
     const double width = 832.0 * (static_cast<double>(aspect.num) / aspect.den) / (16.0 / 9.0);
     Memory::Write16(kTvModeInfo169Width, static_cast<uint16_t>(std::lround(width)));
     // The level's view size in world units. mVideo::create (0x800E8BC0) copies two small-data
@@ -132,7 +133,7 @@ void ApplyAspectSetting() {
     // 0x8042B364 (d2d::Multi_c, 0x80006CD0) and 0x8042DF28 (m2d::Simple_c, 0x80163A20). At a wider
     // ratio it must be 608 / canvas width, or the HUD comes out stretched (seen at 21:9,
     // 2026-11-07, before this).
-    for (const uint32_t adjustConst : {0x8042B364u, 0x8042DF28u}) {
+    for (const uint32_t adjustConst : {NSMBW_VA(0x8042B364u), NSMBW_VA(0x8042DF28u)}) {
         const float current = Memory::ReadFloat32(adjustConst);
         if (current > 0.7305f && current < 0.7310f) {
             Memory::WriteFloat32(adjustConst, 608.0 / width);
@@ -150,7 +151,7 @@ void ApplyAspectSetting() {
         float expected;
         double value;
     };
-    for (const FaderConst& c : {FaderConst{0x8042DFD0u, 416.0f, width / 2.0}, FaderConst{0x8042E040u, 1.36842095f, width / 608.0}}) {
+    for (const FaderConst& c : {FaderConst{NSMBW_VA(0x8042DFD0u), 416.0f, width / 2.0}, FaderConst{NSMBW_VA(0x8042E040u), 1.36842095f, width / 608.0}}) {
         const float current = Memory::ReadFloat32(c.addr);
         if (current > c.expected - 0.001f && current < c.expected + 0.001f) {
             Memory::WriteFloat32(c.addr, c.value);
@@ -165,14 +166,14 @@ void ApplyAspectSetting() {
     // over the 408.7-unit 16:9 base view; at 21:9 the view is 1.31x wider, so the right-hand columns
     // were never drawn and ground popped in as it scrolled (developer report, 2026-11-07). Scale the
     // count with the view, plus one column of slack for the rounding.
-    constexpr uint32_t kTileColumnsConst = 0x8042C1A4u;
+    constexpr uint32_t kTileColumnsConst = NSMBW_VA(0x8042C1A4u);
     if (Memory::ReadFloat32(kTileColumnsConst) == 28.0f) {
         Memory::WriteFloat32(kTileColumnsConst, std::ceil(28.0 * width / 832.0) + 1.0);
     } else {
         std::printf("[nsmbw] Aspect ratio %s: tile column count not found (read %.3f)\n", aspect.text.c_str(),
                     Memory::ReadFloat32(kTileColumnsConst));
     }
-    constexpr uint32_t kViewWidthConst = 0x8042D058u;
+    constexpr uint32_t kViewWidthConst = NSMBW_VA(0x8042D058u);
     const float baseWidth = Memory::ReadFloat32(kViewWidthConst);
     if (baseWidth > 408.5f && baseWidth < 408.9f) {
         const double viewWidth = baseWidth * (static_cast<double>(aspect.num) / aspect.den) / (16.0 / 9.0);
@@ -196,8 +197,8 @@ void SeedLowMemDefaults() {
     // cannot start until its top. Previously this was the BSS end, which put the whole
     // stack inside the arena; OSInit's DCZeroRange(arenaLo, arenaHi - arenaLo) then wiped
     // the live stack it was running on.
-    const uint32_t mem1ArenaLo = 0x8043FF20u;
-    const uint32_t mem1ArenaHi = 0x817F0000u; // ARENA_HI, NSMBW-Decomp system_constants.h
+    const uint32_t mem1ArenaLo = NSMBW_VA(0x8043FF20u);
+    const uint32_t mem1ArenaHi = 0x817F0000u; // ARENA_HI, NSMBW-Decomp system_constants.h; nsmbw-va: not an address
     const uint32_t physicalMem2End = Memory::kMem2CachedBase + mem2Size;
     constexpr uint32_t kIosReservedSize = 0x20000u;
     constexpr uint32_t kIPCArenaSize = 0x20000u;
@@ -211,7 +212,9 @@ void SeedLowMemDefaults() {
     constexpr uint32_t kDvdFstReserveSize = 0x200000u;
     g_dvdFstReservedSize = kDvdFstReserveSize;
     g_dvdFstReservedBase = ipcBufLo - kDvdFstReserveSize;
-    constexpr uint32_t kGameCode = 0x534D4E50u;       // "SMNP", read from the real disc header
+    // "SMNP" (PAL) / "SMNE" (USA), from each disc header. The runtime derives the NAND title from
+    // this word (RuntimeHle::CurrentGameCode, esp.cpp), so it also picks the save folder.
+    constexpr uint32_t kGameCode = NSMBW_BY_VERSION(0x534D4E50u, 0x534D4E45u);
     constexpr uint32_t kMakerDiscVersion = 0x30310001u; // "01" maker, disc 0, version 1 (Rev 1)
     // Same retail-vs-NDEV test as OS__GetConsoleType_8019f33c (os_init.cpp) - kept in sync so a
     // guest read of this field and a guest call to OSGetConsoleType() never disagree.
@@ -219,9 +222,9 @@ void SeedLowMemDefaults() {
     const uint32_t consoleType = mem2Size == kRetailMem2Size ? 0x00000012u : 0x10000012u;
 
     const SeedEntry entries[] = {
-        {0x80000000u, kGameCode, "Disc game code"},
-        {0x80000004u, kMakerDiscVersion, "Disc maker/disc/version"},
-        {0x8000002Cu, consoleType, "OSBootInfo consoleType"},
+        {NSMBW_VA(0x80000000u), kGameCode, "Disc game code"},
+        {NSMBW_VA(0x80000004u), kMakerDiscVersion, "Disc maker/disc/version"},
+        {NSMBW_VA(0x8000002Cu), consoleType, "OSBootInfo consoleType"},
         // func_801AA940 (a one-time CPU/BAT bring-up routine, confirmed by reading its body)
         // unconditionally writes 0x80000000 here the first time it runs, caching a pointer to
         // OSBootInfo for func_801AA020's SI/DVD status decode. On real hardware that init runs
@@ -234,30 +237,30 @@ void SeedLowMemDefaults() {
         // 0x8042F980 = SDA1_BASE (r13), from generated_nsmbw/generated/RuntimeConfig.h -
         // NSMBWCompiled's own target doesn't have that header on its include path (only
         // nsmbw_runtime_common does), so this is the literal value, not a re-derivation.
-        {0x8042F980u - 20528u, 0x80000000u, "cached OSBootInfo* (func_801AA940 pre-seed)"},
-        {0x80003180u, kGameCode, "OS app game code"},
-        {0x80003194u, kGameCode, "OS app gamename"},
-        {0x800000F8u, static_cast<uint32_t>(TimeBaseContract::kBusClockHz), "__OSBusClock"},
-        {0x800000FCu, static_cast<uint32_t>(TimeBaseContract::kBusClockHz * 3), "__OSClock"},
-        {0x80000028u, mem1Size, "Legacy MEM1 size"},
-        {0x80000030u, mem1ArenaLo, "Legacy MEM1 arena lo"},
-        {0x80000034u, mem1ArenaHi, "Legacy MEM1 arena hi"},
-        {0x800000F0u, mem1Size, "Legacy simulated MEM1 size"},
-        {0x80003100u, mem1Size, "Physical MEM1 size"},
-        {0x80003104u, mem1Size, "Simulated MEM1 size"},
-        {0x80003108u, mem1End, "MEM1 end"},
-        {0x8000310Cu, mem1ArenaLo, "MEM1 arena lo"},
-        {0x80003110u, mem1ArenaHi, "MEM1 arena hi"},
-        {0x80003118u, mem2Size, "Physical MEM2 size"},
-        {0x8000311Cu, mem2Size, "Simulated MEM2 size"},
-        {0x80003120u, iosReservedLo, "MEM2 end"},
-        {0x80003124u, Memory::kMem2CachedBase, "MEM2 arena lo"},
-        {0x80003128u, g_dvdFstReservedBase, "MEM2 arena hi"},
-        {0x80003130u, ipcBufLo, "IPC Buffer lo"},
-        {0x80003134u, ipcBufHi, "IPC Buffer hi"},
-        {0x80003138u, 0x00000002u, "Hollywood revision"},
-        {0x80003148u, iosReservedLo, "IOS reserved lo"},
-        {0x8000314Cu, physicalMem2End, "IOS reserved hi"},
+        {NSMBW_VA(0x8042F980u) - 20528u, NSMBW_VA(0x80000000u), "cached OSBootInfo* (func_801AA940 pre-seed)"},
+        {NSMBW_VA(0x80003180u), kGameCode, "OS app game code"},
+        {NSMBW_VA(0x80003194u), kGameCode, "OS app gamename"},
+        {NSMBW_VA(0x800000F8u), static_cast<uint32_t>(TimeBaseContract::kBusClockHz), "__OSBusClock"},
+        {NSMBW_VA(0x800000FCu), static_cast<uint32_t>(TimeBaseContract::kBusClockHz * 3), "__OSClock"},
+        {NSMBW_VA(0x80000028u), mem1Size, "Legacy MEM1 size"},
+        {NSMBW_VA(0x80000030u), mem1ArenaLo, "Legacy MEM1 arena lo"},
+        {NSMBW_VA(0x80000034u), mem1ArenaHi, "Legacy MEM1 arena hi"},
+        {NSMBW_VA(0x800000F0u), mem1Size, "Legacy simulated MEM1 size"},
+        {NSMBW_VA(0x80003100u), mem1Size, "Physical MEM1 size"},
+        {NSMBW_VA(0x80003104u), mem1Size, "Simulated MEM1 size"},
+        {NSMBW_VA(0x80003108u), mem1End, "MEM1 end"},
+        {NSMBW_VA(0x8000310Cu), mem1ArenaLo, "MEM1 arena lo"},
+        {NSMBW_VA(0x80003110u), mem1ArenaHi, "MEM1 arena hi"},
+        {NSMBW_VA(0x80003118u), mem2Size, "Physical MEM2 size"},
+        {NSMBW_VA(0x8000311Cu), mem2Size, "Simulated MEM2 size"},
+        {NSMBW_VA(0x80003120u), iosReservedLo, "MEM2 end"},
+        {NSMBW_VA(0x80003124u), Memory::kMem2CachedBase, "MEM2 arena lo"},
+        {NSMBW_VA(0x80003128u), g_dvdFstReservedBase, "MEM2 arena hi"},
+        {NSMBW_VA(0x80003130u), ipcBufLo, "IPC Buffer lo"},
+        {NSMBW_VA(0x80003134u), ipcBufHi, "IPC Buffer hi"},
+        {NSMBW_VA(0x80003138u), 0x00000002u, "Hollywood revision"},
+        {NSMBW_VA(0x80003148u), iosReservedLo, "IOS reserved lo"},
+        {NSMBW_VA(0x8000314Cu), physicalMem2End, "IOS reserved hi"},
     };
     int seeded = 0;
     for (const auto& entry : entries) {
@@ -270,14 +273,14 @@ void SeedLowMemDefaults() {
     ApplyAspectSetting();
 }
 
-constexpr uint32_t kNsmbwEntryAddress = 0x80004050u;
+constexpr uint32_t kNsmbwEntryAddress = NSMBW_VA(0x80004050u);
 
 // Mirrors main.cpp's SeedCpuContext(): r1 is the initial stack pointer. NSMBW's manifest
 // (projects/nsmbw/nsmbw.yml) declares memory.base=0x80000000, memory.size=0x01800000, so guest
 // RAM runs up to 0x81800000; 0x817F0000 leaves headroom below that top for whatever the game's
 // own boot code further reserves, the same way MKW's own 0x81700000 sits below its RAM ceiling.
 void SeedCpuContext(CpuContext& cpu) {
-    cpu.gpr[1] = 0x817F0000u;
+    cpu.gpr[1] = NSMBW_VA(0x817F0000u);
 }
 
 // One real Wii address that must run before any other guest code touches its module: main.dol's
@@ -289,8 +292,8 @@ void SeedCpuContext(CpuContext& cpu) {
 // main() and OSLink() calls _prolog() for each module right after relocating it; we don't
 // implement real OSLink (every REL's relocated image is embedded statically instead), so this is
 // what stands in for both steps.
-constexpr uint32_t kDolCtorStart = 0x802EDCE0u;
-constexpr uint32_t kDolCtorEnd = 0x802EDFC0u;
+constexpr uint32_t kDolCtorStart = NSMBW_VA(0x802EDCE0u);
+constexpr uint32_t kDolCtorEnd = NSMBW_VA(0x802EDFC0u);
 // d_en_bossNP was excluded for two stacked reasons this session, both now fixed:
 //   1. RelFile.cs's ApplyRelocations mis-resolved cross-module relocations (reusing the
 //      currently-relocating module's own baseAddress/Sections instead of the target module's),
@@ -321,10 +324,10 @@ constexpr uint32_t kDolCtorEnd = 0x802EDFC0u;
 // which the translator still decoded into a function, so the old addresses called something that
 // looked callable and no REL constructor ever ran.
 constexpr uint32_t kRelPrologAddresses[] = {
-    0x8076D770u, // d_basesNP    _prolog (file base 0x8076D680 + section 1 at 0xF0, prolog offset 0)
-    0x80B1CA10u, // d_en_bossNP  _prolog (file base 0x80B1C920 + section 1 at 0xF0, prolog offset 0)
-    0x809A2D90u, // d_enemiesNP  _prolog (file base 0x809A2CA0 + section 1 at 0xF0, prolog offset 0)
-    0x807685A0u, // d_profileNP  _prolog (file base 0x807684C0 + section 1 at 0xE0, prolog offset 0)
+    NSMBW_VA(0x8076D770u), // d_basesNP    _prolog (file base 0x8076D680 + section 1 at 0xF0, prolog offset 0)
+    NSMBW_VA(0x80B1CA10u), // d_en_bossNP  _prolog (file base 0x80B1C920 + section 1 at 0xF0, prolog offset 0)
+    NSMBW_VA(0x809A2D90u), // d_enemiesNP  _prolog (file base 0x809A2CA0 + section 1 at 0xF0, prolog offset 0)
+    NSMBW_VA(0x807685A0u), // d_profileNP  _prolog (file base 0x807684C0 + section 1 at 0xE0, prolog offset 0)
 };
 
 // A bad guest constructor must not take down the whole boot sequence - matches
@@ -334,7 +337,7 @@ void InvokeGuestCallGuarded(uint32_t address, CpuContext& cpu, const char* label
     MkwJmpBuf jumpBuf;
     g_sehJumpTarget = &jumpBuf;
     if (MKW_SETJMP(jumpBuf) == 0) {
-        cpu.gpr[1] = 0x817F0000u;
+        cpu.gpr[1] = NSMBW_VA(0x817F0000u);
         InvokeIndirectCpu(address, &cpu);
     } else {
         std::fprintf(stderr,
@@ -412,6 +415,9 @@ void RunAuroraLogCallback(AuroraLogLevel level, const char* module, const char* 
 // another working directory still finds the HD pack; the working directory is only the fallback
 // when the exe's own path is unknown. (It used current_path(), which a release folder started
 // from a shortcut with a different "Start in" would get wrong.)
+// The game's NAND save folder: its title ID's low word as hex text (the game code, "SMNP" / "SMNE").
+constexpr const char* kSaveTitleDir = NSMBW_BY_VERSION("534d4e50", "534d4e45");
+
 std::filesystem::path NsmbwDataDir() {
     if (const auto exeDir = RuntimeConfigFile::ExecutableDirectory()) return *exeDir / "nsmbw_data";
     return std::filesystem::current_path() / "nsmbw_data";
@@ -874,7 +880,7 @@ void BackUpSaveFile() {
     constexpr size_t kMaxSaveBackups = 10;
     std::error_code ec;
     const auto appData = RuntimeConfigFile::ApplicationDataDirectory();
-    const auto save = appData / "NAND" / "title" / "00010004" / "534d4e50" / "wiimj2d.sav";
+    const auto save = appData / "NAND" / "title" / "00010004" / kSaveTitleDir / "wiimj2d.sav";
     if (!std::filesystem::is_regular_file(save, ec) || std::filesystem::file_size(save, ec) == 0) {
         return;
     }
@@ -935,7 +941,7 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
     }
     std::error_code ec;
 
-    const auto saveDir = RuntimeConfigFile::ApplicationDataDirectory() / "NAND" / "title" / "00010004" / "534d4e50";
+    const auto saveDir = RuntimeConfigFile::ApplicationDataDirectory() / "NAND" / "title" / "00010004" / kSaveTitleDir;
     if (AURORA_ENV("NSMBW_RESET_SAVE") != nullptr && std::filesystem::exists(saveDir, ec)) {
         const auto removed = std::filesystem::remove_all(saveDir, ec);
         std::printf("[nsmbw] Reset: removed NSMBW NAND save (%llu entries) at %s\n",
@@ -982,6 +988,14 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
 }
 
 } // namespace
+
+// NSMBW_LOG_SCHED_DISABLE=1: the scheduler-disable count (SelectThread returns early while it
+// is non-zero) at each boot step, to find a stray write (USA bring-up, 2026-11-14).
+void ProbeSchedulerDisableCount(const char* step) {
+    if (std::getenv("NSMBW_LOG_SCHED_DISABLE") == nullptr) return;
+    std::fprintf(stderr, "[nsmbw] scheduler disable count %s: 0x%08X\n", step,
+                 Memory::Read32(NSMBW_VA(0x8042A9E0u)));
+}
 
 // The game is a DLL (NSMBWCompiled-<version>.dll) that the launcher, NSMBWCompiled.exe
 // (nsmbw_launcher.cpp), loads and enters here. Everything below used to be main().
@@ -1062,7 +1076,9 @@ extern "C" __declspec(dllexport) int NsmbwGameMain() {
 
     std::printf("[nsmbw] Initializing embedded data sections...\n");
     InitializeDataSections();
+    ProbeSchedulerDisableCount("after InitializeDataSections");
     SeedLowMemDefaults();
+    ProbeSchedulerDisableCount("after SeedLowMemDefaults");
     // The disc (dvd_root) was checked by the launcher's setup screen (nsmbw_launcher_setup.cpp)
     // before this DLL was loaded; its disc ID is what chose this DLL.
     // Must precede the guest entry point. NSMBW's own DVDInit (0x801CAE70) inlines
@@ -1075,6 +1091,7 @@ extern "C" __declspec(dllexport) int NsmbwGameMain() {
     // hook has to be registered first (registered after it on 2026-10-28, it never ran).
     nsmbw_layout_patch::Register();
     DVDInit_8015EA1C();
+    ProbeSchedulerDisableCount("after DVDInit");
 
     // NSMBW's own boot sequence draws its Wii Remote strap warning as its first real content -
     // MKW's black "WiiCompiled" title card (meant to cover the brief gap before guest rendering
@@ -1264,6 +1281,7 @@ extern "C" __declspec(dllexport) int NsmbwGameMain() {
     // gap on top of the OSCreateThread/OSResumeThread guest-address mismatch (this product's shared
     // os_thread.cpp hooks are registered at MKW's link addresses, not NSMBW's).
     Fiber::GuestFiberManager::Initialize();
+    ProbeSchedulerDisableCount("after fiber init");
 
     CpuContextScope cpuScope(&cpu);
 

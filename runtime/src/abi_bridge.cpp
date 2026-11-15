@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include "abi_bridge.h"
 
 #include <algorithm>
@@ -498,3 +500,43 @@ void InitializePersistentCpuContext() {
         g_persistentCpu.gpr[13] = RuntimeConfig::SDA1_BASE;
     }
 }
+
+namespace DiagRecentCalls {
+uint32_t g_watchCallsAddr = [] {
+    const char* v = std::getenv("NSMBW_WATCH_WRITE_CALLS");
+    return v != nullptr ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0u;
+}();
+
+void WatchCallsCheck(uint32_t addr, uint32_t lr) {
+    static uint32_t last = 0;
+    static bool primed = false;
+    static int reports = 0;
+    uint32_t now = 0;
+    if (!Memory::TryRead32(g_watchCallsAddr, now)) return;
+    if (!primed) {
+        primed = true;
+        last = now;
+        return;
+    }
+    if (now == last || reports >= 20) return;
+    ++reports;
+    std::fprintf(stderr, "[watch-calls] 0x%08X: 0x%08X -> 0x%08X before the call to 0x%08X (lr 0x%08X); earlier calls:",
+                 g_watchCallsAddr, last, now, addr, lr);
+    const uint32_t next = g_next.load(std::memory_order_relaxed);
+    for (uint32_t i = 1; i <= 8 && i < next; ++i) {
+        const uint32_t slot = (next - 1 - i) % static_cast<uint32_t>(kCapacity);
+        std::fprintf(stderr, " 0x%08X<-0x%08X(r3=%08X,r4=%08X)", g_addrs[slot], g_lrs[slot], g_r3s[slot], g_r4s[slot]);
+    }
+    std::fprintf(stderr, "\n");
+    std::fflush(stderr);
+    char text[65] = {};
+    for (uint32_t i = 0; i < 64; ++i) {
+        uint32_t w = 0;
+        Memory::TryRead32((g_watchCallsAddr - 32u + i) & ~3u, w);
+        const uint8_t c = static_cast<uint8_t>(w >> (24 - 8 * ((g_watchCallsAddr - 32u + i) & 3u)));
+        text[i] = (c >= 32 && c < 127) ? static_cast<char>(c) : '.';
+    }
+    std::fprintf(stderr, "[watch-calls]   bytes at 0x%08X..: %s" "\n", g_watchCallsAddr - 32u, text);
+    last = now;
+}
+} // namespace DiagRecentCalls

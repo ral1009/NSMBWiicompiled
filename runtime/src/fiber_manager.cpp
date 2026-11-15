@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "fiber_manager.h"
 #include "memory.h"
 #include "abi_bridge.h"
@@ -71,10 +72,10 @@ std::atomic<uint32_t> g_viRetracePendingCount{0};
 namespace {
 constexpr uint32_t kOSCurrentContextAddr = 0x800000d4u;
 constexpr uint32_t kOSRunningContextAddr = 0x800000e4u;  // OSGetCurrentThread reads this
-constexpr uint32_t kThreadQueueArrayAddr = 0x803477b0u;
-constexpr uint32_t kSchedulerPendingFlagAddr = 0x80386920u;
-constexpr uint32_t kSchedulerReschedCounterAddr = 0x8038691cu;
-constexpr uint32_t kSchedulerIdleFlagAddr = 0x80386918u;
+constexpr uint32_t kThreadQueueArrayAddr = NSMBW_VA(0x803477b0u);
+constexpr uint32_t kSchedulerPendingFlagAddr = NSMBW_VA(0x80386920u);
+constexpr uint32_t kSchedulerReschedCounterAddr = NSMBW_VA(0x8038691cu);
+constexpr uint32_t kSchedulerIdleFlagAddr = NSMBW_VA(0x80386918u);
 
 // OSThread structure offsets
 constexpr uint32_t kThreadStateOffset = 0x2C8u;
@@ -684,7 +685,7 @@ void GuestFiberManager::FiberProc(void* param)
     CpuContextScope scope(cpu);
     
     int startDeferAttempts = 0;
-    while (entryPoint == 0x8024373c) { // EGG::Thread::start
+    while (entryPoint == NSMBW_VA(0x8024373c)) { // EGG::Thread::start
         uint32_t vtable = 0;
         uint32_t startFn = 0;
         try {

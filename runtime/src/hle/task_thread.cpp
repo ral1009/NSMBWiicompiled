@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "abi_bridge.h"
 #include "ppc_runtime.h"
@@ -20,7 +21,7 @@ constexpr uint32_t kJobSize = 0x18u;
 
 bool ShouldRetryThpPrepareAfterClose(uint32_t callback, uint32_t arg, uint32_t result)
 {
-    if (callback != 0x80529D68u || result != 0) {
+    if (callback != NSMBW_VA(0x80529D68u) || result != 0) {
         return false;
     }
     if (arg == 0 || !Memory::Contains(arg + 0xACu, 4)) {
@@ -30,11 +31,11 @@ bool ShouldRetryThpPrepareAfterClose(uint32_t callback, uint32_t arg, uint32_t r
     if (state != 0) {
         return false;
     }
-    if (!Memory::Contains(0x809BECF0u, 4) || !Memory::Contains(0x809BEBA0u, 4)) {
+    if (!Memory::Contains(NSMBW_VA(0x809BECF0u), 4) || !Memory::Contains(NSMBW_VA(0x809BEBA0u), 4)) {
         return false;
     }
-    const uint32_t thpInit = Memory::Read32(0x809BECF0u);
-    const uint32_t thpOpen = Memory::Read32(0x809BEBA0u);
+    const uint32_t thpInit = Memory::Read32(NSMBW_VA(0x809BECF0u));
+    const uint32_t thpOpen = Memory::Read32(NSMBW_VA(0x809BEBA0u));
     return thpInit != 0 && thpOpen != 0;
 }
 
@@ -52,23 +53,23 @@ uint32_t RunMovieManagerPrepareAsync(uint32_t manager, CpuContext* cpu)
         CpuContextScope scope(cpu);
         cpu->gpr[3] = manager + 0x28u;
         cpu->gpr[4] = 0;
-        InvokeIndirectCpu(0x80550CC0u, cpu);
+        InvokeIndirectCpu(NSMBW_VA(0x80550CC0u), cpu);
         return cpu->gpr[3];
     };
 
     uint32_t openResult = callThpPlayerOpen();
-    if (openResult == 0 && ShouldRetryThpPrepareAfterClose(0x80529D68u, manager, 0)) {
+    if (openResult == 0 && ShouldRetryThpPrepareAfterClose(NSMBW_VA(0x80529D68u), manager, 0)) {
         {
             CpuContextScope scope(cpu);
-            InvokeIndirectCpu(0x80551658u, cpu); // THP__PlayerStop
-            InvokeIndirectCpu(0x80550F48u, cpu); // THP__PlayerClose
+            InvokeIndirectCpu(NSMBW_VA(0x80551658u), cpu); // THP__PlayerStop
+            InvokeIndirectCpu(NSMBW_VA(0x80550F48u), cpu); // THP__PlayerClose
         }
-        if (Memory::Contains(0x809BEBA0u, 8) && Memory::Read32(0x809BEBA0u) != 0) {
-            Memory::Write32(0x809BEBA0u, 0);
-            Memory::Write8(0x809BEBA4u, 0);
-            Memory::Write8(0x809BEBA5u, 0);
-            Memory::Write8(0x809BEBA6u, 0);
-            Memory::Write8(0x809BEBA7u, 0);
+        if (Memory::Contains(NSMBW_VA(0x809BEBA0u), 8) && Memory::Read32(NSMBW_VA(0x809BEBA0u)) != 0) {
+            Memory::Write32(NSMBW_VA(0x809BEBA0u), 0);
+            Memory::Write8(NSMBW_VA(0x809BEBA4u), 0);
+            Memory::Write8(NSMBW_VA(0x809BEBA5u), 0);
+            Memory::Write8(NSMBW_VA(0x809BEBA6u), 0);
+            Memory::Write8(NSMBW_VA(0x809BEBA7u), 0);
         }
         openResult = callThpPlayerOpen();
     }
@@ -81,8 +82,8 @@ uint32_t RunMovieManagerPrepareAsync(uint32_t manager, CpuContext* cpu)
     {
         CpuContextScope scope(cpu);
         cpu->gpr[3] = manager + 0x10u;
-        InvokeIndirectCpu(0x80551D38u, cpu); // THP__PlayerGetVideoInfo
-        InvokeIndirectCpu(0x80550F9Cu, cpu); // THP__PlayerCalcNeedMemory
+        InvokeIndirectCpu(NSMBW_VA(0x80551D38u), cpu); // THP__PlayerGetVideoInfo
+        InvokeIndirectCpu(NSMBW_VA(0x80550F9Cu), cpu); // THP__PlayerCalcNeedMemory
     }
     const uint32_t needMemory = cpu->gpr[3];
     Memory::Write32(manager + 0x20u, needMemory);
@@ -92,18 +93,18 @@ uint32_t RunMovieManagerPrepareAsync(uint32_t manager, CpuContext* cpu)
     {
         CpuContextScope scope(cpu);
         cpu->gpr[3] = setBufferArg;
-        InvokeIndirectCpu(0x80551054u, cpu); // THP__PlayerSetBuffer
+        InvokeIndirectCpu(NSMBW_VA(0x80551054u), cpu); // THP__PlayerSetBuffer
     }
 
     const uint32_t mode = Memory::Read32(manager + 0xA8u);
-    const uint32_t audioSystem = Memory::Read32(0x8088FDB8u + (mode << 2));
+    const uint32_t audioSystem = Memory::Read32(NSMBW_VA(0x8088FDB8u) + (mode << 2));
     uint32_t prepareResult = 0;
     {
         CpuContextScope scope(cpu);
         cpu->gpr[3] = Memory::Read32(manager + 0x24u);
         cpu->gpr[4] = audioSystem;
         cpu->gpr[5] = 0;
-        InvokeIndirectCpu(0x80551378u, cpu); // THP__PlayerPrepare
+        InvokeIndirectCpu(NSMBW_VA(0x80551378u), cpu); // THP__PlayerPrepare
         prepareResult = cpu->gpr[3];
     }
     if (prepareResult != 0) {
@@ -162,7 +163,7 @@ extern "C" void TaskThread_run_HLE_80242d7c(CpuContext* ctx) {
             cpu->gpr[3] = taskThread + kTaskMessageQueueOffset;
             cpu->gpr[4] = outMsgPtr;
             cpu->gpr[5] = 1; // OS_MESSAGE_BLOCK
-            InvokeIndirectCpu(0x801A7424u, cpu); // OSReceiveMessage
+            InvokeIndirectCpu(NSMBW_VA(0x801A7424u), cpu); // OSReceiveMessage
         }
 
         const uint32_t job = Memory::Read32(outMsgPtr);
@@ -176,7 +177,7 @@ extern "C" void TaskThread_run_HLE_80242d7c(CpuContext* ctx) {
 
             if (callback != 0) {
                 CpuContextScope scope(cpu);
-                if (callback == 0x80529D68u) {
+                if (callback == NSMBW_VA(0x80529D68u)) {
                     RunMovieManagerPrepareAsync(arg, cpu);
                 } else {
                     cpu->gpr[3] = arg;
@@ -198,7 +199,7 @@ extern "C" void TaskThread_run_HLE_80242d7c(CpuContext* ctx) {
                     cpu->gpr[3] = doneQueue;
                     cpu->gpr[4] = token;
                     cpu->gpr[5] = 0; // OS_MESSAGE_NOBLOCK
-                    InvokeIndirectCpu(0x801A735Cu, cpu); // OSSendMessage
+                    InvokeIndirectCpu(NSMBW_VA(0x801A735Cu), cpu); // OSSendMessage
                 }
             }
         }

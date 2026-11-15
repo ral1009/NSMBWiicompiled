@@ -1,4 +1,5 @@
 ﻿// gx_texture.cpp - Texture Object and TLUT Functions
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "gx_internal.h"
 #include <aurora/env.hpp>
 #include "runtime_log.h"
@@ -520,7 +521,7 @@ static void NsmbwScanForPaneName(const char* logPrefix, int callIndex, uint32_t 
             ctx ? ctx->lr : 0u);
     if (ctx == nullptr) return;
     auto tryCandidate = [logPrefix](const char* label, uint32_t candidate) {
-        if (candidate < 0x80000000u || candidate > 0x817FFFFFu) return; // must look like a MEM1 pointer
+        if (candidate < 0x80000000u || candidate > 0x817FFFFFu) return; // must look like a MEM1 pointer; nsmbw-va: not an address
         char name[17] = {};
         bool ok = true;
         int len = 0;
@@ -659,7 +660,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         if (logLiquid) {
             const CpuContext* c = TryGetCpuContext();
             const uint32_t lr = c ? static_cast<uint32_t>(c->lr) : 0u;
-            if (lr >= 0x8000AFA0u && lr < 0x8000D170u && armedPerSite[lr] < 6) {
+            if (lr >= NSMBW_VA(0x8000AFA0u) && lr < NSMBW_VA(0x8000D170u) && armedPerSite[lr] < 6) {
                 ++armedPerSite[lr];
                 RT_LOGF(RT_TAG_GX, "NSMBW_LIQUID GXLoadTexObj from LR=0x%08X oa=0x%08X tid=%u\n", lr, oa, tid);
                 GXInsertDebugMarker("nsmbw-arm-drawlog");
@@ -797,7 +798,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     // entirely: min==max==0 across the full buffer means "genuinely all zero, no gradient exists
     // anywhere in this data," while any spread proves real gradient data is present (wherever it
     // physically sits in the tiling). Remove once resolved.
-    if (oa == 0x8043FB38u && AURORA_ENV("NSMBW_LOG_WIPECIRCLE_TEXDATA") != nullptr) {
+    if (oa == NSMBW_VA(0x8043FB38u) && AURORA_ENV("NSMBW_LOG_WIPECIRCLE_TEXDATA") != nullptr) {
         static int wipeTexLogged = 0;
         if (wipeTexLogged < 8) {
             ++wipeTexLogged;
@@ -828,7 +829,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     // arriving through GX__InitTexObj_801707f8 at all - it must be getting its meta from
     // TryGetOrExtractTexObjMeta's guest-memory fallback instead. This prints what THAT path
     // actually read for wrapS/wrapT, right before GXLoadTexObj applies it. Remove once resolved.
-    if (oa == 0x8043FC48u && AURORA_ENV("NSMBW_LOG_WRAP_MODE") != nullptr) {
+    if (oa == NSMBW_VA(0x8043FC48u) && AURORA_ENV("NSMBW_LOG_WRAP_MODE") != nullptr) {
         RT_LOGF(RT_TAG_GX, "NSMBW_TARGET_WRAP oa=0x%08X raw wrapS=%u wrapT=%u fmt=%u %ux%u\n",
                 oa, meta.wrapS, meta.wrapT, meta.format, meta.width, meta.height);
         // DIAGNOSTIC (temporary): P_back_00's own source bytes - user-reported symptom is the

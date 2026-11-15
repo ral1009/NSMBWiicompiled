@@ -41,9 +41,11 @@ struct GameVersion {
     const wchar_t* name;
 };
 
-// The versions this launcher knows a DLL for. USA (SMNE01 revision 1, "E1") is next.
+// The versions this launcher knows a DLL for (built with -DNSMBW_GAME_VERSION=<tag>). A package
+// without a version's DLL says so when that disc is picked (nsmbw_launcher.cpp).
 constexpr GameVersion kSupportedVersions[] = {
     {"SMNP01", 1, L"P1", L"Europe (PAL), revision 1"},
+    {"SMNE01", 1, L"E1", L"USA, revision 1"},
 };
 
 const wchar_t* RegionName(char regionLetter) {

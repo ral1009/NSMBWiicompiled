@@ -33,6 +33,7 @@
 // button mapping no longer applies to NSMBW. Bindings are saved to nsmbw_controls.ini next to
 // Config.toml as "<context>.<action>.pad = south,west" / ".key = z,enter".
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "nsmbw_controls.h"
 
 #include "memory.h"
@@ -89,9 +90,9 @@ constexpr uint32_t kScreenRight = kWpadDown;
 constexpr uint32_t kScreenUp = kWpadRight;
 constexpr uint32_t kScreenDown = kWpadLeft;
 
-constexpr uint32_t kGameStopAddr = 0x8042A228u;
+constexpr uint32_t kGameStopAddr = NSMBW_VA(0x8042A228u);
 constexpr uint32_t kGameStopPauseMask = 0x1u | 0x4u; // GAME_STOP_PAUSE | GAME_STOP_OTASUKE_PAUSE
-constexpr uint32_t kGameModeAddr = 0x80315E90u + 8u;
+constexpr uint32_t kGameModeAddr = NSMBW_VA(0x80315E90u) + 8u;
 constexpr uint32_t kGameModeTitle = 2, kGameModeTitleReplay = 3;
 constexpr uint32_t kProfileWorldMap = 3, kProfileStage = 5;
 
@@ -623,7 +624,7 @@ namespace {
 // 0x80377D34 (fManager_c's lists start at 0x80377D10, read by mainLoop 0x80162F50; execute is the
 // one at +36): {first, last}. Each node is a fLiNdBaPr_c {prev, next, owner, order}; the owner's
 // fBase_c::mProfName is the u16 at +8 (f_base.hpp: mUniqueID, mParam, mProfName). Read-only.
-constexpr uint32_t kExecuteListAddr = 0x80377D34u;
+constexpr uint32_t kExecuteListAddr = NSMBW_VA(0x80377D34u);
 uint32_t FindProfile(uint16_t profile) {
     uint32_t node = 0;
     Memory::TryRead32(kExecuteListAddr, node);
@@ -669,7 +670,7 @@ constexpr uint16_t kProfileModelPlayManager = 729;
 // (closing), and 0x809930B8 again once the list is gone (NSMBW_DUMP_HINT_LIST run with screenshots,
 // 2026-11-07). The state IDs are d_basesNP statics; the REL is linked at a fixed address
 // (0x8076D680, nsmbw-d_basesNP.yml), so the idle one's address doesn't move.
-constexpr uint32_t kHintListIdleState = 0x809930B8u;
+constexpr uint32_t kHintListIdleState = NSMBW_VA(0x809930B8u);
 bool HintListOpen() {
     static const bool off = std::getenv("NSMBW_NO_HINT_LIST_CONTEXT") != nullptr; // diagnostic A/B
     if (off) return false;

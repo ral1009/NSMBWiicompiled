@@ -35,6 +35,7 @@
 // unrecoverable hardware fault on this runtime. Every other FlatRead32/FlatRead16/FlatWrite32 call
 // here (stack spill/restore, the per-channel RAM state struct, the caller's own buffer) is genuine
 // RAM access, left untouched.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -116,7 +117,7 @@ loc_801B9090:
     MemoryInline::FlatWriteRam32((r1 + 16), r28);
     r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(6));
     r0 = (r0_rot_0 & -64);
-    r4 = 0x80390000u;
+    r4 = NSMBW_VA_PAIR(0x80390000u, -1520);
     r4 = (r4 + -1520);
     r31 = (r4 + r0);
     r29 = 0;
@@ -233,7 +234,7 @@ loc_801B9138:
 
 loc_801B9140:
 {
-    r6 = 0x80000000u;
+    r6 = NSMBW_VA(0x80000000u);
     r6 = (r6 + -2);
 }
 
@@ -381,7 +382,7 @@ loc_801B924C:
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
     ctx->xer = xer;
-    InvokeDirectCpu<0x801AB2F0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801AB2F0u)>(ctx);
     r0 = ctx->gpr[0];
     r3 = ctx->gpr[3];
     SetCRResident(cr, xer, 0, static_cast<uint32_t>(r3), static_cast<uint32_t>(255));
@@ -396,14 +397,14 @@ loc_801B9254:
 
 loc_801B9258:
 {
-    ctx->lr = 0x801B925Cu;
+    ctx->lr = NSMBW_VA(0x801B925Cu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->xer = xer;
-    InvokeDirectCpu<0x801AA020u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801AA020u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -488,7 +489,7 @@ loc_801B92B8:
 
 loc_801B92BC:
 {
-    r3 = 0x80000000u;
+    r3 = NSMBW_VA_PAIR(0x80000000u, 12518);
     r0 = MemoryInline::FlatRead16((r3 + 12518));
 }
 

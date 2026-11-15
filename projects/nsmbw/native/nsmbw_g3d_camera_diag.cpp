@@ -14,6 +14,7 @@
 // CameraData layout per NSMBW-Decomp include/lib/nw4r/g3d/g3d_camera.h: cameraMtx @0x0,
 // projMtx @0x30, flags @0x70, cameraPos @0x74, cameraTarget @0x8C, projType @0xA8.
 // New address -> shard manifest regen required.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -26,7 +27,7 @@
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 namespace {
-constexpr uint32_t kUpdateCameraMtxAddr = 0x80254630u;
+constexpr uint32_t kUpdateCameraMtxAddr = NSMBW_VA(0x80254630u);
 }
 
 extern "C" void G3dCamera_GetCameraMtx_Diag_802541F0(uint32_t thisPtr, uint32_t pMtx) {

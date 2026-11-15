@@ -1,5 +1,6 @@
 // Boot/init hooks, OSFatal, and assorted hardware-init stubs.
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -91,7 +92,7 @@ extern "C" uint32_t BTM_IsDeviceUp_HLE_8013a300(CpuContext* ctx)
 {
     // Force Bluetooth stack to "up" to avoid endless polling loops while we lack
     // real hardware bring-up.
-    constexpr uint32_t kBtmCbBase = 0x80336278u;
+    constexpr uint32_t kBtmCbBase = NSMBW_VA(0x80336278u);
     constexpr uint32_t kDevStateOffset = 0x64Eu;
     try {
         ::Memory::Write8(kBtmCbBase + kDevStateOffset, 5u);
@@ -204,11 +205,11 @@ extern "C" uint32_t __OSInitSTM_HLE_801ab848(CpuContext* ctx)
     // r13-0x62c4=/dev/stm/eventhook.
     try {
         // Mark STM as initialized
-        ::Memory::Write32(r13 - 0x62ccu, 1);
+        ::Memory::Write32(r13 - NSMBW_SDA13(0x62ccu), 1);
 
         // Fake non-zero handles so callers' zero-checks pass.
-        ::Memory::Write32(r13 - 0x62c8u, 0x00535401); // "ST\x01"
-        ::Memory::Write32(r13 - 0x62c4u, 0x00535402); // "ST\x02"
+        ::Memory::Write32(r13 - NSMBW_SDA13(0x62c8u), 0x00535401); // "ST\x01"
+        ::Memory::Write32(r13 - NSMBW_SDA13(0x62c4u), 0x00535402); // "ST\x02"
 
         // Default Power/Reset callback pointers are left unset; safe since we never fire
         // the STM hardware interrupt that would invoke them.

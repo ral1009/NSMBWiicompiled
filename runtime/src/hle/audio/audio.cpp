@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA: NSMBW addresses below are PAL rev 1, mapped per game version
 #include "memory.h"
 #include "guest_interrupt_context.h"
 #include "hle_stubs.h"
@@ -30,15 +31,15 @@ constexpr uint32_t kBytesPerSample = 2u;
 // The relative layout matches MKW's (initialized/busy adjacent, stack-switch/dma-callback
 // adjacent), which is the cross-check that these are the same four variables.
 #ifdef MKW_RUNTIME_PRODUCT_NSMBW
-constexpr uint32_t kAIInitializedAddr = 0x8042A798u;
-constexpr uint32_t kAICallbackBusyAddr = 0x8042A79Cu;
-constexpr uint32_t kAICallbackStackSwitchAddr = 0x8042A7CCu;
-constexpr uint32_t kAIDmaCallbackAddr = 0x8042A7D0u;
+constexpr uint32_t kAIInitializedAddr = NSMBW_VA(0x8042A798u);
+constexpr uint32_t kAICallbackBusyAddr = NSMBW_VA(0x8042A79Cu);
+constexpr uint32_t kAICallbackStackSwitchAddr = NSMBW_VA(0x8042A7CCu);
+constexpr uint32_t kAIDmaCallbackAddr = NSMBW_VA(0x8042A7D0u);
 #else
-constexpr uint32_t kAIInitializedAddr = 0x80386448u;
-constexpr uint32_t kAICallbackBusyAddr = 0x8038644Cu;
-constexpr uint32_t kAICallbackStackSwitchAddr = 0x8038647Cu;
-constexpr uint32_t kAIDmaCallbackAddr = 0x80386480u;
+constexpr uint32_t kAIInitializedAddr = NSMBW_VA(0x80386448u);
+constexpr uint32_t kAICallbackBusyAddr = NSMBW_VA(0x8038644Cu);
+constexpr uint32_t kAICallbackStackSwitchAddr = NSMBW_VA(0x8038647Cu);
+constexpr uint32_t kAIDmaCallbackAddr = NSMBW_VA(0x80386480u);
 #endif
 
 // Max completed 3 ms DMA blocks delivered per tick. Draining several at once catches up

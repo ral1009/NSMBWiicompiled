@@ -38,10 +38,15 @@ extern "C" void OS_HLE_EndDeferredGuestCallbacks();
 // renaming requires updating Translator.Cli/Program.cs, RuntimeNativeGuestEffectAnalyzer.cs,
 // TranslatedBuildShardEmitter.cs and RuntimeNativeFunctionAbiProvider.cs together.
 
+//
+// addr_hex is a PAL rev 1 address; for another game version both the function name and the
+// registered address go through the address layer (nsmbw_va.h): NSMBW_FUNC maps the token through
+// the generated token table, REGISTER_NATIVE_FUNCTION maps the number through the range table.
+// gen_version_tables.py writes both from the same map, so they agree. For PAL both are identity.
 #define PPC_NATIVE_OVERRIDE(addr_hex, name, ret_type, arg_list, call_list) \
-    extern "C" ret_type func_##addr_hex arg_list { return name call_list; } \
-    REGISTER_NATIVE_FUNCTION(0x##addr_hex, name)
+    extern "C" ret_type NSMBW_FUNC(addr_hex) arg_list { return name call_list; } \
+    REGISTER_NATIVE_FUNCTION(NSMBW_PP_CAT(0x, addr_hex), name)
 
 #define PPC_NATIVE_OVERRIDE_VOID(addr_hex, name, arg_list, call_list) \
-    extern "C" void func_##addr_hex arg_list { name call_list; } \
-    REGISTER_NATIVE_FUNCTION(0x##addr_hex, name)
+    extern "C" void NSMBW_FUNC(addr_hex) arg_list { name call_list; } \
+    REGISTER_NATIVE_FUNCTION(NSMBW_PP_CAT(0x, addr_hex), name)

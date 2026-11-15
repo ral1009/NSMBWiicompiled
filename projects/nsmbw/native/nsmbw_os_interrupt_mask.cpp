@@ -20,6 +20,7 @@
 //
 // Not re-deriving or guessing the bit semantics for any of the 32 interrupt lines: preserving the
 // exact original control flow removes that risk entirely.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -64,7 +65,7 @@ loc_801B1400:
 
 loc_801B1404:
 {
-    if (((cr & 0x80000000u) == 0)) {
+    if (((cr & NSMBW_VA(0x80000000u)) == 0)) {
         goto loc_801B14F8;
     }
 }
@@ -87,7 +88,7 @@ loc_801B1410:
 
 loc_801B1414:
 {
-    if (((cr & 0x80000000u) == 0)) {
+    if (((cr & NSMBW_VA(0x80000000u)) == 0)) {
         goto loc_801B143C;
     }
 }
@@ -136,7 +137,7 @@ loc_801B1430:
 
 loc_801B1434:
 {
-    if (((cr & 0x80000000u) == 0)) {
+    if (((cr & NSMBW_VA(0x80000000u)) == 0)) {
         goto loc_return;
     }
 }

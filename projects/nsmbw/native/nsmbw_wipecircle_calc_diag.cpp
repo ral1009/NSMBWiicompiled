@@ -76,6 +76,7 @@
 // once createLayout() has run. Logging both elements' mCurrFrame across consecutive calc() calls
 // while mAction != IDLE directly answers "is the wipe animation started, and is its frame
 // counter advancing." Remove once resolved.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -103,10 +104,10 @@ constexpr uint32_t kActionIdle = 3u;
 // Real, non-overridden addresses - all confirmed in projects/nsmbw/function_map.txt. None of
 // these is the address this file overrides (0x8001B580), so invoking them via InvokeIndirectCpu
 // cannot recurse back into this override the way calling 0x8001B580 itself did.
-constexpr uint32_t kOpenSetupAddr = 0x8001B8D0u;      // dWipeCircle_c::OpenSetup (mAction==0)
-constexpr uint32_t kAnimeEndCheckAddr = 0x8001B920u;  // dWipeCircle_c::AnimeEndCheck (mAction==1)
-constexpr uint32_t kCloseSetupAddr = 0x8001B9D0u;     // dWipeCircle_c::CloseSetup (mAction==2)
-constexpr uint32_t kAnimePlayAddr = 0x800C9650u;      // LytBase_c::AnimePlay
+constexpr uint32_t kOpenSetupAddr = NSMBW_VA(0x8001B8D0u);      // dWipeCircle_c::OpenSetup (mAction==0)
+constexpr uint32_t kAnimeEndCheckAddr = NSMBW_VA(0x8001B920u);  // dWipeCircle_c::AnimeEndCheck (mAction==1)
+constexpr uint32_t kCloseSetupAddr = NSMBW_VA(0x8001B9D0u);     // dWipeCircle_c::CloseSetup (mAction==2)
+constexpr uint32_t kAnimePlayAddr = NSMBW_VA(0x800C9650u);      // LytBase_c::AnimePlay
 
 void InvokeWithThis(uint32_t targetAddr, uint32_t thisPtr) {
     auto& cpu = GetPersistentCpuContext();

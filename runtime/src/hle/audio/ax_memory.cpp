@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "ax_internal.h"
 
 #include "abi_bridge.h"
@@ -68,7 +69,7 @@ void MarkDspInitialized() {
 void ResetDspTaskGlobals() {
     Memory::TryWrite32(kDspAssertPendingAddr, 0);
     Memory::TryWrite32(kDspAssertTaskAddr, 0);
-    Memory::TryWrite32(0x80386618u, 0);
+    Memory::TryWrite32(NSMBW_VA(0x80386618u), 0);
     Memory::TryWrite32(kDspCurrentTaskAddr, 0);
     Memory::TryWrite32(kDspFirstTaskAddr, 0);
     Memory::TryWrite32(kDspRunningTaskAddr, 0);

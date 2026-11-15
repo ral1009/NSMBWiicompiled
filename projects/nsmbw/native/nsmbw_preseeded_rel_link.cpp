@@ -80,6 +80,7 @@
 //   lhz r0,0(r3); cmpwi r0,0; bne return_true          ; if (mUsageCount == 0)
 //   lwz r12,0xc(r3); lwz r12,0x20(r12); mtctr r12; bctr ; tail-call do_load_async() [vtable+0x20]
 //   return_true: li r3,1; blr
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -135,7 +136,7 @@ bool IsPreSeededModule(const std::string& name)
 void DumpDylinkHeap(const char* label)
 {
     uint32_t heap = 0, head = 0;
-    if (!Memory::TryRead32(0x8042A734u, heap) || heap == 0 || !Memory::TryRead32(heap + 0x10u, head) || head == 0) return;
+    if (!Memory::TryRead32(NSMBW_VA(0x8042A734u), heap) || heap == 0 || !Memory::TryRead32(heap + 0x10u, head) || head == 0) return;
     for (const uint32_t listOff : {0x3Cu, 0x44u}) {
         std::fprintf(stderr, "[nsmbw][rel] %s: %s blocks:", label, listOff == 0x3Cu ? "free" : "used");
         uint32_t blk = 0;
@@ -165,15 +166,15 @@ void ReportDylinkHeapOnce()
     if (done || AURORA_ENV("NSMBW_LOG_REL_HEAP") == nullptr) return;
     done = true;
     uint32_t heap = 0, head = 0, start = 0, end = 0;
-    Memory::TryRead32(0x8042A734u, heap);
+    Memory::TryRead32(NSMBW_VA(0x8042A734u), heap);
     if (heap != 0 && Memory::TryRead32(heap + 0x10u, head) && head != 0) {
         Memory::TryRead32(head + 0x18u, start);
         Memory::TryRead32(head + 0x1Cu, end);
     }
     std::fprintf(stderr, "[nsmbw][rel] dylink heap 0x%08X: [0x%08X, 0x%08X)\n", heap, start, end);
     struct { const char* name; uint32_t base, size; } images[] = {
-        {"d_profileNP", 0x807684C0u, 14992u}, {"d_basesNP", 0x8076D680u, 2313500u},
-        {"d_enemiesNP", 0x809A2CA0u, 1546520u}, {"d_en_bossNP", 0x80B1C920u, 463140u}};
+        {"d_profileNP", NSMBW_VA(0x807684C0u), 14992u}, {"d_basesNP", NSMBW_VA(0x8076D680u), NSMBW_BY_VERSION(2313500u, 2313532u) /* USA: +0x20, as its fixSize; log-only check */},
+        {"d_enemiesNP", NSMBW_VA(0x809A2CA0u), 1546520u}, {"d_en_bossNP", NSMBW_VA(0x80B1C920u), 463140u}};
     for (const auto& im : images) {
         const bool inside = im.base >= start && im.base + im.size <= end;
         std::fprintf(stderr, "[nsmbw][rel]   %-12s image [0x%08X, 0x%08X) %s\n", im.name, im.base, im.base + im.size,

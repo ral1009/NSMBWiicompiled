@@ -28,6 +28,7 @@
 // (build/nsmbw/functions/func_8016EC60.cpp): call mHeap::createHeap(size, parent, name) at
 // 0x8016EA30 with r5 = the heap name, store the result in mHeap::g_dylinkHeap (r13 - 21068) and
 // return it. Only the reservation call is added.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -39,8 +40,8 @@
 #include <cstdio>
 
 namespace {
-constexpr uint32_t kHeapAllocAddr = 0x802B8E00u; // EGG::Heap::alloc(size, align, heap)   syms.txt
-constexpr uint32_t kHeapFreeAddr = 0x802B90B0u;  // EGG::Heap::free(ptr, heap)            syms.txt
+constexpr uint32_t kHeapAllocAddr = NSMBW_VA(0x802B8E00u); // EGG::Heap::alloc(size, align, heap)   syms.txt
+constexpr uint32_t kHeapFreeAddr = NSMBW_VA(0x802B90B0u);  // EGG::Heap::free(ptr, heap)            syms.txt
 constexpr uint32_t kBlockHeader = 0x10u;         // MEMiExpHeapMBlock header (mem_expHeap.h)
 
 struct RelRange {
@@ -49,10 +50,11 @@ struct RelRange {
     uint32_t size; // fixSize + bssSize
 };
 constexpr RelRange kRels[] = {
-    {"d_profileNP", 0x807684C0u, 0x4F84u + 0x208u},
-    {"d_basesNP", 0x8076D680u, 0x223178u + 0x12484u},
-    {"d_enemiesNP", 0x809A2CA0u, 0x16E780u + 0xB4E0u},
-    {"d_en_bossNP", 0x80B1C920u, 0x6D170u + 0x487Cu},
+    {"d_profileNP", NSMBW_VA(0x807684C0u), 0x4F84u + 0x208u},
+    // fixSize is version-specific: USA rev 1's d_basesNP is 0x20 bytes longer (its REL header).
+    {"d_basesNP", NSMBW_VA(0x8076D680u), NSMBW_BY_VERSION(0x223178u, 0x223198u) + 0x12484u},
+    {"d_enemiesNP", NSMBW_VA(0x809A2CA0u), 0x16E780u + 0xB4E0u},
+    {"d_en_bossNP", NSMBW_VA(0x80B1C920u), 0x6D170u + 0x487Cu},
 };
 
 // First free block's header address: EGG::Heap::mHeapHandle (+0x10) -> MEMiHeapHead, whose
@@ -138,20 +140,20 @@ extern "C" void NsmbwCreateDylinkHeap_8016EC60(CpuContext* MKW_RESTRICT ctx)
     MemoryInline::FlatWriteRam32((r1 + -16), r1);
     r1 = (r1 + -16);
     r0 = ctx->lr;
-    r5 = 0x80330000u;
+    r5 = NSMBW_VA_PAIR(0x80330000u, -24824);
     MemoryInline::FlatWriteRam32((r1 + 20), r0);
     r5 = (r5 + -24824);
-    ctx->lr = 0x8016EC78u;
+    ctx->lr = NSMBW_VA(0x8016EC78u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[5] = r5;
-    InvokeDirectCpu<0x8016EA30u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x8016EA30u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
     r5 = ctx->gpr[5];
     r13 = ctx->gpr[13];
-    MemoryInline::FlatWrite32((r13 + -21068), r3);
+    MemoryInline::FlatWrite32((r13 + -NSMBW_SDA13(21068)), r3);
 
     // Added: reserve the REL ranges while the new heap is still empty (still inside this
     // function's own stack frame, r1). The heap pointer is restored as the return value below.

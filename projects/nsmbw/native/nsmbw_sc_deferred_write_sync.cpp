@@ -22,6 +22,7 @@
 // completion callback immediately with a success result - the same effect an instant DMA
 // completion would have. It does not touch 0x8042AD30 itself; func_801DBEB0 still owns that
 // write, so this stays a real completion, not a forced flag flip.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -33,7 +34,7 @@ extern "C" void nsmbw_sc_deferred_write_sync_801d9890(CpuContext* ctx)
     // silently before ever reaching func_801DBEB0's flag write (confirmed live: flag stayed 1).
     // r3!=0 skips verification and reaches func_801DBEB0 directly per static trace.
     ctx->gpr[3] = 1;
-    InvokeIndirectCpu(0x801DBC60u, ctx);
+    InvokeIndirectCpu(NSMBW_VA(0x801DBC60u), ctx);
 }
 
 PPC_NATIVE_OVERRIDE_VOID(801D9890, nsmbw_sc_deferred_write_sync_801d9890, (CpuContext* ctx), (ctx));

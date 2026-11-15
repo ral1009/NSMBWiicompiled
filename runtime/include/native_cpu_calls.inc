@@ -44,7 +44,7 @@ extern "C" void GX__LoadPosMtxImm_8017310c(uint32_t ma, uint32_t id);
 extern "C" void GX__SetCurrentMtx_80173214(uint32_t id);
 
 #define MKW_KNOWN_TYPED_NATIVE(addr, fn, ...) \
-template <> struct KnownTypedNativeCpuCall<addr> { \
+template <> struct KnownTypedNativeCpuCall<NSMBW_VA_HOOK(addr)> { \
     static constexpr bool kAvailable = true; \
     static void Invoke(CpuContext* cpu) { (void)cpu; fn(__VA_ARGS__); } \
 }
@@ -86,7 +86,7 @@ MKW_KNOWN_TYPED_NATIVE(0x80173214u, GX__SetCurrentMtx_80173214, cpu->gpr[3]);
 #undef MKW_KNOWN_TYPED_NATIVE
 
 #define MKW_KNOWN_NATIVE_CPU_CALL(addr, fn) \
-template <> struct KnownNativeCpuCall<addr> { \
+template <> struct KnownNativeCpuCall<NSMBW_VA_HOOK(addr)> { \
     static constexpr bool kAvailable = true; \
     static constexpr uint32_t kNonvolatileFprWriteMask = 0; \
     static constexpr void (*Entry)(CpuContext*) = &fn; \

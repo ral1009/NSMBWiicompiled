@@ -64,6 +64,7 @@
 // The keyboard is read through aurora's PAD keyboard-binding layer (dolphin/pad.h) with the
 // GC PAD bits used only as an intermediate; SDL_PumpEvents is what actually refreshes SDL's
 // key state and nothing else in the NSMBW runtime calls it after boot (see the tick pump).
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -120,7 +121,7 @@ constexpr uint32_t kWpadMinus = 1u << 12;
 constexpr uint32_t kHostShake = 1u << 31;
 
 constexpr uint32_t kKpadStatusSize = 0x84u;
-constexpr uint32_t kViRetraceCountAddr = 0x8042AB4Cu; // same accessor the tick pump serves
+constexpr uint32_t kViRetraceCountAddr = NSMBW_VA(0x8042AB4Cu); // same accessor the tick pump serves
 
 bool g_padInited = false;
 uint32_t g_lastSampledTick = 0xFFFFFFFFu;
@@ -140,7 +141,7 @@ constexpr uint32_t kShakeBurstTicks = 8;
 constexpr float kShakeBurstPattern[4] = {1.0f, 0.5f, 0.0f, -0.5f};
 // 0.25 per tick is a full tilt in 4 ticks, and below the shake burst's 0.5 steps in y.
 constexpr float kTiltStepPerTick = 0.25f;
-constexpr uint32_t kGameKeyInstanceAddr = 0x8042A230u; // dGameKey_c::m_instance (syms.txt)
+constexpr uint32_t kGameKeyInstanceAddr = NSMBW_VA(0x8042A230u); // dGameKey_c::m_instance (syms.txt)
 
 // NSMBW_LOG_TILT=1: tilt input, acc.z, and what the game made of it (remote 0's extension type
 // at dGameKeyCore_c+8 - the no-extension path needs 0 - and its angle at +0x8E), on change.
@@ -304,7 +305,7 @@ void PlayOptionsMenuSounds() {
     int32_t sound = NsmbwOptionsMenuTakeSound();
     if (sound < 0) return;
     uint32_t mgr = 0;
-    if (!Memory::TryRead32(0x8042A768u, mgr) || mgr == 0) {
+    if (!Memory::TryRead32(NSMBW_VA(0x8042A768u), mgr) || mgr == 0) {
         while (NsmbwOptionsMenuTakeSound() >= 0) {} // no sound system yet (early boot): drop them
         return;
     }
@@ -314,7 +315,7 @@ void PlayOptionsMenuSounds() {
         ctx->gpr[3] = mgr;
         ctx->gpr[4] = static_cast<uint32_t>(sound);
         ctx->gpr[5] = 1;
-        InvokeDirectCpu<0x801954C0u>(ctx);
+        InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
     }
     *ctx = saved;
 }
@@ -328,11 +329,11 @@ void SyncOptionsMenuSoundPause() {
     const int64_t word = NsmbwOptionsMenuTakeSoundPauseWord();
     if (word < 0) return;
     uint32_t mgr = 0;
-    if (!Memory::TryRead32(0x8042A788u, mgr) || mgr == 0) return;
+    if (!Memory::TryRead32(NSMBW_VA(0x8042A788u), mgr) || mgr == 0) return;
     CpuContext* ctx = CurrentCpuContext();
     const CpuContext saved = *ctx;
     ctx->gpr[3] = static_cast<uint32_t>(word);
-    InvokeDirectCpu<0x8006A830u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x8006A830u)>(ctx);
     *ctx = saved;
 }
 
@@ -349,7 +350,7 @@ void RunMovieSkip() {
     const int32_t request = NsmbwMovieSkipTake();
     if (request == 1) {
         uint32_t movie = 0, state = 0;
-        if (!Memory::TryRead32(0x8042A498u, movie) || movie == 0) return;
+        if (!Memory::TryRead32(NSMBW_VA(0x8042A498u), movie) || movie == 0) return;
         if (!Memory::TryRead32(movie + 0x164u, state) || state != 1) return;
         Memory::Write8(movie + 0x19Cu, 1);
         Memory::Write32(movie + 0x164u, 10);
@@ -360,7 +361,7 @@ void RunMovieSkip() {
         ctx->gpr[4] = 0;
         ctx->gpr[5] = 2;
         ctx->gpr[6] = 5;
-        InvokeDirectCpu<0x80102370u>(ctx);
+        InvokeDirectCpu<NSMBW_VA(0x80102370u)>(ctx);
         *ctx = saved;
     }
 }

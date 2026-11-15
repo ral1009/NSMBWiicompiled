@@ -50,6 +50,7 @@
 // keeps returning null forever for the same m_nextScene value, that reopens the exact
 // already-documented fProfListMg_c::m_data_p / REL-restoration bug class - just for a profile
 // RestoreRelImages() apparently doesn't (yet) cover, rather than a new bug.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -60,17 +61,17 @@
 #include <cstdio>
 
 namespace {
-constexpr uint32_t kOtherSceneFlgAddr = 0x80428A46u;
-constexpr uint32_t kNextSceneAddr = 0x80428A40u;
-constexpr uint32_t kNowSceneAddr = 0x80428A42u;
-constexpr uint32_t kOldSceneAddr = 0x80428A44u;
-constexpr uint32_t kParaAddr = 0x8042A328u;
+constexpr uint32_t kOtherSceneFlgAddr = NSMBW_VA(0x80428A46u);
+constexpr uint32_t kNextSceneAddr = NSMBW_VA(0x80428A40u);
+constexpr uint32_t kNowSceneAddr = NSMBW_VA(0x80428A42u);
+constexpr uint32_t kOldSceneAddr = NSMBW_VA(0x80428A44u);
+constexpr uint32_t kParaAddr = NSMBW_VA(0x8042A328u);
 constexpr uint32_t kSceneInvalid = 0x2EEu;
-constexpr uint32_t kDBaseCreateRootAddr = 0x8006C6C0u;
+constexpr uint32_t kDBaseCreateRootAddr = NSMBW_VA(0x8006C6C0u);
 constexpr uint32_t kGroupTypeScene = 1u;
 // dInfo_c::m_startGameInfo (NSMBW-Decomp syms.txt); StartGameInfo_s has mGameMode at +8 (u32),
 // mWorld1 at +12 and mLevel1 at +13 (d_info.hpp).
-constexpr uint32_t kStartGameInfoAddr = 0x80315E90u;
+constexpr uint32_t kStartGameInfoAddr = NSMBW_VA(0x80315E90u);
 
 // Names the new scene for aurora's HD-pack preload (aurora_texture_preload_scene). This runs once
 // the previous scene has faded out, so the preload's file loads lengthen the black screen instead
@@ -170,7 +171,7 @@ extern "C" uint32_t CreateNextScene_Diag_800E1ED0()
             // REL-resident profile entry is wrong" (main.dol's own BOOT entry at index 0 is a
             // different code path than cross-REL entries like RESTART_CRSIN at index 6, so its
             // success alone doesn't prove the REL-targeting entries are intact).
-            constexpr uint32_t kProfListMgDataPAddr = 0x8042A698u;
+            constexpr uint32_t kProfListMgDataPAddr = NSMBW_VA(0x8042A698u);
             const uint32_t arrayBase = Memory::Read32(kProfListMgDataPAddr);
             std::fprintf(stderr,
                 "[nsmbw][diag] fProfListMg_c::m_data_p=0x%08X (expect near d_profileNP's "

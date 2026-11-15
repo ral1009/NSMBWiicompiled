@@ -28,6 +28,7 @@
 // animation (18; the menu then can't be seen behind the options menu), the options menu; and when
 // that has closed, the menu's own open (0x8077ADC0) with Options still selected. While it runs,
 // the selection state does nothing else.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <cstdint>
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
@@ -42,9 +43,9 @@ extern "C" bool NsmbwOptionsMenuTakeReturnToPause(); // same file: true once, wh
 namespace {
 constexpr uint32_t kOptions = 4; // button index; the original four are 0..3
 constexpr uint32_t kLayout = 112, kStateMgr = 520, kRootPane = 580, kPictures = 584, kNext = 616, kActive = 620;
-constexpr uint32_t kSndAudioMgr = 0x8042A768u;     // SndAudioMgr::sInstance
-constexpr uint32_t kSelectCursorInstance = 0x8042A5A8u;
-constexpr uint32_t kStateOpenWait = 0x80990D28u;    // the state 0x8077ADC0 changes to
+constexpr uint32_t kSndAudioMgr = NSMBW_VA(0x8042A768u);     // SndAudioMgr::sInstance
+constexpr uint32_t kSelectCursorInstance = NSMBW_VA(0x8042A5A8u);
+constexpr uint32_t kStateOpenWait = NSMBW_VA(0x80990D28u);    // the state 0x8077ADC0 changes to
 constexpr uint32_t kAnimOut = 18;
 
 uint32_t OnAnim(uint32_t b) { return b == kOptions ? 19 : 2 + b; }
@@ -57,29 +58,29 @@ void AnimeStartSetup(CpuContext* ctx, uint32_t lyt, uint32_t anim) {
     ctx->gpr[3] = lyt;
     ctx->gpr[4] = anim;
     ctx->gpr[5] = 0;
-    InvokeDirectCpu<0x800C93E0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C93E0u)>(ctx);
 }
 void ReverseAnimeStartSetup(CpuContext* ctx, uint32_t lyt, uint32_t anim) {
     ctx->gpr[3] = lyt;
     ctx->gpr[4] = anim;
     ctx->gpr[5] = 0;
-    InvokeDirectCpu<0x800C94C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C94C0u)>(ctx);
 }
 void AllAnimeEndSetup(CpuContext* ctx, uint32_t lyt) {
     ctx->gpr[3] = lyt;
-    InvokeDirectCpu<0x800C95F0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C95F0u)>(ctx);
 }
 bool IsAnime(CpuContext* ctx, uint32_t lyt, uint32_t anim) {
     ctx->gpr[3] = lyt;
     ctx->gpr[4] = anim;
-    InvokeDirectCpu<0x800C9700u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C9700u)>(ctx);
     return (ctx->gpr[3] & 0xFF) != 0;
 }
 void PlaySe(CpuContext* ctx, uint32_t id) {
     ctx->gpr[3] = MemoryInline::FlatRead32(kSndAudioMgr);
     ctx->gpr[4] = id;
     ctx->gpr[5] = 1;
-    InvokeDirectCpu<0x801954C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
 }
 void ChangeState(CpuContext* ctx, uint32_t self, uint32_t state) {
     const uint32_t mgr = self + kStateMgr;
@@ -99,7 +100,7 @@ void WriteString(uint32_t addr, const char* s) {
 // the extended tables on the guest stack for the call, then P_SBBase_05 found by PPaneRegister.
 void RegisterGroupsWithOptions(CpuContext* ctx) {
     if (!NsmbwMapMenuHasOptions()) {
-        InvokeDirectCpu<0x800C91E0u>(ctx);
+        InvokeDirectCpu<NSMBW_VA(0x800C91E0u)>(ctx);
         return;
     }
     const uint32_t lyt = ctx->gpr[3], names = ctx->gpr[4], indices = ctx->gpr[5], count = ctx->gpr[6];
@@ -128,12 +129,12 @@ void RegisterGroupsWithOptions(CpuContext* ctx) {
     ctx->gpr[4] = nameTable;
     ctx->gpr[5] = indexTable;
     ctx->gpr[6] = count + 4;
-    InvokeDirectCpu<0x800C91E0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C91E0u)>(ctx);
     ctx->gpr[3] = lyt;
     ctx->gpr[4] = paneNameTable;
     ctx->gpr[5] = paneOut;
     ctx->gpr[6] = 1;
-    InvokeDirectCpu<0x800C8F30u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C8F30u)>(ctx);
     g_optionsPane = MemoryInline::FlatRead32(paneOut);
     ctx->gpr[1] = sp;
 }
@@ -174,9 +175,12 @@ bool RunOptions(CpuContext* ctx, uint32_t self) {
     switch (g_phase) {
     case Phase::Hit:
         if (IsAnime(ctx, lyt, HitAnim(kOptions))) return true;
+        // dSelectCursor_c::Cancel(4): the map menu's cursor is slot 4 (its SelectCursorSetup passes 4,
+        // and the game's own close, func_8077B190, cancels 4). Cancel(0), copied from the pause
+        // window's slot, left the map cursor drawn behind the options menu (2026-11-15).
         ctx->gpr[3] = MemoryInline::FlatRead32(kSelectCursorInstance);
-        ctx->gpr[4] = 0;
-        InvokeDirectCpu<0x8010C890u>(ctx); // dSelectCursor_c::Cancel(0)
+        ctx->gpr[4] = 4;
+        InvokeDirectCpu<NSMBW_VA(0x8010C890u)>(ctx);
         AnimeStartSetup(ctx, lyt, kAnimOut);
         g_phase = Phase::Out;
         return true;
@@ -190,7 +194,7 @@ bool RunOptions(CpuContext* ctx, uint32_t self) {
         // The menu's own open, Options still selected (mActive -1: nothing to turn off first).
         MemoryInline::FlatWrite32(self + kActive, static_cast<uint32_t>(-1));
         ctx->gpr[3] = self;
-        InvokeDirectCpu<0x8077ADC0u>(ctx);
+        InvokeDirectCpu<NSMBW_VA(0x8077ADC0u)>(ctx);
         g_phase = Phase::None;
         return true;
     case Phase::None: break;
@@ -210,7 +214,7 @@ extern "C" void NsmbwMapMenuCursor_8077AD70(CpuContext* MKW_RESTRICT ctx)
     ctx->gpr[3] = pane;
     ctx->gpr[4] = 4;
     ctx->gpr[5] = 0;
-    InvokeDirectCpu<0x800B44D0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800B44D0u)>(ctx);
 }
 PPC_NATIVE_OVERRIDE_VOID(8077AD70, NsmbwMapMenuCursor_8077AD70, (CpuContext* ctx), (ctx));
 
@@ -281,13 +285,13 @@ loc_8077AB70:
     r5 = 0;
     MemoryInline::FlatWriteRam32((r1 + 20), r0);
     MemoryInline::FlatWriteRam32((r1 + 12), r31);
-    r31 = 0x80940000u;
+    r31 = NSMBW_VA_PAIR(0x80940000u, 4744);
     r31 = (r31 + 4744);
     MemoryInline::FlatWriteRam32((r1 + 8), r30);
     r30 = r3;
     r4 = (r31 + 780);
     r3 = (r3 + 112);
-    ctx->lr = 0x8077ABA0u;
+    ctx->lr = NSMBW_VA(0x8077ABA0u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -300,7 +304,7 @@ loc_8077AB70:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x800C8D00u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C8D00u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -338,7 +342,7 @@ loc_8077ABB0:
     r5 = 0;
     r12 = MemoryInline::FlatRead32((r12 + 20));
     ctr = r12;
-    ctx->lr = 0x8077ABCCu;
+    ctx->lr = NSMBW_VA(0x8077ABCCu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -368,7 +372,7 @@ loc_8077ABB0:
     r3 = (r30 + 112);
     r4 = (r31 + 316);
     r5 = 7;
-    ctx->lr = 0x8077ABDCu;
+    ctx->lr = NSMBW_VA(0x8077ABDCu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -381,7 +385,7 @@ loc_8077ABB0:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x800C90A0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C90A0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -395,12 +399,12 @@ loc_8077ABB0:
     cr = ctx->cr;
     ctr = ctx->ctr;
     xer = ctx->xer;
-    r5 = 0x80930000u;
+    r5 = NSMBW_VA_PAIR(0x80930000u, 16344);
     r3 = (r30 + 112);
     r4 = (r31 + 404);
     r6 = 19;
     r5 = (r5 + 16344);
-    ctx->lr = 0x8077ABF4u;
+    ctx->lr = NSMBW_VA(0x8077ABF4u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -436,7 +440,7 @@ loc_8077ABB0:
     r4 = (r31 + 552);
     r5 = (r30 + 584);
     r6 = 6;
-    ctx->lr = 0x8077AC14u;
+    ctx->lr = NSMBW_VA(0x8077AC14u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -449,7 +453,7 @@ loc_8077ABB0:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x800C8F30u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C8F30u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -467,7 +471,7 @@ loc_8077ABB0:
     r4 = (r31 + 616);
     r5 = (r30 + 608);
     r6 = 2;
-    ctx->lr = 0x8077AC28u;
+    ctx->lr = NSMBW_VA(0x8077AC28u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -480,7 +484,7 @@ loc_8077ABB0:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x800C8FA0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C8FA0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -494,13 +498,13 @@ loc_8077ABB0:
     cr = ctx->cr;
     ctr = ctx->ctr;
     xer = ctx->xer;
-    r5 = 0x80930000u;
+    r5 = NSMBW_VA_PAIR(0x80930000u, 16420);
     r3 = (r30 + 112);
     r4 = (r31 + 752);
     r6 = 2;
     r5 = (r5 + 16420);
     r7 = 7;
-    ctx->lr = 0x8077AC44u;
+    ctx->lr = NSMBW_VA(0x8077AC44u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -513,7 +517,7 @@ loc_8077ABB0:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x800C9010u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C9010u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -584,10 +588,10 @@ loc_8077B010:
     MemoryInline::FlatWriteRam32((r1 + -32), r1);
     r1 = (r1 + -32);
     r0 = ctx->lr;
-    r4 = 0x80430000u;
+    r4 = NSMBW_VA_PAIR(0x80430000u, -24016);
     MemoryInline::FlatWriteRam32((r1 + 36), r0);
     MemoryInline::FlatWriteRam32((r1 + 28), r31);
-    r31 = 0x80990000u;
+    r31 = NSMBW_VA_PAIR(0x80990000u, 3272);
     r31 = (r31 + 3272);
     MemoryInline::FlatWriteRam32((r1 + 24), r30);
     r30 = r3;
@@ -609,7 +613,7 @@ loc_8077B04C:
 
 loc_8077B054:
 {
-    ctx->lr = 0x8077B058u;
+    ctx->lr = NSMBW_VA(0x8077B058u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -623,7 +627,7 @@ loc_8077B054:
     ctx->cr = cr;
     ctx->ctr = ctr;
     ctx->xer = xer;
-    InvokeDirectCpu<0x8077AD70u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x8077AD70u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -637,7 +641,7 @@ loc_8077B054:
     cr = ctx->cr;
     ctr = ctx->ctr;
     xer = ctx->xer;
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22716);
     r0 = MemoryInline::FlatRead32((r3 + -22716));
     r0_rot_1 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
     r0 = (r0_rot_1 & -4);
@@ -668,7 +672,7 @@ loc_8077B078:
 loc_8077B080:
 {
     MemoryInline::FlatWrite32((r30 + 616), r0);
-    if (((cr & 0x80000000u) == 0)) {
+    if (((cr & NSMBW_VA(0x80000000u)) == 0)) {
         goto loc_8077B090;
     }
 }
@@ -686,7 +690,7 @@ loc_8077B090:
     r4 = (r31 + 160);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8077B0A8u;
+    ctx->lr = NSMBW_VA(0x8077B0A8u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -739,7 +743,7 @@ loc_8077B0B4:
 
 loc_8077B0C4:
 {
-    if (((cr & 0x80000000u) != 0)) {
+    if (((cr & NSMBW_VA(0x80000000u)) != 0)) {
         goto loc_8077B0CC;
     }
 }
@@ -756,7 +760,7 @@ loc_8077B0CC:
     r4 = (r31 + 160);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8077B0E4u;
+    ctx->lr = NSMBW_VA(0x8077B0E4u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -803,7 +807,7 @@ loc_8077B0EC:
 loc_8077B0F0:
 {
     r3 = 0;
-    ctx->lr = 0x8077B0F8u;
+    ctx->lr = NSMBW_VA(0x8077B0F8u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -817,7 +821,7 @@ loc_8077B0F0:
     ctx->cr = cr;
     ctx->ctr = ctr;
     ctx->xer = xer;
-    InvokeDirectCpu<0x800B53F0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800B53F0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -848,7 +852,7 @@ loc_8077B100:
     r4 = (r31 + 352);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8077B118u;
+    ctx->lr = NSMBW_VA(0x8077B118u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -881,13 +885,13 @@ loc_8077B100:
 
 loc_8077B11C:
 {
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22712);
     r4 = 2304;
     r3 = MemoryInline::FlatRead32((r3 + -22712));
     r12 = MemoryInline::FlatRead32(r3);
     r12 = MemoryInline::FlatRead32((r12 + 32));
     ctr = r12;
-    ctx->lr = 0x8077B138u;
+    ctx->lr = NSMBW_VA(0x8077B138u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -933,11 +937,11 @@ loc_8077B140:
         StartOptions(ctx, r30);
         goto loc_8077B16C;
     }
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
     r4 = 121;
     r3 = MemoryInline::FlatRead32((r3 + -22680));
     r5 = 1;
-    ctx->lr = 0x8077B154u;
+    ctx->lr = NSMBW_VA(0x8077B154u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -951,7 +955,7 @@ loc_8077B140:
     ctx->cr = cr;
     ctx->ctr = ctr;
     ctx->xer = xer;
-    InvokeDirectCpu<0x801954C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -970,7 +974,7 @@ loc_8077B140:
     r4 = (r31 + 288);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8077B16Cu;
+    ctx->lr = NSMBW_VA(0x8077B16Cu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;

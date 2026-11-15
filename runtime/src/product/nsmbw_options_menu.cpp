@@ -2,6 +2,7 @@
 // 2026-10-26): the pause window grown to 588x334 units, title in the Mario font, four tabs as pause
 // buttons, up to five rows, a yellow note when one matters (a restart, no controller), and the
 // Select / Back prompts with the player's own button glyphs.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "nsmbw_options_menu.h"
 
 #include "nsmbw_button_glyphs.h"
@@ -190,7 +191,7 @@ std::vector<Row> BuildRows(int tab) {
 // d_SmallScoreManager.cpp:71) and the frozen scene keeps drawing, which is exactly the pause wanted
 // under this menu. Written on the game thread (the overlay runs inside the VI retrace), so it can't
 // race the game's own updates of the word.
-constexpr uint32_t kGameStopAddr = 0x8042A228u;
+constexpr uint32_t kGameStopAddr = NSMBW_VA(0x8042A228u);
 constexpr uint32_t kGameStopHomeMenu = 0x8u;
 // GAME_STOP_OTASUKE_PAUSE (BIT_FLAG(2)) as well, for the replays (hint movies, Super Guide, the
 // title screen's demo): dScStage_c::play (0x80102250) steps each player's replay from
@@ -221,7 +222,7 @@ bool g_soundPaused = false;
 // Bits: CONNECT 0x1, CREATE 0x2, EXECUTE 0x4, DELETE 0x8, DRAW 0x10 (GET_PROC_FLAG(LOOP_PROC_e)).
 // (The real HOME Menu skips mainLoop entirely, d_system.cpp, but it also skips drawing and shows
 // its own picture; skipping mainLoop here would leave nothing drawn behind this menu.)
-constexpr uint32_t kStopProcInfAddr = 0x8042A690u;
+constexpr uint32_t kStopProcInfAddr = NSMBW_VA(0x8042A690u);
 constexpr uint32_t kProcStopBits = 0x2u | 0x4u | 0x8u;
 uint32_t g_procBitsAdded = 0; // only the bits this menu set, so the game's own are never cleared
 

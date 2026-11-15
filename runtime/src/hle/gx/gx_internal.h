@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nsmbw_va.h"  // NSMBW_VA: NSMBW addresses below are PAL rev 1, mapped per game version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "gx_guest_write.h"
@@ -60,13 +61,13 @@ bool is_offscreen() noexcept;
 // an initialized data section and holds 0x8038FF00, which is where NSMBW's GXData actually
 // lives - so the slot is verified by its contents, not just by the addressing mode.
 #ifdef MKW_RUNTIME_PRODUCT_NSMBW
-constexpr uint32_t kGXDataPtrAddr = 0x8042E468;
+constexpr uint32_t kGXDataPtrAddr = NSMBW_VA(0x8042E468);
 #else
-constexpr uint32_t kGXDataPtrAddr = 0x803886C8;
+constexpr uint32_t kGXDataPtrAddr = NSMBW_VA(0x803886C8);
 #endif
-constexpr uint32_t kDlFifoAddr = 0x80344090;
-constexpr uint32_t kDlWritePtrAddr = 0x803440A4;
-constexpr uint32_t kDlCountAddr = 0x803440AC;
+constexpr uint32_t kDlFifoAddr = NSMBW_VA(0x80344090);
+constexpr uint32_t kDlWritePtrAddr = NSMBW_VA(0x803440A4);
+constexpr uint32_t kDlCountAddr = NSMBW_VA(0x803440AC);
 constexpr uint32_t kDlWrapFlagOffset = 0x20;
 constexpr uint32_t kMaxTluts = 20;
 // The byte GXDrawDone spins on. NSMBW's own GXDrawDone clears it at 0x801C5058
@@ -74,9 +75,9 @@ constexpr uint32_t kMaxTluts = 20;
 // at 0x801C536C. r13 is 0x8042F980 for NSMBW, giving 0x8042ABC0. Those three sites are the
 // only references to that address in the whole DOL.
 #ifdef MKW_RUNTIME_PRODUCT_NSMBW
-constexpr uint32_t kGxDrawDoneFlagAddr = 0x8042ABC0;
+constexpr uint32_t kGxDrawDoneFlagAddr = NSMBW_VA(0x8042ABC0);
 #else
-constexpr uint32_t kGxDrawDoneFlagAddr = 0x803867d8;
+constexpr uint32_t kGxDrawDoneFlagAddr = NSMBW_VA(0x803867d8);
 #endif
 
 // --- External Declarations ---

@@ -7,6 +7,7 @@
 //
 // Structural copy of the translated body (build/nsmbw/functions/func_802D7B50.cpp): call the
 // entry lookup 0x802D7C90, then text = *(this + 8) + *entry + 8. Only the log line is added.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -34,13 +35,13 @@ extern "C" void NsmbwGetMsgDiag_802D7B50(CpuContext* MKW_RESTRICT ctx)
     MemoryInline::FlatWriteRam32((r1 + 20), r0);
     MemoryInline::FlatWriteRam32((r1 + 12), r31);
     r31 = r3;
-    ctx->lr = 0x802D7B68u;
+    ctx->lr = NSMBW_VA(0x802D7B68u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
     ctx->gpr[4] = r4;
     ctx->gpr[31] = r31;
-    InvokeDirectCpu<0x802D7C90u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x802D7C90u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -69,7 +70,7 @@ extern "C" void NsmbwGetMsgDiag_802D7B50(CpuContext* MKW_RESTRICT ctx)
         // 0x80769130 reads it (0x80770000 - 23160 + 112).
         if (entry == 0) {
             uint32_t base = 0, win = 0, type = 0;
-            if (Memory::TryRead32(0x8042F980u - 21720u, base) && base != 0 && Memory::TryRead32(base + 4612u, win) &&
+            if (Memory::TryRead32(NSMBW_VA(0x8042F980u) - 21720u, base) && base != 0 && Memory::TryRead32(base + 4612u, win) &&
                 win != 0) {
                 Memory::TryRead32(win + 652u, type);
             }
@@ -77,7 +78,7 @@ extern "C" void NsmbwGetMsgDiag_802D7B50(CpuContext* MKW_RESTRICT ctx)
                          type);
             for (uint32_t i = 0; i < 29; ++i) {
                 uint32_t v = 0;
-                Memory::TryRead32(0x8076A5F8u + i * 4u, v);
+                Memory::TryRead32(NSMBW_VA(0x8076A5F8u) + i * 4u, v);
                 std::fprintf(stderr, " %u", v);
             }
             std::fprintf(stderr, "\n");

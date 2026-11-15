@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "abi_bridge.h"
@@ -136,12 +137,15 @@ ViState g_vi;
 
 
 // Guest-side state addresses used by the SDK's VI globals.
-constexpr uint32_t kViInitializedFlagAddr   = 0x80386b38;
-constexpr uint32_t kViTvFormatAddr          = 0x80386ba8;
-constexpr uint32_t kViRenderWidthAddr       = 0x80350864;
-constexpr uint32_t kViRenderHeightAddr      = 0x80350866;
-constexpr uint32_t kViXfbWidthAddr          = 0x80350872;
-constexpr uint32_t kViXfbHeightAddr         = 0x8035087c;
+// NSMBW_VA (nsmbw_va.h): these are written / read for NSMBW too, at the same raw addresses as
+// in PAL NSMBW (several are Mario Kart Wii addresses: a known issue, docs/issues.md 2026-11-14),
+// so another game version touches the corresponding locations and behaves as PAL does.
+constexpr uint32_t kViInitializedFlagAddr   = NSMBW_VA(0x80386b38);
+constexpr uint32_t kViTvFormatAddr          = NSMBW_VA(0x80386ba8);
+constexpr uint32_t kViRenderWidthAddr       = NSMBW_VA(0x80350864);
+constexpr uint32_t kViRenderHeightAddr      = NSMBW_VA(0x80350866);
+constexpr uint32_t kViXfbWidthAddr          = NSMBW_VA(0x80350872);
+constexpr uint32_t kViXfbHeightAddr         = NSMBW_VA(0x8035087c);
 // Verified against this build's actual VIWaitForRetrace (0x801BCE30) disassembly: it polls
 // lwz r30, -0x4e34(r13), and this project's manifest (nsmbw.yml) pins sda_base to 0x8042f980,
 // so the guest-visible counter is 0x8042f980 - 0x4e34 = 0x8042ab4c, not the address below - the
@@ -150,8 +154,8 @@ constexpr uint32_t kViXfbHeightAddr         = 0x8035087c;
 // it was actually looking. Confirmed the fix's target address independently against the same
 // function's second SDA-relative operand (r13-0x4e58, the retrace thread queue) landing on the
 // same +0xa3f68 correction, before touching only the address actually proven to block execution.
-constexpr uint32_t kViRetraceCountAddr      = 0x8042ab4c;
-constexpr uint32_t kViTimingGuardAddr       = 0x80386b44;
+constexpr uint32_t kViRetraceCountAddr      = NSMBW_VA(0x8042ab4c);
+constexpr uint32_t kViTimingGuardAddr       = NSMBW_VA(0x80386b44);
 // NSMBW's pre/post retrace callback slots, read off its own VISetPreRetraceCallback
 // (0x801BC520) and VISetPostRetraceCallback (0x801BC570): each loads the old value, calls
 // OSDisableInterrupts, stores the new one, restores, and returns the old. They swap
@@ -159,14 +163,14 @@ constexpr uint32_t kViTimingGuardAddr       = 0x80386b44;
 // bytes above the post slot in both titles, and the two setters appear in the same order,
 // which is the cross-check that they have not been transposed.
 #ifdef MKW_RUNTIME_PRODUCT_NSMBW
-constexpr uint32_t kViPreRetraceCallback    = 0x8042AB20;
-constexpr uint32_t kViPostRetraceCallback   = 0x8042AB1C;
+constexpr uint32_t kViPreRetraceCallback    = NSMBW_VA(0x8042AB20);
+constexpr uint32_t kViPostRetraceCallback   = NSMBW_VA(0x8042AB1C);
 #else
-constexpr uint32_t kViPreRetraceCallback    = 0x80386bb8;
-constexpr uint32_t kViPostRetraceCallback   = 0x80386bb4;
+constexpr uint32_t kViPreRetraceCallback    = NSMBW_VA(0x80386bb8);
+constexpr uint32_t kViPostRetraceCallback   = NSMBW_VA(0x80386bb4);
 #endif
-constexpr uint32_t kViNextFrameBufferAddr   = 0x80386ba0;
-constexpr uint32_t kViNextFrameBufferHwAddr = 0x80350890;
+constexpr uint32_t kViNextFrameBufferAddr   = NSMBW_VA(0x80386ba0);
+constexpr uint32_t kViNextFrameBufferHwAddr = NSMBW_VA(0x80350890);
 // BISECT D1: temporarily reverted to 0x80386bc0 to find which post-GXInitTexObj change moved the
 // stall earlier. (Candidate correct value is 0x8042ab28 - r13-0x4E58 via func_801B5DD0.)
 // Thread queue for VIWaitForRetrace. NSMBW's is the queue its own VIWaitForRetrace
@@ -174,13 +178,13 @@ constexpr uint32_t kViNextFrameBufferHwAddr = 0x80350890;
 // same function polls the retrace counter at r13-0x4E34 = 0x8042AB4C, which matches
 // kViRetraceCountAddr above and confirms the pair came from the same title.
 #ifdef MKW_RUNTIME_PRODUCT_NSMBW
-constexpr uint32_t kViRetraceQueueAddr      = 0x8042AB28;
+constexpr uint32_t kViRetraceQueueAddr      = NSMBW_VA(0x8042AB28);
 #else
-constexpr uint32_t kViRetraceQueueAddr      = 0x80386bc0;
+constexpr uint32_t kViRetraceQueueAddr      = NSMBW_VA(0x80386bc0);
 #endif
 
 // EGG::BaseSystem::sSystem pointer - must be non-null before post-retrace callback is valid
-constexpr uint32_t kEggSSystemAddr = 0x80386F60;
+constexpr uint32_t kEggSSystemAddr = NSMBW_VA(0x80386F60);
 
 std::chrono::microseconds IntervalForFormat(uint32_t tvFormat) {
     // NTSC-ish defaults to 60 Hz; PAL uses 50 Hz.
@@ -374,6 +378,16 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
             // Guard: only invoke callback if sSystem is initialized
             // The callback dereferences sSystem which must be non-null
             uint32_t sSystemPtr = Memory::Read32(kEggSSystemAddr);
+            // NSMBW_LOG_RETRACE_CB=1: log when the post-retrace callback or its guard word changes
+            // (whether the guest's post-retrace work - EGG's endRender waker - can run at all).
+            static const bool logCb = std::getenv("NSMBW_LOG_RETRACE_CB") != nullptr;
+            static uint32_t lastCb = 0xFFFFFFFFu, lastSys = 0xFFFFFFFFu;
+            if (logCb && (postCb != lastCb || (sSystemPtr != 0) != (lastSys != 0))) {
+                std::fprintf(stderr, "[vi] post-retrace callback 0x%08X, guard word at 0x%08X = 0x%08X -> %s\n", postCb,
+                             kEggSSystemAddr, sSystemPtr, sSystemPtr != 0 ? "called" : "SKIPPED");
+                lastCb = postCb;
+                lastSys = sSystemPtr;
+            }
             if (sSystemPtr != 0) {
                 InvokeIndirectCpu(postCb, ctx);
             }

@@ -15,6 +15,7 @@
 // fault on this runtime. Every other FlatRead32/FlatWrite32/FlatWriteRam32 call here (stack
 // spill/restore, r13-relative small-data-area globals, r5-relative array indexing) is genuine RAM
 // access, left untouched.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -121,7 +122,7 @@ loc_801B9D30:
 {
     r3 = 8388608;
     r3 = (r3 + -32768);
-    ctx->lr = 0x801B9D3Cu;
+    ctx->lr = NSMBW_VA(0x801B9D3Cu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -131,7 +132,7 @@ loc_801B9D30:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801B1650u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B1650u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -149,11 +150,11 @@ loc_801B9D30:
     r0 = 8192;
     Memory::Write32(static_cast<uint32_t>(r3 + 26624), r0);
     r3 = 9;
-    r29 = 0x801C0000u;
+    r29 = NSMBW_VA_PAIR(0x801C0000u, -26320);
     r4 = (r29 + -26320);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    guest_range_0 = MemoryInline::ResolveRangeHost((r13 + -20424), 0, 4u, true, false);
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    guest_range_0 = MemoryInline::ResolveRangeHost((r13 + -NSMBW_SDA13(20424)), 0, 4u, true, false);
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_0 & -4);
     r5_addr_0 = (r5 + r0);
@@ -162,10 +163,10 @@ loc_801B9D30:
     MemoryInline::FlatWrite32(r5_addr_1, r4);
     // end of inlined leaf 0x801B12F0
     r3 = 10;
-    r30 = 0x801C0000u;
+    r30 = NSMBW_VA_PAIR(0x801C0000u, -26128);
     r4 = (r30 + -26128);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_1 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_1 & -4);
     r5_addr_2 = (r5 + r0);
@@ -174,10 +175,10 @@ loc_801B9D30:
     MemoryInline::FlatWrite32(r5_addr_3, r4);
     // end of inlined leaf 0x801B12F0
     r3 = 11;
-    r31 = 0x801C0000u;
+    r31 = NSMBW_VA_PAIR(0x801C0000u, -25584);
     r4 = (r31 + -25584);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_2 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_2 & -4);
     r5_addr_4 = (r5 + r0);
@@ -188,7 +189,7 @@ loc_801B9D30:
     r3 = 12;
     r4 = (r29 + -26320);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_3 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_3 & -4);
     r5_addr_6 = (r5 + r0);
@@ -199,7 +200,7 @@ loc_801B9D30:
     r3 = 13;
     r4 = (r30 + -26128);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_4 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_4 & -4);
     r5_addr_8 = (r5 + r0);
@@ -210,7 +211,7 @@ loc_801B9D30:
     r3 = 14;
     r4 = (r31 + -25584);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_5 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_5 & -4);
     r5_addr_10 = (r5 + r0);
@@ -221,7 +222,7 @@ loc_801B9D30:
     r3 = 15;
     r4 = (r29 + -26320);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_6 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_6 & -4);
     r5_addr_12 = (r5 + r0);
@@ -232,7 +233,7 @@ loc_801B9D30:
     r3 = 16;
     r4 = (r30 + -26128);
     // inline leaf 0x801B12F0 (5 guest instruction(s))
-    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -20424));
+    r5 = MemoryInline::ReadResolved32(guest_range_0, 0u, (r13 + -NSMBW_SDA13(20424)));
     r0_rot_7 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
     r0 = (r0_rot_7 & -4);
     r5_addr_14 = (r5 + r0);
@@ -242,8 +243,8 @@ loc_801B9D30:
     // end of inlined leaf 0x801B12F0
     r3 = 0;
     r4 = 2;
-    r5 = (r13 + -20248);
-    ctx->lr = 0x801B9DD4u;
+    r5 = (r13 + -NSMBW_SDA13(20248));
+    ctx->lr = NSMBW_VA(0x801B9DD4u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -254,7 +255,7 @@ loc_801B9D30:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801BA0C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801BA0C0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -267,7 +268,7 @@ loc_801B9D30:
     r31 = ctx->gpr[31];
     cr = ctx->cr;
     xer = ctx->xer;
-    r0 = MemoryInline::FlatRead32((r13 + -20584));
+    r0 = MemoryInline::FlatRead32((r13 + -NSMBW_SDA13(20584)));
     SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
 }
 
@@ -280,15 +281,15 @@ loc_801B9DDC:
 
 loc_801B9DE0:
 {
-    r3 = 0x80000000u;
+    r3 = NSMBW_VA_PAIR(0x80000000u, 12484);
     MemoryInline::FlatWriteRam32((r3 + 12484), r28);
     MemoryInline::FlatWriteRam32((r3 + 12480), r28);
-    r3 = 0x80390000u;
+    r3 = NSMBW_VA_PAIR(0x80390000u, -1520);
     r3 = (r3 + -1520);
     MemoryInline::FlatWriteRam32((r3 + 96), r28);
     MemoryInline::FlatWriteRam32((r3 + 32), r28);
     r3 = 0;
-    ctx->lr = 0x801B9E04u;
+    ctx->lr = NSMBW_VA(0x801B9E04u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -299,7 +300,7 @@ loc_801B9DE0:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801B93A0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B93A0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -312,7 +313,7 @@ loc_801B9DE0:
     cr = ctx->cr;
     xer = ctx->xer;
     r3 = 1;
-    ctx->lr = 0x801B9E0Cu;
+    ctx->lr = NSMBW_VA(0x801B9E0Cu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -323,7 +324,7 @@ loc_801B9DE0:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801B93A0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B93A0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -343,7 +344,7 @@ loc_801B9E10:
     r3 = 0;
     r4 = 0;
     r5 = (r1 + 8);
-    ctx->lr = 0x801B9E20u;
+    ctx->lr = NSMBW_VA(0x801B9E20u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -354,7 +355,7 @@ loc_801B9E10:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801BA0C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801BA0C0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -395,7 +396,7 @@ loc_801B9E38:
 {
     r3 = 1;
     r4 = 0;
-    ctx->lr = 0x801B9E44u;
+    ctx->lr = NSMBW_VA(0x801B9E44u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -406,7 +407,7 @@ loc_801B9E38:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801BA5F0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801BA5F0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -427,7 +428,7 @@ loc_801B9E48:
     r3 = 1;
     r4 = 0;
     r5 = (r1 + 8);
-    ctx->lr = 0x801B9E58u;
+    ctx->lr = NSMBW_VA(0x801B9E58u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -438,7 +439,7 @@ loc_801B9E48:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801BA0C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801BA0C0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -479,7 +480,7 @@ loc_801B9E70:
 {
     r3 = 0;
     r4 = 2;
-    ctx->lr = 0x801B9E7Cu;
+    ctx->lr = NSMBW_VA(0x801B9E7Cu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -490,7 +491,7 @@ loc_801B9E70:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801BA5F0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801BA5F0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -507,8 +508,8 @@ loc_801B9E70:
 
 loc_801B9E7C:
 {
-    r3 = MemoryInline::FlatRead32((r13 + -24880));
-    ctx->lr = 0x801B9E84u;
+    r3 = MemoryInline::FlatRead32((r13 + -NSMBW_SDA13(24880)));
+    ctx->lr = NSMBW_VA(0x801B9E84u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -519,7 +520,7 @@ loc_801B9E7C:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801AB300u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801AB300u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];

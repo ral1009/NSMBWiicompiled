@@ -11,6 +11,7 @@
 //   scn = *(this+4); scn->vtable[0xC](scn, G3DPROC_CALC_WORLD=1, 0, 0)
 //   if (!keepEnabledAfter) setOption(this, 2, 1)
 // New address -> shard manifest regen required.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -23,7 +24,7 @@
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 namespace {
-constexpr uint32_t kSetOptionAddr = 0x8016A230u;
+constexpr uint32_t kSetOptionAddr = NSMBW_VA(0x8016A230u);
 
 void SetOption(uint32_t thisPtr, uint32_t option, uint32_t value) {
     auto& cpu = GetPersistentCpuContext();
@@ -54,7 +55,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
         // Caller 0x800D37D0 (dPyMdlBase_c::_calc) keeps its `this` in r31 (non-volatile, untouched
         // by the callee at entry): mMtx @0xD8 is what it just passed to setLocalMtx, the scale
         // copy @0x144 is what dPyMdlBase_c::calc stored from its scale argument.
-        if (cc && lr == 0x800D3828u) {
+        if (cc && lr == NSMBW_VA(0x800D3828u)) {
             const uint32_t py = static_cast<uint32_t>(cc->gpr[31]);
             float m[12], sc[3], rs[12];
             for (int i = 0; i < 12; ++i) m[i] = Memory::ReadFloat32(py + 0xD8u + i * 4);
@@ -104,7 +105,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
             auto& cpu3 = GetPersistentCpuContext();
             cpu3.gpr[3] = dst; cpu3.gpr[4] = dstScale; cpu3.gpr[5] = parent; cpu3.gpr[6] = parentScale;
             cpu3.gpr[7] = 0xF0000000u; cpu3.gpr[8] = result;
-            InvokeIndirectCpu(0x80256490u, &cpu3);
+            InvokeIndirectCpu(NSMBW_VA(0x80256490u), &cpu3);
             float D[12];
             for (int i = 0; i < 12; ++i) D[i] = Memory::ReadFloat32(dst + i * 4);
             std::fprintf(stderr,
@@ -125,18 +126,18 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
                 auto& cpu4 = GetPersistentCpuContext();
                 cpu4.gpr[3] = scnNow + 0xE8u;
                 cpu4.gpr[4] = 0u;
-                InvokeIndirectCpu(0x8023B440u, &cpu4);
+                InvokeIndirectCpu(NSMBW_VA(0x8023B440u), &cpu4);
                 const uint32_t nd = cpu4.gpr[3];
                 Memory::Write32(ndHandle, nd);
                 for (int i = 0; i < 0x80; i += 4) Memory::Write32(res + i, 0u);
                 cpu4.gpr[3] = ndHandle; cpu4.gpr[4] = res;
-                InvokeIndirectCpu(0x8023EFD0u, &cpu4);
+                InvokeIndirectCpu(NSMBW_VA(0x8023EFD0u), &cpu4);
                 const uint32_t flagsA = Memory::Read32(res);
                 float sA[3], tA[3];
                 for (int i = 0; i < 3; ++i) { sA[i] = Memory::ReadFloat32(res + 4 + i * 4); tA[i] = Memory::ReadFloat32(res + 0x1C + i * 4); }
                 Memory::Write32(res, flagsA | 0x200u);
                 cpu4.gpr[3] = ndHandle; cpu4.gpr[4] = res;
-                InvokeIndirectCpu(0x8023EE30u, &cpu4);
+                InvokeIndirectCpu(NSMBW_VA(0x8023EE30u), &cpu4);
                 const uint32_t flagsB = Memory::Read32(res);
                 float M[12];
                 for (int i = 0; i < 12; ++i) M[i] = Memory::ReadFloat32(res + 0x28 + i * 4);
@@ -151,7 +152,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
                 for (int i = 0; i < 3; ++i) { Memory::WriteFloat32(rootScale + i * 4, 1.f); Memory::WriteFloat32(dstScale2 + i * 4, 0.f); }
                 cpu4.gpr[3] = dst2; cpu4.gpr[4] = dstScale2; cpu4.gpr[5] = scnNow + 0x3Cu; cpu4.gpr[6] = rootScale;
                 cpu4.gpr[7] = 0xF0000000u; cpu4.gpr[8] = res;
-                InvokeIndirectCpu(0x80256490u, &cpu4);
+                InvokeIndirectCpu(NSMBW_VA(0x80256490u), &cpu4);
                 float D2[12];
                 for (int i = 0; i < 12; ++i) D2[i] = Memory::ReadFloat32(dst2 + i * 4);
                 std::fprintf(stderr,
@@ -172,7 +173,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
     float rootBefore[4] = {}, rootAfter[4] = {}, localBefore[4] = {};
     if (doLog && scn != 0) {
         Memory::TryRead32(scn + 0xECu, nodeWorld);
-        if (nodeWorld >= 0x80000000u && nodeWorld < 0x94000000u) {
+        if (nodeWorld >= NSMBW_VA(0x80000000u) && nodeWorld < 0x94000000u) {
             for (int i = 0; i < 4; ++i) before[i] = Memory::ReadFloat32(nodeWorld + i * 4);
         }
         for (int i = 0; i < 4; ++i) {
@@ -210,7 +211,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
                 ++logged;
                 uint32_t flags = 0;
                 Memory::TryRead32(scn + 0xCCu, flags);
-                if (nodeWorld >= 0x80000000u && nodeWorld < 0x94000000u) {
+                if (nodeWorld >= NSMBW_VA(0x80000000u) && nodeWorld < 0x94000000u) {
                     for (int i = 0; i < 4; ++i) after[i] = Memory::ReadFloat32(nodeWorld + i * 4);
                 }
                 for (int i = 0; i < 4; ++i) rootAfter[i] = Memory::ReadFloat32(scn + 0x3Cu + i * 4);
@@ -228,7 +229,7 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
                 Memory::TryRead32(scn + 0x104u, mdlFlags);
                 Memory::TryRead32(scn + 0x108u, byteCode);
                 uint8_t bc[12] = {};
-                if (byteCode >= 0x80000000u && byteCode < 0x94000000u) {
+                if (byteCode >= NSMBW_VA(0x80000000u) && byteCode < 0x94000000u) {
                     for (int i = 0; i < 12; ++i) bc[i] = Memory::Read8(byteCode + i);
                 }
                 std::fprintf(stderr,
@@ -252,9 +253,9 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
                     auto& cpu2 = GetPersistentCpuContext();
                     cpu2.gpr[3] = scn + 0xE8u;
                     cpu2.gpr[4] = 0u;
-                    InvokeIndirectCpu(0x8023B440u, &cpu2);
+                    InvokeIndirectCpu(NSMBW_VA(0x8023B440u), &cpu2);
                     const uint32_t nd = cpu2.gpr[3];
-                    if (nd >= 0x80000000u && nd < 0x94000000u) {
+                    if (nd >= NSMBW_VA(0x80000000u) && nd < 0x94000000u) {
                         uint32_t ndMtxId = 0, ndFlags = 0;
                         Memory::TryRead32(nd + 0x10u, ndMtxId);
                         Memory::TryRead32(nd + 0x14u, ndFlags);
@@ -283,12 +284,12 @@ extern "C" void M3dScnLeafCalc_Diag_8016A2E0(uint32_t thisPtr, uint32_t keepEnab
                                      m[10], m[3], m[7], m[11]);
                     }
                 }
-                if (nodeWorld >= 0x80000000u && nodeWorld < 0x94000000u) {
+                if (nodeWorld >= NSMBW_VA(0x80000000u) && nodeWorld < 0x94000000u) {
                     for (uint32_t k = 0; k < numMtx && k < 16; ++k) {
                         float m[12];
                         for (int i = 0; i < 12; ++i) m[i] = Memory::ReadFloat32(nodeWorld + k * 48u + i * 4u);
                         uint32_t attrib = 0;
-                        if (attribArr >= 0x80000000u && attribArr < 0x94000000u) Memory::TryRead32(attribArr + k * 4u, attrib);
+                        if (attribArr >= NSMBW_VA(0x80000000u) && attribArr < 0x94000000u) Memory::TryRead32(attribArr + k * 4u, attrib);
                         std::fprintf(stderr, "[g3d]     node[%u] attrib=0x%X diag=(%.3f,%.3f,%.3f) t=(%.1f,%.1f,%.1f)\n", k, attrib,
                                      m[0], m[5], m[10], m[3], m[7], m[11]);
                     }

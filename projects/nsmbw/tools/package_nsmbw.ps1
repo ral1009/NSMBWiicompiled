@@ -31,7 +31,11 @@ param(
     # The x86-64-v2 build for CPUs without AVX2 (configured like the main build plus
     # -DMKW_HOST_ISA=v2). Shipped as NSMBWCompiled-compat.exe; the main exe starts it by itself
     # on such a CPU (host_cpu_baseline.cpp). Default build_release_compat\, or build_compat\ for -Private.
-    [string]$CompatBuildDir = ""
+    [string]$CompatBuildDir = "",
+    # The USA rev 1 game (configured like the main build plus -DNSMBW_GAME_VERSION=E1; see
+    # docs/BUILDING.md). Its NSMBWCompiled-E1.dll is copied next to the PAL one, and the launcher
+    # loads whichever matches the player's disc. Default build_release-E1\, or build_nsmbw-E1\ for -Private.
+    [string]$UsaBuildDir = ""
 )
 $ErrorActionPreference = 'Stop'
 $tools = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -76,6 +80,26 @@ if (Test-Path $compatDll) {
     Copy-Item $compatDll $pkg
 } else {
     Write-Warning "no compat DLL at $compatDll - CPUs without AVX2 will not run this package"
+}
+# The USA game (optional): without it, a USA disc gets "this package has no game file for it".
+if ($UsaBuildDir -eq "") { $UsaBuildDir = Join-Path $root $(if ($Private) { "build_nsmbw-E1" } else { "build_release-E1" }) }
+$usaDll = Join-Path $UsaBuildDir 'NSMBWCompiled-E1.dll'
+if (Test-Path $usaDll) {
+    $gap = [Math]::Abs(((Get-Item $usaDll).LastWriteTime - (Get-Item (Join-Path $B 'NSMBWCompiled-P1.dll')).LastWriteTime).TotalMinutes)
+    if ($gap -gt 60) {
+        Write-Warning ("the USA DLL and the PAL DLL were built {0:N0} minutes apart - rebuild both from the same commit" -f $gap)
+    }
+    Copy-Item $usaDll $pkg
+} else {
+    Write-Warning "no USA DLL at $usaDll - USA discs will not run with this package"
+}
+# The USA compat build (-DMKW_HOST_ISA=v2 -DNSMBW_GAME_VERSION=E1), for USA discs on CPUs without
+# AVX2. Default build_release_compat-E1\, next to the PAL compat folder.
+$usaCompatDll = Join-Path ($CompatBuildDir + '-E1') 'NSMBWCompiled-E1-compat.dll'
+if (Test-Path $usaCompatDll) {
+    Copy-Item $usaCompatDll $pkg
+} elseif (Test-Path $usaDll) {
+    Write-Warning "no USA compat DLL at $usaCompatDll - USA discs need AVX2 with this package"
 }
 Copy-Item -Recurse (Join-Path $B 'wii_bootstrap') $pkg
 Copy-Item (Join-Path $tools 'PLAYING.txt') $pkg

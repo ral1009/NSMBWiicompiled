@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "gx_internal.h"
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
@@ -65,7 +66,7 @@ static void SubmitLytDrawPacket(const uint8_t* packet, uint32_t packetBytes);
 
 static inline uint8_t ScaleLytAlpha(uint8_t alpha, uint32_t modulate) {
     const int32_t product = static_cast<int32_t>(alpha) * static_cast<int32_t>(modulate & 0xFFu);
-    const int32_t magic = static_cast<int32_t>(0x80808081u);
+    const int32_t magic = static_cast<int32_t>(NSMBW_VA(0x80808081u));
     int32_t quotient = static_cast<int32_t>((static_cast<int64_t>(magic) * product) >> 32);
     quotient = static_cast<int32_t>(quotient + product) >> 7;
     quotient += (static_cast<uint32_t>(quotient) >> 31);

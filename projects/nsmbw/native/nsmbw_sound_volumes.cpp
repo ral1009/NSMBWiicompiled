@@ -24,6 +24,7 @@
 //   Effects      the rest (player, enemies, objects, ambience, boss, demo, jump, notes, instruments)
 // There is no voice player: the characters' voices (SE_VOC_*) share players 2, 5, 8 and 10 with
 // effects, so a voice volume can't be set per player.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "memory.h"
 #include "music_attenuation.h"
 
@@ -37,7 +38,7 @@
 namespace MusicAttenuation {
 namespace {
 
-constexpr uint32_t kSndAudioMgrInstance = 0x8042A768u;
+constexpr uint32_t kSndAudioMgrInstance = NSMBW_VA(0x8042A768u);
 constexpr uint32_t kArcPlayerOffset = 0x5BCu;
 constexpr uint32_t kPlayableCountOffset = 0x24u;
 constexpr uint32_t kVolumeOffset = 0x2Cu;
@@ -107,7 +108,7 @@ void DumpFailedSearch(uint32_t mgr, uint32_t arcPlayer) {
         uint32_t v = 0;
         Read(arcPlayer + off, v);
         std::fprintf(stderr, "[nsmbw][sound]   +0x%02X = 0x%08X\n", off, v);
-        if (v < 0x80000000u || v >= 0x94000000u) continue;
+        if (v < NSMBW_VA(0x80000000u) || v >= 0x94000000u) continue;
         for (uint32_t st : {0x54u, 0x58u, 0x5Cu, 0x60u}) {
             std::fprintf(stderr, "[nsmbw][sound]     as array, stride 0x%X: +0x24 =", st);
             for (uint32_t i = 0; i < 6; ++i) {

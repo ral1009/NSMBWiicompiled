@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 
@@ -19,29 +20,29 @@ uint32_t g_lastEggWidth169 = 0;
 
 // EGG::Screen's static canvas records (PAL). See gx_dynamic_aspect.h for the
 // record layout and the anamorphic presentation model.
-constexpr uint32_t kEggScreenRecord43 = 0x802A3EE8u;
-constexpr uint32_t kEggScreenRecord169 = 0x802A3EF4u;
-constexpr uint32_t kEggActiveScreenPtr = 0x80386F14u;
+constexpr uint32_t kEggScreenRecord43 = NSMBW_VA(0x802A3EE8u);
+constexpr uint32_t kEggScreenRecord169 = NSMBW_VA(0x802A3EF4u);
+constexpr uint32_t kEggActiveScreenPtr = NSMBW_VA(0x80386F14u);
 
-constexpr uint32_t kEggScreenProjScaleX = 0x80386F20u;
-constexpr uint32_t kEggScreenProjScaleY = 0x80386F24u;
+constexpr uint32_t kEggScreenProjScaleX = NSMBW_VA(0x80386F20u);
+constexpr uint32_t kEggScreenProjScaleY = NSMBW_VA(0x80386F24u);
 
-constexpr uint32_t kEggScreenAspectHandler = 0x8023E53Cu;
+constexpr uint32_t kEggScreenAspectHandler = NSMBW_VA(0x8023E53Cu);
 
-constexpr uint32_t kMkwUpdateAllScreens = 0x805653D0u;
-constexpr uint32_t kMkwGfxDrawList = 0x809C1830u;
-constexpr uint32_t kSystemManagerInstance = 0x80386000u;
+constexpr uint32_t kMkwUpdateAllScreens = NSMBW_VA(0x805653D0u);
+constexpr uint32_t kMkwGfxDrawList = NSMBW_VA(0x809C1830u);
+constexpr uint32_t kSystemManagerInstance = NSMBW_VA(0x80386000u);
 
 // The draw list is an nw4r::ut::List: +0x00 head, +0x04 tail, +0x08 u16 count,
 // +0x0A u16 link offset, with next = *(node + linkOffset + 4) (List_GetNext,
 // 0x800AF180).
 constexpr uint32_t kMkwGfxDrawListLinkOffset = 0x0Au;
 
-constexpr uint32_t kMkwGfxOffscreenList = 0x809C183Cu;
+constexpr uint32_t kMkwGfxOffscreenList = NSMBW_VA(0x809C183Cu);
 constexpr uint32_t kMkwGfxOffscreenNodeScreenSlot = 0x10u;
 constexpr uint32_t kEggScreenVTableOffset = 0x38u;
-constexpr uint32_t kEggScreenVTable = 0x802A3F0Cu;
-constexpr uint32_t kMkwScreenVTable = 0x808B4C20u;
+constexpr uint32_t kEggScreenVTable = NSMBW_VA(0x802A3F0Cu);
+constexpr uint32_t kMkwScreenVTable = NSMBW_VA(0x808B4C20u);
 constexpr uint32_t kEggScreenFlagsOffset = 0x34u;
 constexpr uint16_t kEggScreenFlagFramebufferCanvas = 0x0008u;
 constexpr uint16_t kEggScreenFlagKeepFrustumScale = 0x0040u;

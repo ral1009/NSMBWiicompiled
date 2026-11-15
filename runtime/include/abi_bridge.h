@@ -1,5 +1,6 @@
 #pragma once
 #include "memory.h"
+#include "nsmbw_va.h"
 #include "ppc_runtime.h"
 #include "system_bridge.h"
 #include "game_graphics_options.h"
@@ -40,11 +41,21 @@ inline std::array<uint32_t, kCapacity> g_addrs{};
 // specifically to find an indirect-dispatch loop's container without needing to grep for a
 // literal InvokeDirectCpu<addr> call site (which doesn't exist for computed/indirect targets).
 inline std::array<uint32_t, kCapacity> g_lrs{};
+inline std::array<uint32_t, kCapacity> g_r3s{};  // first two arguments at dispatch
+inline std::array<uint32_t, kCapacity> g_r4s{};
 inline std::atomic<uint32_t> g_next{0};
-inline void Push(uint32_t addr, uint32_t lr) {
+// NSMBW_WATCH_WRITE_CALLS=<hex guest address>: compare that guest word on every dispatched call
+// and log the first calls after which it changed (finer than NSMBW_WATCH_WRITE, which polls once
+// per frame and so misses writes made during boot). 0 = off: one test per call.
+extern uint32_t g_watchCallsAddr;
+void WatchCallsCheck(uint32_t addr, uint32_t lr);
+inline void Push(uint32_t addr, uint32_t lr, uint32_t r3 = 0, uint32_t r4 = 0) {
     const uint32_t slot = g_next.fetch_add(1, std::memory_order_relaxed) % static_cast<uint32_t>(kCapacity);
     g_addrs[slot] = addr;
     g_lrs[slot] = lr;
+    g_r3s[slot] = r3;
+    g_r4s[slot] = r4;
+    if (g_watchCallsAddr != 0) WatchCallsCheck(addr, lr);
 }
 } // namespace DiagRecentCalls
 
@@ -54,7 +65,7 @@ inline void Push(uint32_t addr, uint32_t lr) {
 // (used for the path mask filtering in ScnRenderer::createPath: depth of
 // field is always removed, bloom when the user disabled it)
 inline void ApplyRuntimeCallOptions(uint32_t target, CpuContext* ctx) {
-    if (target == 0x8023BD38u) {
+    if (target == NSMBW_VA(0x8023BD38u)) {
         // ScnRenderer::createPath receives the post-processing path mask in r4.
         ctx->gpr[4] = RuntimeGameGraphicsOptions::FilterScnRendererPathMask(ctx->gpr[4]);
     }
@@ -278,7 +289,7 @@ private:
 // Guest address of OSLoadContext, which models rfi-style context restoration
 // and intentionally replaces the full guest register file instead of returning
 // like a normal ABI call. It can never be guarded.
-inline constexpr uint32_t kOSLoadContextAddress = 0x801A1F58u;
+inline constexpr uint32_t kOSLoadContextAddress = NSMBW_VA(0x801A1F58u);
 
 inline bool ShouldPreserveNonvolatileGprsForRawCpuCall(const TranslatedFunctionInfo* info) noexcept {
     return info->kind == FunctionKind::Native && info->address != kOSLoadContextAddress;
@@ -451,7 +462,7 @@ MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionI
         return false;
     }
 
-    DiagRecentCalls::Push(info->address, cpu->lr); // TEMPORARY - see DiagRecentCalls's comment above
+    DiagRecentCalls::Push(info->address, cpu->lr, cpu->gpr[3], cpu->gpr[4]); // TEMPORARY - see DiagRecentCalls's comment above
     RecompMod::ScopedTranslatedExecutionAddress translatedExecution(info->address);
     PpcNonvolatileFprGuard fprGuard(cpu, NonvolatileFprGuardMaskFor(info));
     PpcNonvolatileGprGuard gprGuard(cpu, ShouldPreserveNonvolatileGprsForRawCpuCall(info));
@@ -468,7 +479,7 @@ inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext*
     if (!record || !record->entry) {
         return false;
     }
-    DiagRecentCalls::Push(record->address, cpu->lr); // TEMPORARY - see DiagRecentCalls's comment above
+    DiagRecentCalls::Push(record->address, cpu->lr, cpu->gpr[3], cpu->gpr[4]); // TEMPORARY - see DiagRecentCalls's comment above
     RecompMod::ScopedTranslatedExecutionAddress translatedExecution(record->address);
     PpcNonvolatileGprGuard gprGuard(cpu, record->preserveNonvolatileGprs);
     PpcNonvolatileFprGuard fprGuard(cpu, record->nonvolatileFprWriteMask);
@@ -483,7 +494,7 @@ inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext*
 
 template <uint32_t Target>
 inline void DispatchKnownTranslatedCpuTargetStatic(CpuContext* cpu) {
-    DiagRecentCalls::Push(Target, cpu->lr); // TEMPORARY - see DiagRecentCalls's comment above
+    DiagRecentCalls::Push(Target, cpu->lr, cpu->gpr[3], cpu->gpr[4]); // TEMPORARY - see DiagRecentCalls's comment above
     const auto invokeKnownTranslated = [&]() {
         KnownTranslatedCpuCall<Target>::Entry(cpu);
     };
@@ -812,14 +823,16 @@ public:
 #define MKW_DETAIL_CAT(a, b) a##b
 #define MKW_DETAIL_MAKE_UNIQUE(a, b) MKW_DETAIL_CAT(a, b)
 
-// Three hand-written registration macros. Generated code never registers per function; every
+// Three hand-written registration macros. `address` is a PAL rev 1 address, mapped for other game
+// versions by NSMBW_VA_HOOK (nsmbw_va.h; identity for PAL and for Mario Kart Wii addresses the map lacks).
+// Generated code never registers per function; every
 // translated function reaches the registry via the bulk BulkTranslatedFunctionRecord tables
 // in the translator's *_registration TUs.
 #define REGISTER_TRANSLATED_FUNCTION(address, fn) \
-    static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_trampoline_, __COUNTER__)(address, #fn, fn, FunctionKind::BaseTranslated, false, kPpcAllNonvolatileFprMask, 0, 0, nullptr, KnownTranslatedCpuCall<address>::kMustRemainDynamicallyDispatchable)
+    static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_trampoline_, __COUNTER__)(NSMBW_VA_HOOK(address), #fn, fn, FunctionKind::BaseTranslated, false, kPpcAllNonvolatileFprMask, 0, 0, nullptr, KnownTranslatedCpuCall<NSMBW_VA_HOOK(address)>::kMustRemainDynamicallyDispatchable)
 
 #define REGISTER_NATIVE_FUNCTION(address, fn) \
-    static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_native_trampoline_, __COUNTER__)(address, #fn, fn, FunctionKind::Native, false, kPpcAllNonvolatileFprMask, 0, 0, &AbiRawCpuThunk<&fn>::Invoke)
+    static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_native_trampoline_, __COUNTER__)(NSMBW_VA_HOOK(address), #fn, fn, FunctionKind::Native, false, kPpcAllNonvolatileFprMask, 0, 0, &AbiRawCpuThunk<&fn>::Invoke)
 
 #define REGISTER_NATIVE_FUNCTION_AS(address, fn, pretty_name) \
-    static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_native_trampoline_named_, __COUNTER__)(address, pretty_name, fn, FunctionKind::Native, false, kPpcAllNonvolatileFprMask, 0, 0, &AbiRawCpuThunk<&fn>::Invoke)
+    static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_native_trampoline_named_, __COUNTER__)(NSMBW_VA_HOOK(address), pretty_name, fn, FunctionKind::Native, false, kPpcAllNonvolatileFprMask, 0, 0, &AbiRawCpuThunk<&fn>::Invoke)

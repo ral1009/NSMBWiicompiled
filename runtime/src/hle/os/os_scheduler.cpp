@@ -199,6 +199,9 @@ extern "C" void SelectThread_801b4fe0(CpuContext* ctx)
     // Read scheduler state
     const uint32_t idleFlag = ::Memory::Read32(kSchedulerIdleFlagAddr);
     if (idleFlag >= 1) {
+        if (std::getenv("NSMBW_LOG_SCHED_DISABLE") != nullptr)
+            std::fprintf(stderr, "[os] SelectThread: scheduler disabled (count %u at 0x%08X), returning without a switch (lr=0x%08X)\n",
+                         idleFlag, kSchedulerIdleFlagAddr, static_cast<uint32_t>(cpu->lr));
         // Scheduler is idle/disabled, return 0
         cpu->gpr[3] = 0;
         return;

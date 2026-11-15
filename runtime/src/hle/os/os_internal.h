@@ -5,6 +5,7 @@
 // namespace so the split files can share one definition instead of duplicating
 // it, and the using-directive below keeps every call site unchanged.
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -24,7 +25,7 @@ extern std::atomic<bool> g_interrupts_enabled;
 // observable state, not just bookkeeping.
 extern std::atomic<uint32_t> g_interrupt_mask;
 
-constexpr uint32_t kInterruptHandlerTablePtrAddr = 0x803868f8u;
+constexpr uint32_t kInterruptHandlerTablePtrAddr = NSMBW_VA(0x803868f8u);
 constexpr uint32_t kInterruptHandlerTableAddr = 0x80003040u;
 constexpr size_t kInterruptHandlerTableBytes = 0x80u;
 constexpr uint32_t kInterruptMaskLoAddr = 0x800000c4u;
@@ -36,8 +37,8 @@ constexpr uint32_t kThreadListHeadAddr = 0x800000dcu;    // First thread in thre
 constexpr uint32_t kThreadListTailAddr = 0x800000e0u;    // Last added thread (tail of thread list)
 constexpr uint32_t kOSRunningContextAddr = 0x800000e4u;  // Currently running thread context
 
-constexpr uint32_t kDefaultThreadContextAddr = 0x80347498u;
-constexpr uint32_t kIdleThreadContextAddr = 0x803478b0u;
+constexpr uint32_t kDefaultThreadContextAddr = NSMBW_VA(0x80347498u);
+constexpr uint32_t kIdleThreadContextAddr = NSMBW_VA(0x803478b0u);
 // kThreadQueueArrayAddr / kSwitchThreadCallbackPtrAddr / kSchedulerReschedCounterAddr /
 // kSchedulerPendingFlagAddr / kSchedulerIdleFlagAddr were NSMBW-wrong (this file is shared
 // with the mkwii project and these five were never re-derived for NSMBW's own link layout).
@@ -48,15 +49,15 @@ constexpr uint32_t kIdleThreadContextAddr = 0x803478b0u;
 // never touched, while this override's own idle loop (which does poll VI/Audio/Alarm)
 // wrote a completely different, dead address. Corrected by disassembling 0x801B4FE0 (main.dol)
 // and reading off the real lis/addi/lwz immediates it uses for each of these fields.
-constexpr uint32_t kThreadQueueArrayAddr = 0x8038EF50u;
+constexpr uint32_t kThreadQueueArrayAddr = NSMBW_VA(0x8038EF50u);
 constexpr size_t kThreadQueueArrayBytes = 0x100u;
-constexpr uint32_t kSwitchThreadCallbackPtrAddr = 0x80429828u;
-constexpr uint32_t kSchedulerReschedCounterAddr = 0x8042A9E4u;
-constexpr uint32_t kSchedulerPendingFlagAddr = 0x8042A9E8u;
+constexpr uint32_t kSwitchThreadCallbackPtrAddr = NSMBW_VA(0x80429828u);
+constexpr uint32_t kSchedulerReschedCounterAddr = NSMBW_VA(0x8042A9E4u);
+constexpr uint32_t kSchedulerPendingFlagAddr = NSMBW_VA(0x8042A9E8u);
 // RVL OS uses this as the OSDisableScheduler/OSEnableScheduler nesting count.
 // SelectThread exits early while the count is non-zero.
-constexpr uint32_t kSchedulerIdleFlagAddr = 0x8042A9E0u;
-constexpr uint32_t kAlarmQueueOffsetFromR13 = 0x6360u;
+constexpr uint32_t kSchedulerIdleFlagAddr = NSMBW_VA(0x8042A9E0u);
+constexpr uint32_t kAlarmQueueOffsetFromR13 = NSMBW_SDA13(0x6360u);  // PAL offset, mapped per version (nsmbw_va.h)
 
 // The OSAlarm HLE is not bound for NSMBW. Two independent facts:
 //   * no guest instruction anywhere in the translated output references r13-0x6360 (the queue base

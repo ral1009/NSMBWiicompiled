@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "gx_internal.h"
 #include <aurora/env.hpp>
 #include "gx_stream_common.h"
@@ -108,7 +109,7 @@ void FifoDesyncRecordDraw(uint8_t cmd, uint16_t count, uint32_t rawVertexSize, b
         rec.pc = static_cast<uint32_t>(cc->pc);
     }
     const uint32_t fmt = cmd & GX_VAT_MASK_CMD;
-    constexpr uint32_t kGxDataPtrAddr = 0x80433360u - 0x4EF8u; // *(r2 - 0x4EF8) = __gx (NSMBW)
+    constexpr uint32_t kGxDataPtrAddr = NSMBW_VA(0x80433360u - 0x4EF8u); // *(r2 - 0x4EF8) = __gx (NSMBW, PAL address)
     uint32_t gd = 0;
     if (Memory::TryRead32(kGxDataPtrAddr, gd) && gd != 0) {
         Memory::TryRead32(gd + 0x14u, rec.guestVcdLo);
@@ -142,7 +143,7 @@ void FifoDesyncDumpOnUnknown(const uint8_t* data, uint32_t avail) {
     if (g_fifoDesyncUnknownLogged >= 10) return;
     ++g_fifoDesyncUnknownLogged;
     uint32_t liveVcdLo = 0, liveVcdHi = 0, liveDirty = 0, gd = 0;
-    if (Memory::TryRead32(0x80433360u - 0x4EF8u, gd) && gd != 0) {
+    if (Memory::TryRead32(NSMBW_VA(0x80433360u) - 0x4EF8u, gd) && gd != 0) {
         Memory::TryRead32(gd + 0x14u, liveVcdLo);
         Memory::TryRead32(gd + 0x18u, liveVcdHi);
         Memory::TryRead32(gd + 0x5FCu, liveDirty);

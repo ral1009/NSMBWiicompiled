@@ -32,6 +32,7 @@
 // objects in the first place (GXInit is translated here, see the 2026-09-04 progress-log entry).
 //
 // __gx is *(r2 - 0x4EF8) = *(0x8042E468), as in nsmbw_gx_overrides.cpp.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -47,10 +48,10 @@ extern "C" void GxHle_BeginDisplayListRecording(uint32_t listAddr, uint32_t size
 extern "C" void GxHle_EndDisplayListRecording();
 
 namespace {
-constexpr uint32_t kGxDataPtrAddr = 0x80433360u - 0x4EF8u;
-constexpr uint32_t kSetDirtyStateAddr = 0x801C5430u;
-constexpr uint32_t kDlFifoObjAddr = 0x803907D0u;   // GXFifoObj DisplayListFifo
-constexpr uint32_t kDlStateSaveAddr = 0x80390850u; // 0x600-byte __GXData save area
+constexpr uint32_t kGxDataPtrAddr = NSMBW_VA(0x80433360u) - 0x4EF8u;
+constexpr uint32_t kSetDirtyStateAddr = NSMBW_VA(0x801C5430u);
+constexpr uint32_t kDlFifoObjAddr = NSMBW_VA(0x803907D0u);   // GXFifoObj DisplayListFifo
+constexpr uint32_t kDlStateSaveAddr = NSMBW_VA(0x80390850u); // 0x600-byte __GXData save area
 constexpr uint32_t kGxDataSize = 0x600u;
 constexpr uint32_t kFifoRdPtrOff = 0x14u;
 constexpr uint32_t kFifoWrPtrOff = 0x18u;

@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "recomp_mod_loader.h"
 
 #include <algorithm>
@@ -198,8 +199,8 @@ bool IsKnownBaseRelLoaderWrite(const ExecutableRange& range) {
 
     // The game copies and relocates REL sections before executing them. Those
     // writes are normal loading/linking, not runtime code patches.
-    return (cpu->lr >= 0x8000A000u && cpu->lr < 0x8000A400u) ||
-           (cpu->lr >= 0x801A6000u && cpu->lr < 0x801A7000u);
+    return (cpu->lr >= NSMBW_VA(0x8000A000u) && cpu->lr < NSMBW_VA(0x8000A400u)) ||
+           (cpu->lr >= NSMBW_VA(0x801A6000u) && cpu->lr < NSMBW_VA(0x801A7000u));
 }
 
 } // namespace

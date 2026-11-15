@@ -2,6 +2,7 @@
 //
 // Shared state and helpers live in nand_internal.h.
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "nand_internal.h"
 
 // ============================================================================
@@ -49,10 +50,10 @@ extern "C" int32_t NANDInit_HLE(void) {
     ISFS_OpenLib_Initialize(&GetPersistentCpuContext());
 
     // NANDHomeDir is at 0x80346D20 (from ESP_GetDataDir output)
-    WriteGuestNandPath(0x80346D20, CurrentNandDataDir());
+    WriteGuestNandPath(NSMBW_VA(0x80346D20), CurrentNandDataDir());
 
     // Mark NAND as initialized (0x80386848 = 2)
-    Memory::Write32(0x80386848, 2);
+    Memory::Write32(NSMBW_VA(0x80386848), 2);
 
     return NAND_RESULT_OK;
 }

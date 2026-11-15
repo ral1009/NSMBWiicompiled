@@ -295,15 +295,20 @@ bool LoadArchiveImage(const fs::path& arc, const char* name, Art art) {
     return false;
 }
 
-// The fonts are byte-identical in every EU language folder; English first, else any.
+// The fonts are byte-identical in every language folder; English first, else any. The region folder
+// is EU on the PAL disc (EngEU, ...) and US on the USA disc (EngUS, ...).
 fs::path FindFontDir(const fs::path& files) {
-    const fs::path english = files / "EU" / "EngEU" / "Font";
-    if (fs::exists(english)) return english;
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(files / "EU", ec)) {
-        if (fs::exists(entry.path() / "Font")) return entry.path() / "Font";
+    for (const char* region : {"EU", "US"}) {
+        const fs::path english = files / region / (std::string("Eng") + region) / "Font";
+        if (fs::exists(english)) return english;
     }
-    return english;
+    std::error_code ec;
+    for (const char* region : {"EU", "US"}) {
+        for (const auto& entry : fs::directory_iterator(files / region, ec)) {
+            if (fs::exists(entry.path() / "Font")) return entry.path() / "Font";
+        }
+    }
+    return files / "EU" / "EngEU" / "Font";
 }
 
 bool LoadFont(const fs::path& path, Font& font) {

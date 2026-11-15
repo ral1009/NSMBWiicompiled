@@ -1,9 +1,13 @@
 /generated/
 /generated_nsmbw/
+/generated_nsmbw-*/
 /build_nsmbw/
+/build_nsmbw-*/
 /build_release/
+/build_release-*/
 /build_compat/
 /build_release_compat/
+/build_release_compat-*/
 /dolphin_tool/
 /Assets/
 /assets/
@@ -84,6 +88,8 @@ output.txt
 /NSMBW-Decomp/
 /NSMBW-Maps/
 /NSMBW-Files/
+# Other game versions' code (main.dol + decompressed RELs), from unpack_game_code.py
+/NSMBW-Versions/
 /.venv/
 /.claude/
 /MKWiicompiled/

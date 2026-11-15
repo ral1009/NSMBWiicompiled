@@ -35,6 +35,7 @@
 // This override reimplements that exact sequence (delegating every sub-step to the real,
 // untouched guest functions via InvokeIndirectCpu) so it is value-identical to the original -
 // only the logging around the phase-list result is new.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -43,17 +44,17 @@
 #include <cstdio>
 
 namespace {
-constexpr uint32_t kMyBackGroundPhaseAddr = 0x8042A638u; // sda_base(0x8042f980) - 0x5348
-constexpr uint32_t kPhaseCallMethodAddr = 0x8015F760u;   // sPhase_c::callMethod
+constexpr uint32_t kMyBackGroundPhaseAddr = NSMBW_VA(0x8042A638u); // sda_base(0x8042f980) - 0x5348
+constexpr uint32_t kPhaseCallMethodAddr = NSMBW_VA(0x8015F760u);   // sPhase_c::callMethod
 constexpr uint32_t kPhaseDone = 2u;                      // sPhase_c::DONE
 
-constexpr uint32_t kResetFlagAddr = 0x80428280u;         // sda_base - 0x7700
-constexpr uint32_t kBootCompleteAddr = 0x80108020u;
-constexpr uint32_t kPostBootHousekeepingAddr = 0x80108260u;
-constexpr uint32_t kSetFadeInFrameAddr = 0x800E2040u;
-constexpr uint32_t kSetFadeOutFrameAddr = 0x800E2050u;
-constexpr uint32_t kDylUnlinkAddr = 0x8008F610u;
-constexpr uint32_t kCreateEffectManagerPhase2Addr = 0x800E5170u;
+constexpr uint32_t kResetFlagAddr = NSMBW_VA(0x80428280u);         // sda_base - 0x7700
+constexpr uint32_t kBootCompleteAddr = NSMBW_VA(0x80108020u);
+constexpr uint32_t kPostBootHousekeepingAddr = NSMBW_VA(0x80108260u);
+constexpr uint32_t kSetFadeInFrameAddr = NSMBW_VA(0x800E2040u);
+constexpr uint32_t kSetFadeOutFrameAddr = NSMBW_VA(0x800E2050u);
+constexpr uint32_t kDylUnlinkAddr = NSMBW_VA(0x8008F610u);
+constexpr uint32_t kCreateEffectManagerPhase2Addr = NSMBW_VA(0x800E5170u);
 constexpr uint32_t kYesNoWindowProfile = 0x2C0u;
 constexpr uint32_t kControllerInfoProfile = 0x2E5u;
 

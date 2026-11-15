@@ -28,6 +28,7 @@
 // so no fBase_c/fTrNdBa_c layout beyond the two offsets above (both verified above) is assumed.
 // The override is otherwise value-identical to the original (same nonzero-pointer-to-bool
 // conversion), so this changes no guest-visible behavior.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "abi_bridge.h"
@@ -36,7 +37,7 @@
 #include <cstdio>
 
 namespace {
-constexpr uint32_t kGetChildProcessCreateStateAddr = 0x80162AF0u;
+constexpr uint32_t kGetChildProcessCreateStateAddr = NSMBW_VA(0x80162AF0u);
 constexpr uint32_t kLifecycleStateOffset = 0xAu; // verified via disassembly, see header comment
 
 uint32_t g_lastLoggedThis = 0;

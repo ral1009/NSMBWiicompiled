@@ -1625,6 +1625,24 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
         job.slidPeriods = slidPeriods;
       }
     }
+    // AURORA_LOG_PRESENT_ANCHOR: logs the group's lead over its own (unslid) anchor whenever it
+    // changes by a tenth of a period - for checking whether the cursor ever lets a lead shrink.
+    static const bool logAnchor = AURORA_ENV("AURORA_LOG_PRESENT_ANCHOR") != nullptr;
+    if (logAnchor) {
+      static int64_t s_loggedLeadTenths = -1;
+      const int64_t leadTenths =
+          (shift.count() > 0 ? shift.count() : 0) * 10 / static_cast<int64_t>(ctx.scheduleIntervalNanos);
+      if (leadTenths != s_loggedLeadTenths) {
+        s_loggedLeadTenths = leadTenths;
+        const auto naturalAnchor = anchor - shift;
+        std::fprintf(stderr,
+                     "[aurora][anchor] group lead %.2f ms (%.1f periods); encode done %+.2f ms vs own anchor, "
+                     "first slot due in %.2f ms\n",
+                     std::chrono::duration<double, std::milli>(shift).count(), leadTenths / 10.0,
+                     std::chrono::duration<double, std::milli>(now - naturalAnchor).count(),
+                     std::chrono::duration<double, std::milli>(anchor - now).count());
+      }
+    }
     s_lastGroupAnchor = anchor;
   } else {
     // No schedule (interpolation off, boot/black presents): the grid is gone,

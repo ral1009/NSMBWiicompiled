@@ -97,13 +97,15 @@ extern "C" bool g_dynamicAspectRatioEnabled = false;
 // call into one specific MKW dol address (mod-loader hooks, alarm callback dispatch) that has no
 // NSMBW equivalent. No-ops: worst case is "that one optional callback doesn't fire", never a
 // crash or corrupted state, since none of these are called before the override's own real work.
-extern "C" void func_801AADE0(CpuContext*) {}
-extern "C" void func_801A0620(CpuContext*) {}
-extern "C" void func_801A961C(CpuContext*) {}
-extern "C" void func_8055531C(CpuContext*) {}
-extern "C" void func_801A1ED8(CpuContext*) {}
-extern "C" void func_801D8D30(CpuContext*) {}
-extern "C" void func_801D9E94(CpuContext*) {}
+// These are Mario Kart Wii addresses named by shared runtime code that is not version-mapped, so
+// they keep their raw names in every NSMBW version (the codemod skips lines marked like this).
+extern "C" void func_801AADE0(CpuContext*) {}  // nsmbw-va: not an address
+extern "C" void func_801A0620(CpuContext*) {}  // nsmbw-va: not an address
+extern "C" void func_801A961C(CpuContext*) {}  // nsmbw-va: not an address
+extern "C" void func_8055531C(CpuContext*) {}  // nsmbw-va: not an address
+extern "C" void func_801A1ED8(CpuContext*) {}  // nsmbw-va: not an address
+extern "C" void func_801D8D30(CpuContext*) {}  // nsmbw-va: not an address
+extern "C" void func_801D9E94(CpuContext*) {}  // nsmbw-va: not an address
 
 // The real music_attenuation.cpp needs the optional C++/WinRT SDK (see its own
 // #include <winrt/base.h>, not configured for this build) for actual Windows media-session

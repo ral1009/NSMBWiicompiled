@@ -23,6 +23,7 @@
 // make (the pane flags at +187, the state writes), so no guest bookkeeping is dropped.
 // These are the first overrides at REL addresses; the REL manifests share this native directory
 // (nsmbw-d_basesNP.yml), so the REL translation leaves both addresses to these.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <cstdint>
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
@@ -78,7 +79,7 @@ loc_8077AA38:
 
 loc_8077AA40:
 {
-    ctx->lr = 0x8077AA44u;
+    ctx->lr = NSMBW_VA(0x8077AA44u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -90,7 +91,7 @@ loc_8077AA40:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x8077AB70u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x8077AB70u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -121,7 +122,7 @@ loc_8077AA4C:
 
 loc_8077AA54:
 {
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -23776);
     r4 = -1;
     r3 = MemoryInline::FlatRead32((r3 + -23776));
     // inline leaf 0x800E0470 (10 guest instruction(s))
@@ -158,7 +159,7 @@ loc_inl0_cont_800E0470:
     // end of inlined leaf 0x800E0470
     r30 = r3;
     // inline leaf 0x800CDD50 (4 guest instruction(s))
-    r3 = 0x80360000u;
+    r3 = NSMBW_VA_PAIR(0x80360000u, -24676);
     r3 = (r3 + -24676);
     r3 = MemoryInline::FlatRead32((r3 + 24));
     // end of inlined leaf 0x800CDD50
@@ -183,7 +184,7 @@ loc_8077AA80:
 
 loc_8077AA84:
 {
-    ctx->lr = 0x8077AA88u;
+    ctx->lr = NSMBW_VA(0x8077AA88u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -195,7 +196,7 @@ loc_8077AA84:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x800B5500u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800B5500u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -254,7 +255,7 @@ loc_8077AAE0:
     r5 = 2;
     r7 = 0;
     cr = PpcCrLogicalResident(cr, static_cast<uint32_t>(2), static_cast<uint32_t>(6), static_cast<uint32_t>(6), static_cast<uint32_t>(6));
-    ctx->lr = 0x8077AAFCu;
+    ctx->lr = NSMBW_VA(0x8077AAFCu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -266,7 +267,7 @@ loc_8077AAE0:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x800C9B50u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C9B50u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -285,7 +286,7 @@ loc_8077AAE0:
     r5 = 2;
     r7 = 0;
     cr = PpcCrLogicalResident(cr, static_cast<uint32_t>(2), static_cast<uint32_t>(6), static_cast<uint32_t>(6), static_cast<uint32_t>(6));
-    ctx->lr = 0x8077AB18u;
+    ctx->lr = NSMBW_VA(0x8077AB18u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -297,7 +298,7 @@ loc_8077AAE0:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x800C9B50u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x800C9B50u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -376,7 +377,7 @@ loc_8092FC30:
     r0 = ctx->lr;
     MemoryInline::FlatWriteRam32((r1 + 20), r0);
     MemoryInline::FlatWriteRam32((r1 + 12), r31);
-    r31 = 0x809A0000u;
+    r31 = NSMBW_VA_PAIR(0x809A0000u, 6776);
     r31 = (r31 + 6776);
     MemoryInline::FlatWriteRam32((r1 + 8), r30);
     r30 = r3;
@@ -393,11 +394,11 @@ loc_8092FC58:
 
 loc_8092FC5C:
 {
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
     r4 = 127;
     r3 = MemoryInline::FlatRead32((r3 + -22680));
     r5 = 1;
-    ctx->lr = 0x8092FC70u;
+    ctx->lr = NSMBW_VA(0x8092FC70u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -408,7 +409,7 @@ loc_8092FC5C:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x801954C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -421,7 +422,7 @@ loc_8092FC5C:
     ctr = ctx->ctr;
     xer = ctx->xer;
     // inline leaf 0x808DEB70 (3 guest instruction(s))
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -23251);
     r3 = MemoryInline::FlatRead8((r3 + -23251));
     // end of inlined leaf 0x808DEB70
     r5 = MemoryInline::FlatRead32((r30 + 188));
@@ -434,7 +435,7 @@ loc_8092FC5C:
     r12 = MemoryInline::FlatRead32((r30 + 112));
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8092FCA0u;
+    ctx->lr = NSMBW_VA(0x8092FCA0u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -474,11 +475,11 @@ loc_8092FCA8:
 
 loc_8092FCAC:
 {
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
     r4 = 127;
     r3 = MemoryInline::FlatRead32((r3 + -22680));
     r5 = 1;
-    ctx->lr = 0x8092FCC0u;
+    ctx->lr = NSMBW_VA(0x8092FCC0u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -489,7 +490,7 @@ loc_8092FCAC:
     ctx->gpr[31] = r31;
     ctx->cr = cr;
     ctx->ctr = ctr;
-    InvokeDirectCpu<0x801954C0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -509,7 +510,7 @@ loc_8092FCAC:
     r12 = MemoryInline::FlatRead32((r30 + 112));
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8092FCE4u;
+    ctx->lr = NSMBW_VA(0x8092FCE4u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -548,7 +549,7 @@ loc_8092FCEC:
 
 loc_8092FCF0:
 {
-    r3 = 0x80430000u;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -23776);
     r4 = -1;
     r3 = MemoryInline::FlatRead32((r3 + -23776));
     // inline leaf 0x800E0470 (10 guest instruction(s))
@@ -602,7 +603,7 @@ loc_8092FD0C:
     r4 = (r31 + 608);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8092FD24u;
+    ctx->lr = NSMBW_VA(0x8092FD24u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -635,7 +636,7 @@ loc_8092FD28:
     r4 = (r31 + 992);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8092FD40u;
+    ctx->lr = NSMBW_VA(0x8092FD40u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -680,7 +681,7 @@ loc_8092FD4C:
     r4 = (r31 + 1568);
     r12 = MemoryInline::FlatRead32((r12 + 24));
     ctr = r12;
-    ctx->lr = 0x8092FD60u;
+    ctx->lr = NSMBW_VA(0x8092FD60u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;

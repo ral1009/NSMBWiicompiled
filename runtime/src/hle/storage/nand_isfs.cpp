@@ -2,6 +2,7 @@
 //
 // Shared state and helpers live in nand_internal.h.
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "nand_internal.h"
 #include <aurora/env.hpp>
 
@@ -910,13 +911,13 @@ int32_t ISFS_OpenLib_Initialize(CpuContext* ctx) {
 
             ctx->gpr[3] = heapBase;
             ctx->gpr[4] = heapSize;
-            ctx->lr = 0x80169BCCu;
-            InvokeDirectCpu<0x801949B8u>(ctx);
+            ctx->lr = NSMBW_VA(0x80169BCCu);
+            InvokeDirectCpu<NSMBW_VA(0x801949B8u)>(ctx);
             const uint32_t heapHandle = ctx->gpr[3];
 
             ctx->gpr[3] = heapBase + heapSize;
-            ctx->lr = 0x80169BCCu;
-            InvokeDirectCpu<0x80193040u>(ctx);
+            ctx->lr = NSMBW_VA(0x80169BCCu);
+            InvokeDirectCpu<NSMBW_VA(0x80193040u)>(ctx);
 
             ctx->gpr[3] = savedR3;
             ctx->gpr[4] = savedR4;

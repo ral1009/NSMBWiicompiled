@@ -1,4 +1,5 @@
 // gx_egg.cpp - EGG Library Helper Stubs
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "gx_internal.h"
 
 // Vertex helper declarations not used by the direct-call catalog.
@@ -22,8 +23,8 @@ static void EGG__DrawGX__SetVtxState_HLE(uint32_t state) {
     case 0:
         setFmt(GX_VA_POS, GX_POS_XYZ, GX_S16, 0xE);
         setFmt(GX_VA_NRM, GX_NRM_XYZ, GX_S16, 0xE);
-        setArray(GX_VA_POS, 0x802574a0u, 6);
-        setArray(GX_VA_NRM, 0x802574e0u, 6);
+        setArray(GX_VA_POS, NSMBW_VA(0x802574a0u), 6);
+        setArray(GX_VA_NRM, NSMBW_VA(0x802574e0u), 6);
         setDesc(GX_VA_POS, GX_INDEX8);
         setDesc(GX_VA_NRM, GX_INDEX8);
         break;
@@ -45,22 +46,22 @@ static void EGG__DrawGX__SetVtxState_HLE(uint32_t state) {
         if (state == 7) setDesc(GX_VA_TEX0, GX_DIRECT);
         setFmt(GX_VA_POS, GX_POS_XY, GX_S16, 0xE); setFmt(GX_VA_NRM, GX_NRM_XYZ, GX_S16, 0xE);
         if (state == 7) setFmt(GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-        setArray(GX_VA_POS, 0x80257520u, 4); setArray(GX_VA_NRM, 0x80388b80u, 6);
+        setArray(GX_VA_POS, NSMBW_VA(0x80257520u), 4); setArray(GX_VA_NRM, NSMBW_VA(0x80388b80u), 6);
         break;
     case 9:
         setDesc(GX_VA_POS, GX_INDEX8); setDesc(GX_VA_NRM, GX_INDEX8); setDesc(GX_VA_TEX0, GX_DIRECT);
         setFmt(GX_VA_POS, GX_POS_XYZ, GX_S16, 0xE); setFmt(GX_VA_NRM, GX_NRM_XYZ, GX_S16, 0xE);
         setFmt(GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-        setArray(GX_VA_POS, 0x80257540u, 6); setArray(GX_VA_NRM, 0x80388ba0u, 6);
+        setArray(GX_VA_POS, NSMBW_VA(0x80257540u), 6); setArray(GX_VA_NRM, NSMBW_VA(0x80388ba0u), 6);
         break;
     case 10: case 11: case 12: case 13: {
         const bool useAltPos = (state == 11 || state == 13);
         const bool useTex = (state == 10 || state == 11);
         setDesc(GX_VA_POS, GX_INDEX8);
         if (useTex) setDesc(GX_VA_TEX0, GX_INDEX8);
-        const uint32_t posBase = useAltPos ? 0x80388be0u : 0x80388bc0u;
+        const uint32_t posBase = useAltPos ? NSMBW_VA(0x80388be0u) : NSMBW_VA(0x80388bc0u);
         setArray(GX_VA_POS, posBase, 2);
-        if (useTex) setArray(GX_VA_TEX0, 0x80388be0u, 2);
+        if (useTex) setArray(GX_VA_TEX0, NSMBW_VA(0x80388be0u), 2);
         setFmt(GX_VA_POS, GX_POS_XY, GX_U8, 0);
         if (useTex) setFmt(GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
         break;
@@ -88,7 +89,7 @@ extern "C" void EGG__LightTexture__SetupTevFinish_HLE_8022e2bc(CpuContext* ctx) 
 
             const uint32_t mode = Memory::Read32(self + 0x44);
             const float origin = Memory::ReadFloat32(ctx->gpr[2] + ((mode == 2) ? -25004 : -25040));
-            const float span = Memory::ReadFloat32(ctx->gpr[2] + -25024);
+            const float span = Memory::ReadFloat32(ctx->gpr[2] + -NSMBW_SDA2(25024));
             const float end = static_cast<float>(origin + span);
             const float lower = static_cast<float>(origin - span);
 
@@ -115,8 +116,8 @@ PPC_NATIVE_OVERRIDE_VOID(8022e2bc, EGG__LightTexture__SetupTevFinish_HLE_8022e2b
 // ============================================================================
 
 extern "C" void EGG__AsyncDisplay__endRender_HLE_8020ff9c(CpuContext* ctx) {
-    uint32_t p = ctx->gpr[3]; ctx->gpr[3] = p; ctx->lr = 0x8020FF9C;
-    InvokeIndirectCpu(0x80219FB4u, ctx);
-    InvokeIndirectCpu(0x8016ED50u, ctx);
+    uint32_t p = ctx->gpr[3]; ctx->gpr[3] = p; ctx->lr = NSMBW_VA(0x8020FF9C);
+    InvokeIndirectCpu(NSMBW_VA(0x80219FB4u), ctx);
+    InvokeIndirectCpu(NSMBW_VA(0x8016ED50u), ctx);
 }
 PPC_NATIVE_OVERRIDE_VOID(8020FF9C, EGG__AsyncDisplay__endRender_HLE_8020ff9c, (CpuContext* ctx), (ctx));

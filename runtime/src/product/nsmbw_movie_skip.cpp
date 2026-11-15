@@ -19,6 +19,7 @@
 //     the four at 0x803744D0) present, so the replay has actually started.
 // What the skip does is in nsmbw_kpad_overrides.cpp (RunMovieSkip).
 
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "nsmbw_movie_skip.h"
 
 #include "nsmbw_button_glyphs.h"
@@ -44,11 +45,11 @@ namespace {
 namespace draw = nsmbw_menu_draw;
 
 constexpr uint32_t kWpadMinus = 1u << 12;
-constexpr uint32_t kGameStopAddr = 0x8042A228u;
-constexpr uint32_t kMovieInstanceAddr = 0x8042A498u; // dScMovie_c::m_instance
+constexpr uint32_t kGameStopAddr = NSMBW_VA(0x8042A228u);
+constexpr uint32_t kMovieInstanceAddr = NSMBW_VA(0x8042A498u); // dScMovie_c::m_instance
 constexpr uint32_t kMovieStateOffset = 0x164u, kMovieIdOffset = 0x198u;
-constexpr uint32_t kGameModeAddr = 0x80315E90u + 8u;
-constexpr uint32_t kReplayObjectsAddr = 0x803744D0u;
+constexpr uint32_t kGameModeAddr = NSMBW_VA(0x80315E90u) + 8u;
+constexpr uint32_t kReplayObjectsAddr = NSMBW_VA(0x803744D0u);
 constexpr uint32_t kProfileStage = 5, kProfileMovie = 8;
 constexpr uint32_t kGameModeHintMovie = 4;
 constexpr double kPromptSeconds = 4.0;

@@ -31,6 +31,7 @@
 // project's existing StartFadeIn_800B0A20_Diag / Calc_800B0B00_Diag in nsmbw_tick_read_pump.cpp),
 // not a behavior change - it calls the real createLayout() and sets the real fields exactly as
 // the original does. Only the logging is new.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -43,7 +44,7 @@
 namespace {
 constexpr uint32_t kHasLoadedLayoutOffset = 0x208;
 constexpr uint32_t kVisibleOffset = 0x209;
-constexpr uint32_t kCreateLayoutAddr = 0x8010F1D0u;
+constexpr uint32_t kCreateLayoutAddr = NSMBW_VA(0x8010F1D0u);
 
 // TEMPORARY (continuation of the WiiStrap invisible-content investigation): live tracing
 // isolated one specific pane's vertex corner-color word to a fixed heap address that reads

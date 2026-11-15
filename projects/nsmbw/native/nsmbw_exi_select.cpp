@@ -13,6 +13,7 @@
 // FlatWrite against real MMIO always hits an unrecoverable hardware fault on this runtime. Every
 // other FlatRead32/FlatWrite32/FlatWriteRam32 call here (stack spill/restore, the per-channel RAM
 // state struct at r31) is genuine RAM access, left untouched.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -65,7 +66,7 @@ loc_801B9700:
     r29 = r5;
     r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(6));
     r0 = (r0_rot_0 & -64);
-    r3 = 0x80390000u;
+    r3 = NSMBW_VA_PAIR(0x80390000u, -1520);
     r3 = (r3 + -1520);
     r31 = (r3 + r0);
     // inline leaf 0x801B1280 (5 guest instruction(s))
@@ -126,7 +127,7 @@ loc_801B975C:
 loc_801B9760:
 {
     r3 = r27;
-    ctx->lr = 0x801B9768u;
+    ctx->lr = NSMBW_VA(0x801B9768u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -137,7 +138,7 @@ loc_801B9760:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801B93A0u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B93A0u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -293,7 +294,7 @@ loc_801B97F0:
 loc_801B97F4:
 {
     r3 = 1048576;
-    ctx->lr = 0x801B97FCu;
+    ctx->lr = NSMBW_VA(0x801B97FCu);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -303,7 +304,7 @@ loc_801B97F4:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801B1650u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B1650u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];
@@ -319,7 +320,7 @@ loc_801B97F4:
 loc_801B9800:
 {
     r3 = 131072;
-    ctx->lr = 0x801B9808u;
+    ctx->lr = NSMBW_VA(0x801B9808u);
     ctx->gpr[0] = r0;
     ctx->gpr[1] = r1;
     ctx->gpr[3] = r3;
@@ -329,7 +330,7 @@ loc_801B9800:
     ctx->gpr[30] = r30;
     ctx->gpr[31] = r31;
     ctx->cr = cr;
-    InvokeDirectCpu<0x801B1650u>(ctx);
+    InvokeDirectCpu<NSMBW_VA(0x801B1650u)>(ctx);
     r0 = ctx->gpr[0];
     r1 = ctx->gpr[1];
     r3 = ctx->gpr[3];

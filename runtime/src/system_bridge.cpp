@@ -1,3 +1,4 @@
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "system_bridge.h"
 
 #include <cctype>
@@ -325,7 +326,7 @@ void SystemBridge::Initialize() {
     // AbiCallContext path implicitly selected and seeded it for every ctor.
     InitializePersistentCpuContext();
     CpuContext& cpu = GetPersistentCpuContext();
-    cpu.gpr[1] = 0x81700000u;
+    cpu.gpr[1] = 0x81700000u;  // nsmbw-va: not an address
     CpuContextScope scope(&cpu);
 
     g_suppressSehReporting = true;
@@ -334,8 +335,8 @@ void SystemBridge::Initialize() {
     // These set up vtables and other critical infrastructure
     RT_LOG(RT_TAG_RUNTIME) << "Running static constructors for main DOL..." << std::endl;
 
-    const uint32_t dolCtorStart = 0x80244DE0;
-    const uint32_t dolCtorEnd = 0x80244EA0;
+    const uint32_t dolCtorStart = NSMBW_VA(0x80244DE0);
+    const uint32_t dolCtorEnd = NSMBW_VA(0x80244EA0);
 
     int dolCount = 0;
     for (uint32_t addr = dolCtorStart; addr < dolCtorEnd; addr += 4) {
@@ -352,7 +353,7 @@ void SystemBridge::Initialize() {
             MkwJmpBuf jumpBuf;
             g_sehJumpTarget = &jumpBuf;
             if (MKW_SETJMP(jumpBuf) == 0) {
-                cpu.gpr[1] = 0x81700000u;
+                cpu.gpr[1] = 0x81700000u;  // nsmbw-va: not an address
                 InvokeIndirectCpu(funcAddr, &cpu);
                 dolCount++;
             } else {
@@ -374,8 +375,8 @@ void SystemBridge::Initialize() {
     RT_LOG(RT_TAG_RUNTIME) << "Running static constructors for StaticR.rel..." << std::endl;
 
     // Define range for StaticR.rel .ctors
-    const uint32_t ctorStart = 0x8088f400;
-    const uint32_t ctorEnd = 0x8088f704;
+    const uint32_t ctorStart = NSMBW_VA(0x8088f400);
+    const uint32_t ctorEnd = NSMBW_VA(0x8088f704);
 
     int count = 0;
     for (uint32_t addr = ctorStart; addr < ctorEnd; addr += 4) {
@@ -392,7 +393,7 @@ void SystemBridge::Initialize() {
             MkwJmpBuf jumpBuf;
             g_sehJumpTarget = &jumpBuf;
             if (MKW_SETJMP(jumpBuf) == 0) {
-                cpu.gpr[1] = 0x81700000u;
+                cpu.gpr[1] = 0x81700000u;  // nsmbw-va: not an address
                 InvokeIndirectCpu(funcAddr, &cpu);
                 count++;
             } else {
@@ -484,8 +485,8 @@ void SystemBridge::SeedLowMemDefaults(const Memory::Config& config) {
     };
 
     std::vector<SeedEntry> entries;
-    constexpr uint32_t kMem1ArenaLoDefault = 0x80399180u;
-    uint32_t mem1ArenaHiDefault = 0x817f0520u;
+    constexpr uint32_t kMem1ArenaLoDefault = NSMBW_VA(0x80399180u);
+    uint32_t mem1ArenaHiDefault = 0x817f0520u;  // nsmbw-va: not an address
     constexpr uint32_t kBusClockHz =
         static_cast<uint32_t>(TimeBaseContract::kBusClockHz);
     constexpr uint32_t kCpuClockHz = kBusClockHz * 3u;

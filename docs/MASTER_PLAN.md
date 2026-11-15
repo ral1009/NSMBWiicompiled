@@ -1370,3 +1370,87 @@ What I learned:
 What's next:
 - The address layer (`nsmbw_va.h` and the tools), then the USA (E1) translation and DLL. Adding a row to the launcher's version table is the last step.
 - Not yet run: the compat DLL, a release (`-DNSMBW_RELEASE`) build of the launcher, `package_nsmbw.ps1`, and the window at a DPI other than this monitor's.
+
+## 2026-11-14 — USA (E1) build: address layer, translation, DLL; boots until EGG::AsyncDisplay
+
+What I did:
+- *Address layer* (`runtime/include/nsmbw_va.h`; the approach is MULTI_REGION_GUIDE.md's, with PAL as the base): every guest address in our C++ stays written as a PAL rev 1 ("P1") address. For PAL every macro is the identity. A USA build (`-DNSMBW_GAME_VERSION=E1`) maps them at compile time with tables generated from NSMBW-Maps/address-map.txt. The macros:
+  - `NSMBW_VA(0x...)` maps an address; one the map has no counterpart for fails the build.
+  - `NSMBW_FUNC(tok)` names a translated function by the version's address.
+  - `NSMBW_VA_PAIR(hi, lo)` handles an address copied code builds in two halves (`r3 = 0x80430000u; ... r3 + -23776`). Mapping the top half alone is wrong near a range boundary, so it maps the full address and subtracts the low half again.
+  - `NSMBW_SDA13(off)` / `NSMBW_SDA2(off)`: for `r13 - off`. `r13` moved 0x300 but the small globals moved 0x2E0/0x2F8 (and other amounts in other parts), so each offset is mapped (USA offsets differ from PAL by +32, -16, +8 ... bytes).
+  - `NSMBW_BY_VERSION(pal, usa)` for facts that are not addresses (a REL's size, the game code "SMNP"/"SMNE", the console region EU=2/US=1).
+- The hook macros (`PPC_NATIVE_OVERRIDE`, `REGISTER_*`, `MKW_KNOWN_*`) map their own address argument, so the specialisations they define are keyed on the version's address, which is what translated code looks up.
+- Tools, all in projects/nsmbw/tools:
+  - `unpack_game_code.py` copies `main.dol` and LZ77-decompresses the four RELs from an extracted disc. It reproduces NSMBW-Decomp/original byte for byte from the PAL disc.
+  - `nsmbw_address_map.py` reads the address map.
+  - `map_function_map.py --prove` converts our function map and compares every word of every function between the versions.
+  - `va_codemod.py` wraps addresses in our NSMBW code (idempotent, `--check`).
+  - `gen_version_tables.py E1` writes `generated_nsmbw-E1/`: the compiler tables, the USA translator projects, and a converted copy of projects/nsmbw/native for the translator, which finds our overrides by reading those sources.
+- USA code from the developer's disc (`main.dol` SHA-256 `166eb6b7...`, the pressing that calls `DVDDiskCheck`) translated into `build/nsmbw-E1*`. `build_nsmbw-E1\` builds `NSMBWCompiled-E1.dll`. The launcher's version table has the USA row.
+- Region items: the game code seeded at 0x80000000 (which also picks the NAND title, so the USA save goes to `534d4e45`), the console region, and the options-menu font folder (`US/EngUS` on the USA disc).
+
+What broke / what I didn't expect:
+- My REL reader first read `d_basesNP`'s relocation tables where `d_enemiesNP` is loaded (a REL's relocation data comes after its sections and is freed after linking), which looked like 100 changed functions.
+- The codemod also wrapped the stub names `nsmbw_runtime_shims.cpp` defines for Mario Kart addresses the shared runtime calls, so the USA DLL failed to link (6 undefined symbols). Such lines now carry `// nsmbw-va: not an address`.
+- Shared runtime code outside NSMBW `#if` blocks has NSMBW addresses too: `os_thread.cpp` (OSInitContext, the first USA run's `missing_target 0x801AD0F0`), `gx_fifo.cpp` (`__gx`), and `vi.cpp`.
+- `vi.cpp`'s `WriteGuestStateLocked` writes Mario Kart addresses into NSMBW memory on every retrace (an initialized flag, TV format, render sizes, frame-buffer pointers), and gates the post-retrace callback on Mario Kart's `sSystem` address. In PAL NSMBW those land on unrelated variables; the game has worked regardless. They are now mapped like everything else, so USA touches the corresponding words and behaves as PAL does. The bug itself is open (docs/issues.md).
+- The first USA runs: a pointer read of the text "Expi" inside our EXIInit copy (`r13 + -N` offsets, fixed with `NSMBW_SDA13`), then the hang below.
+
+What I learned:
+- Verified:
+  - `map_function_map.py --prove`: of 29,799 function-map entries, 24,602 are identical in USA, 5,159 differ only in ways the map explains (branch targets, r13/r2 and lis-built addresses, pointers), 36 differ, 2 have no counterpart. The 36 are the known region differences (language functions, 50/60 Hz `Configuration::initialize`, the strap screen, the disc check, a DVD-error check) plus a few the checker cannot judge (functions with no known end).
+  - The USA translation has exactly PAL's function counts per module (main.dol 16,187; RELs 16,158 / 30,366 / 24,117 / 18,512). The PAL `build/` folders hold stale files from older translations; the metadata lists match.
+  - `gen_version_tables.py`: 693 hook tokens, all mapped; no two-step address in the copied code needed review after `NSMBW_VA_PAIR`.
+  - PAL after all of it (address layer in every file): title, map and three level entries in 60 s at 180 FPS.
+  - USA boots through the launcher (`[launcher] disc: USA, revision 1`): threads, NAND (its own portable save), all four RELs reserved at the USA load addresses (d_enemiesNP 0x809A2CC0, d_en_bossNP 0x80B1C940).
+- Not working yet: the USA main thread sleeps in `EGG::AsyncDisplay` (USA 0x802BB6A4, PAL 0x802BB904) on a thread queue at 0x807602F4 and is never woken. PAL sleeps in the same place and is woken. The pre-retrace callback (USA 0x802BAC30) and the waker (USA 0x802BB840) do run on USA, and the translated code of that whole area is equivalent to PAL's, so the waker's own condition must differ: something it reads (a counter, the TV mode) has a different value.
+  - `NSMBW_LOG_RETRACE_CB=1` (new) logs the post-retrace callback and its guard. It never fires on either version: NSMBW registers only the pre-retrace callback.
+
+What's next:
+- Find which value the waker (PAL 0x802BBAA0) reads differs between the two runs, and from there what in the runtime sets it.
+- Then title, map, level, text in English/French/Spanish, the USA save, and the disc check.
+
+## 2026-11-15 — The USA version plays: title, map and levels
+
+What I did:
+- Routed the shared runtime's addresses through the address layer too (`va_codemod.py --shared`, 27 files). Every game-memory literal there is mapped, including Mario Kart Wii leftovers: for PAL the macro is the identity, and for USA each one moves to the matching location, so USA does whatever PAL does. `func_` names are left raw in shared files (the Mario Kart stubs in `nsmbw_runtime_shims.cpp` are called by those names). Three literals that are not addresses (a range bound, a stack pointer, an arena top) are marked `// nsmbw-va: not an address`.
+- The codemod now also rewrites the hand-written `r13 - 20352u` form (`r13 - NSMBW_SDA13(20352u)`), not only the copied `r13 + -N` form. Five more sites: `nsmbw_os_init_stm.cpp` (3), `nsmbw_exi_probe.cpp`, and Mario Kart STM/interrupt code in `os_init.cpp` / `os_interrupt.cpp`.
+- New diagnostics: `NSMBW_LOG_SCHED_DISABLE=1` (the scheduler-disable count: changes around alarm callbacks, SelectThread returning early because of it, and its value after each boot step) and `NSMBW_WATCH_WRITE_CALLS=<hex addr>` (checks a guest word on every dispatched call and reports the call after which it changed, the eight calls before with their r3/r4, and the 64 bytes around it; `NSMBW_WATCH_WRITE` only checks once per frame, too late for boot).
+
+What broke / what I didn't expect:
+- After mapping the shared runtime, USA got worse: it exited at boot (the game's global destructors ran) instead of hanging. `NSMBW_LOG_SCHED_DISABLE` showed `SelectThread` returning early because the scheduler-disable count at USA 0x8042A700 was 5,460,993 (0x00535401). The count is in .bss in both DOLs and still 0 after every native boot step, so the junk came from inside the game's start-up. `NSMBW_WATCH_WRITE_CALLS` put the write in the thread start, and the value was the giveaway: 0x00535401 is "ST" 01, the `/dev/stm/immediate` marker that our `__OSInitSTM` override writes to `r13 - 20352`. On USA that PAL offset is the scheduler-disable count (USA `r13 - 0x4F80`). With the count non-zero, the boot thread's suspend returned at once, `main` was never switched to, and the program ran off its end.
+  - *.bss*: the zero-filled part of a program's memory, which is not stored in the file, so a non-zero value there was written at run time.
+- Before that fix, mapping the scheduler globals (`kThreadQueueArrayAddr`, the pending mask, the reschedule counter, the disable count, the switch-thread callback; NSMBW addresses in a shared header) is what turned the old `EGG::AsyncDisplay` hang into this exit: the old hang came from the runtime's scheduler reading PAL's run-queue location while the USA game put its threads on its own.
+
+What I learned:
+- Verified (self-test runs, 60 s each, both rebuilt from the same tree):
+  - PAL: boot, strap, course-in, title, game setup, map, level, map, level, map, level, map; no errors; 177.9 FPS average.
+  - USA (portable copy, the developer's USA disc): the identical scene sequence, no errors. Screenshots: the title screen, the World 1 map in English with our key prompts, and World 1-1. 60 FPS: the portable copy's default settings (no frame interpolation).
+  - The USA save is written to `UserData\NAND\title\00010004\534d4e45` ("SMNE"), separate from PAL's.
+  - A fresh USA save plays the opening movie (scene 8) before the map.
+- Not checked on USA yet: French and Spanish text, the options menu (F10) and its fonts from `US/EngUS`, the extra pause and map buttons (patched `Layout/*.arc`), quick-save-to-full-save, the HD pack, the disc check's BCA path, any world past 1, and 180 FPS interpolation.
+
+What's next:
+- Check the unchecked features above on USA.
+- Package both DLLs together (`package_nsmbw.ps1` knows only P1 so far) and let the launcher's setup screen accept either disc.
+
+## 2026-11-15 — One package for PAL and USA, with compat builds; map-cursor fix
+
+What I did:
+- Map-menu cursor (reported by the developer): choosing Options in the world-map menu left the map menu's selection brackets drawn behind the options menu. `nsmbw_map_options.cpp` hid the cursor with `dSelectCursor_c::Cancel(0)`, but the map menu's cursor is slot 4 (its `SelectCursorSetup(..., 4, false)`; the game's own close, `func_8077B190`, calls `Cancel(4)`). Now `Cancel(4)`. The pause window's slot 0 was already right.
+- Release package: `package_nsmbw.ps1` ships four game DLLs next to one launcher: PAL and USA, each fast (AVX2) and compat (x86-64-v2). New build folders `build_release-E1\`, `build_release_compat\`, `build_release_compat-E1\` (configure lines in docs/BUILDING.md). The script warns about any that are missing.
+- Player docs (README.md, PLAYING.txt): USA rev 1 discs are supported; the minimum CPU is SSE4.2 (the compat build), marked as untested on an older CPU; the setup steps describe the launcher's setup window (and Shift to reopen it); the USA save folder. Known issues say the USA version is tested only through World 1.
+- The launcher clears `MKW_FORCE_UNSUPPORTED_CPU` after reading it (`nsmbw_launcher.cpp`).
+
+What broke / what I didn't expect:
+- The first compat test from the zip loaded the compat DLL but never wrote a log: the test switch `MKW_FORCE_UNSUPPORTED_CPU=1`, which makes the launcher pick the compat DLL, was inherited by the DLL, whose own load-time CPU check (`host_cpu_baseline.cpp`) honours it too and showed "unsupported processor" while loading. Only a test-switch problem (a real old CPU passes the DLL's level-2 check), but it made the compat path untestable on this PC. The old compat-exe hand-off cleared the switch for its child; the launcher now does the same.
+
+What I learned:
+- Verified from the zip itself (each a fresh portable copy, the setup hook pointed at the disc, 30-45 s self-test): PAL fast, PAL compat, USA fast, USA compat each loaded the expected DLL (read from the process's module list) and ran boot, strap, course-in, title, game setup and the opening movie with no errors; saves went to `534d4e50` (PAL) and `534d4e45` (USA).
+- Not verified: the map-cursor fix on screen (it needs the map menu driven by hand); either compat DLL on a real pre-AVX2 CPU; the USA dev build (`build_nsmbw-E1`) has not been relinked with the cursor fix because a game started from that folder still has the DLL open.
+
+What's next:
+- The developer checks the map-menu Options button on screen.
+- Check the remaining features on USA (F10 fonts, pause/map buttons, full save, French/Spanish, HD pack, later worlds, 180 FPS).
+- Run a compat DLL on a real older CPU or under Intel SDE.

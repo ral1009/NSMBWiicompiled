@@ -9,7 +9,7 @@
 **[Download the latest release](https://github.com/ral1009/NSMBWiicompiled/releases/latest)**
 
 > [!IMPORTANT]
-> This download contains no game assets: no levels, graphics, music or sound. You need your own copy of the game, dumped from the **PAL disc (SMNP01), revision 1**. The US disc will not work. Please don't ask for game files.
+> This download contains no game assets: no levels, graphics, music or sound. You need your own copy of the game, dumped from the **PAL disc (SMNP01) or the USA disc (SMNE01), revision 1**. Other versions will not work. Please don't ask for game files.
 
 ## Contents
 - [System requirements](#system-requirements)
@@ -23,16 +23,16 @@
 
 ## System requirements
 - Windows 10 or 11, 64-bit
-- A CPU with AVX2: Intel Haswell (2013) or newer, or any AMD Ryzen
+- A 64-bit CPU with SSE4.2: Intel Nehalem (2008) or newer, AMD Bulldozer (2011) or newer. CPUs with AVX2 (Intel Haswell or newer, any AMD Ryzen) run the faster build; older ones get a compatibility build automatically (see [Known issues](#known-issues))
 - A GPU with Direct3D 12 or Vulkan; integrated graphics work (see [FAQ](#faq))
 - About 1 GB of free space
-- Your own dump of the PAL disc as `.rvz`, `.iso` or `.wbfs`. Dolphin's [ripping guide](https://dolphin-emu.org/docs/guides/ripping-games/) explains how to dump a disc from a Wii.
+- Your own dump of the PAL or USA disc (revision 1) as `.rvz`, `.iso` or `.wbfs`. Dolphin's [ripping guide](https://dolphin-emu.org/docs/guides/ripping-games/) explains how to dump a disc from a Wii.
 
 ## How to install
 1. Download the zip from the [releases page](https://github.com/ral1009/NSMBWiicompiled/releases/latest) and extract all of it into its own folder.
 2. Run `NSMBWCompiled.exe`.
-3. Pick your disc image when asked. It is extracted once into a `disc` folder next to the game, which takes a few seconds. You can also pick a folder you already extracted with Dolphin.
-4. Optionally, pick a Dolphin HD texture pack folder to install it.
+3. In the setup window, pick your disc image. It is extracted once into a `disc` folder next to the game, which takes a few seconds. You can also pick a folder you already extracted with Dolphin. The window shows which version it found (PAL or USA).
+4. Optionally, install a Dolphin HD texture pack from the same window, then press **Play**. Hold **Shift** while starting the game to come back to this window later.
 5. The options menu opens before the title screen the first time, so you can set resolution, frame rate and controls before playing. Press **F10** to open it again at any time.
 
 Later launches go straight to the game.
@@ -104,18 +104,20 @@ Defaults; change them in **Options → Controls**.
 - **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Known problems: the end of the Bowser-face wipe leaves the sides uncovered; on the title screen the ground ends before the right edge. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
 - **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
-- Only the PAL disc, revision 1, is supported.
+- Only the PAL and USA discs, revision 1, are supported.
+- **The USA version is new.** So far it has been tested through the title screen, the World 1 map and World 1 levels. Please report anything that differs from the PAL version.
+- **The compatibility build for CPUs without AVX2 has not been tested on such a CPU yet.** It is chosen automatically; please report how it runs.
 
 ## FAQ
 
 #### Is this an emulator?
 No. The game's code was translated ahead of time into a normal Windows program (static recompilation), the same approach as [WiiCompiled](https://github.com/patchzyy/Wiicompiled) for Mario Kart Wii. The game's assets still come from your disc.
 
-#### Why doesn't my US copy work?
-The port is built against the PAL release (SMNP01, revision 1). Other versions have different code, so they would need their own port.
+#### Which versions of the game work?
+The PAL release (SMNP01) and the USA release (SMNE01), both revision 1. The game's code differs slightly between versions, so each has its own translated program in the zip, and the game picks the one that matches your disc. Japanese, Korean and other revisions are not supported yet.
 
 #### Where are my saves and settings?
-In `%LOCALAPPDATA%\WiiCompiled\`: settings in `Config.toml`, controls in `nsmbw_controls.ini`, and the save in `NAND\title\00010004\534d4e50\wiimj2d.sav`. To keep everything inside the game folder instead, put an empty file named `portable.txt` next to `NSMBWCompiled.exe`. Saves and settings then go to a `UserData` folder there.
+In `%LOCALAPPDATA%\WiiCompiled\`: settings in `Config.toml`, controls in `nsmbw_controls.ini`, and the save in `NAND\title\00010004\534d4e50\wiimj2d.sav` (PAL) or `...\534d4e45\wiimj2d.sav` (USA); the two versions keep separate saves. To keep everything inside the game folder instead, put an empty file named `portable.txt` next to `NSMBWCompiled.exe`. Saves and settings then go to a `UserData` folder there.
 
 #### It runs slowly on my laptop. What should I change?
 Lower the resolution first. On an Intel Iris Xe laptop, 528p and 792p (the old 1x and 1.5x settings) hold 180 fps with frame interpolation, 1056p (2x) holds 120 and 2112p (4x) holds 60. Keep the game window in front, since a covered window can run noticeably slower.

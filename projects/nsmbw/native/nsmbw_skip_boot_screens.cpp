@@ -20,6 +20,7 @@
 // 1200/60 to this+264/+268 and reads mpWiiStrap from this+240; func_8015D010 / func_8015D0B0 read
 // mpControllerInformation from this+252 and write mVisible at +521 (mIsCreated is +520).
 // What is left is the black fades and the sound-load wait.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <aurora/env.hpp>
 #include "memory.h"
 
@@ -30,7 +31,7 @@ extern "C" uint32_t g_nsmbwCurrentScenePtr;
 
 namespace {
 constexpr uint32_t kBootProfile = 0;
-constexpr uint32_t kGameFlagAddr = 0x8042A260u;
+constexpr uint32_t kGameFlagAddr = NSMBW_VA(0x8042A260u);
 constexpr uint32_t kGameFlagAutoSkip = 1u << 19;
 constexpr uint32_t kWiiStrapOff = 240;
 constexpr uint32_t kControllerInfoOff = 252;

@@ -30,6 +30,7 @@
 // (shared, heavily-reused) vtable target - reimplementing the whole tiny function exactly, then
 // calling only the two real, distinct, non-self addresses, following the same rule already
 // established in nsmbw_wipecircle_calc_diag.cpp for why this doesn't self-recurse.
+#include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include "hle_stubs.h"
 #include <aurora/env.hpp>
 #include "ppc_runtime.h"
@@ -45,7 +46,7 @@ constexpr uint32_t kVisibleOffset = 0x209;
 constexpr uint32_t kMLytOffset = 0x70;
 constexpr uint32_t kMLytVtableOffset = 0x8;
 constexpr uint32_t kLytCalcVtableSlot = 0x10;
-constexpr uint32_t kAnimePlayAddr = 0x800C9650u;
+constexpr uint32_t kAnimePlayAddr = NSMBW_VA(0x800C9650u);
 
 // Same LytBase_c::AnimePlay offsets already confirmed in nsmbw_wipecircle_calc_diag.cpp for a
 // DIFFERENT LytBase_c instance (WipeCircle's mLyt) - reused here for WiiStrap's own mLayout, to
