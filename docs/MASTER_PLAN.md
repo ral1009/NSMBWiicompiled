@@ -1306,3 +1306,67 @@ What I learned:
 What's next:
 - Ship it in the next release: build `build_release_compat\`, package, and only then change the CPU line in README and PLAYING.txt.
 - Run it on a real pre-AVX2 CPU or under Intel SDE (`-snb`). That is the only way to prove the DLLs are safe and to see the speed there.
+
+## 2026-11-14 — The game is a DLL; NSMBWCompiled.exe is a launcher
+
+What I did:
+- First step of multi-version support (docs/futureplans.md section 3, decided today: one launcher plus one game DLL per version and CPU level). PAL only for now; nothing about addresses changed.
+  - *DLL* (dynamic-link library): a file of compiled code like an exe, but with no starting point of its own. Another program loads it with `LoadLibrary` and calls the functions it *exports*.
+- `runtime/cmake/NsmbwProduct.cmake`: the game (translated code, overrides, runtime) is now the `NSMBWGame` target, built as `NSMBWCompiled-P1.dll` (`-compat` is added for an `MKW_HOST_ISA=v2` build). `NSMBWCompiled.exe` is the new `nsmbw_launcher.cpp`: it checks the CPU, picks the fast or compat DLL, loads it and calls its one export, `NsmbwGameMain()` (the old `main()` in `nsmbw_product.cpp`). The build command is unchanged; building the launcher builds the DLL first.
+- What had to move or change, and why:
+  - The 16 MB stack flag (`-Wl,--stack`) moved to the launcher. Windows reads a process's default thread stack size from the exe's header only; on a DLL the flag does nothing, and the old deep-call-chain crash would come back. Checked: `llvm-readobj` shows `SizeOfStackReserve: 16777216` on the exe.
+  - The CPU check runs in the launcher (`MkwHostCpuMeetsLevel`, a non-exiting version of `host_cpu_baseline.cpp`'s check), because a v3 DLL runs AVX2 code in its own startup code during `LoadLibrary`. The DLL keeps its own check as a safety net. This replaces the old "start `NSMBWCompiled-compat.exe`" hand-off: the compat build is now `NSMBWCompiled-P1-compat.dll`, and `package_nsmbw.ps1` ships that.
+  - The icon resource stays on the exe, where SDL looks for it. The 45 s screenshot shows it in the title bar.
+  - Crash and stall logs printed offsets from `GetModuleHandleW(nullptr)`, which is now the launcher. They use `__ImageBase` (the linker's name for the base address of the module the code is in) instead: `memory.cpp`, `nsmbw_product.cpp` (2 places).
+  - Window close (`ExitForAuroraWindowClose`, `aurora_events.h`) used `ExitProcess`. Inside a DLL, that sends the DLL `DLL_PROCESS_DETACH` (Windows' "you are being unloaded" call), which runs the DLL's `atexit` handlers and global destructors: exactly the C++ shutdown that function exists to skip, because it can fault while a guest fiber is active. It now flushes the logs, prints `[runtime] window closed - exiting` and calls `TerminateProcess`.
+  - Only `NsmbwGameMain` is exported (`llvm-objdump -p`: 1 export). Marking one function `dllexport` also stops the linker from exporting every function, which with ~30,000 translated functions would come close to the 65,535 export limit.
+
+What broke / what I didn't expect:
+- `resolve_profile.py` named 58% of samples `?`: it subtracted the exe's default base address (0x140000000) from `llvm-nm`'s addresses, and a DLL's is 0x180000000. It now reads `ImageBase` from the file. Its default `--exe` is the DLL.
+- The profile file is opened in append mode, so `NSMBWCompiled.exe+0x411342b` lines from older runs looked like a sampler bug at first. The last window (this run) names `NSMBWCompiled-P1.dll` 17,907 times and the exe never.
+
+What I learned:
+- Verified with self-test runs (`run_nsmbw.ps1`, the real save):
+  - Run 1: boot, title, game setup, world map, a level, back to the map; then the developer closed the window at 40 s. No crash event in Windows' Application log.
+  - Run 2 (`NSMBW_UNBUFFERED_LOG=1`): the same plus a second level entry, then `[runtime] window closed - exiting`, exit code 0 at 53 s. Screenshot at 45 s: 1-1, 179.9 FPS.
+  - Profiler run: after the resolver fix, the busiest thread resolves to `func_801A39C0`, `Audio_HLE_Poll`, `MusicAttenuation::TickGuest`, etc.
+- Not verified: the compat DLL (no compat build made), the "CPU too old" message boxes, a release (`-DNSMBW_RELEASE`) build of the launcher (GUI subsystem, log file) and the package script.
+
+What's next:
+- Move the first-launch setup out of the DLL into the launcher: game files (disc image or extracted folder; the disc ID will choose the DLL), HD texture packs, and a Riivolution mods slot to fill in later. The launcher must know the disc before it can choose a DLL, so `nsmbw_disc_setup.cpp` belongs there.
+- Then the address layer and the USA (E1) DLL.
+
+## 2026-11-14 — Setup screen in the launcher; tested with the USA and PAL discs
+
+What I did:
+- Second step of multi-version support. The launcher (`NSMBWCompiled.exe`) now shows a setup window before it loads any game DLL (`runtime/src/product/nsmbw_launcher_setup.cpp`). It has three parts:
+  - *Game files*: "Disc image..." extracts an `.rvz`/`.iso`/`.wbfs` into `disc\` next to the exe with DolphinTool.exe; "Extracted folder..." takes a folder Dolphin already extracted.
+  - *HD texture pack*: "Install pack..." copies the pack's `SMN` folder into `nsmbw_data\texture_replacements\` and turns the setting on, and a checkbox turns it on and off.
+  - *Riivolution mods*: a greyed-out placeholder ("Add mod..." disabled). The shared runtime's loader (`hle/storage/riivolution.cpp`) is not wired into NSMBW yet.
+- The disc ID in `sys\boot.bin` (bytes 0-5 game ID, byte 7 revision) chooses the DLL from a table: today only `SMNP01` rev 1 → `NSMBWCompiled-P1.dll`. Any other NSMBW disc is named (game ID, revision, region) and refused, and nothing is saved.
+- When the window opens: the configured `dvd_root` is missing or not a supported disc, or Shift is held while the game starts (`NSMBW_SETUP_SHOW=1` does the same). Otherwise the game starts directly, as before. Self-test runs never open it.
+- Settings are written to the same Config.toml through the same header the game uses (`runtime_config.h`), before the DLL loads. The game's own first-launch dialogs (`nsmbw_disc_setup.cpp`, release builds only) are deleted; the setup now runs in every build.
+- Script hooks: `NSMBW_SETUP_IMAGE`, `NSMBW_SETUP_FOLDER`, `NSMBW_SETUP_TEXTURES`.
+- The window is per-monitor DPI-aware (sharp text) and has a common-controls v6 manifest (themed buttons).
+  - *Manifest*: an XML resource inside the exe that tells Windows which system library versions to use. Ours only asks for the newer button/control styles; it adds no DPI or OS-version entries that could change how Windows treats the game.
+
+What broke / what I didn't expect:
+- The first step's build had also compiled `nsmbw_launcher.cpp` into the DLL: the runtime's source list is a glob of `runtime/src/**/*.cpp`, and the launcher lives there. Harmless (an unused `main` in the DLL), but now excluded with the other product files.
+- `LoadCursorW(nullptr, IDC_ARROW)` failed to compile: this project doesn't define `UNICODE`, so `IDC_ARROW` is the ANSI-string form. Used the numeric ID instead.
+- The first screenshot showed the disc's long path cut off at the window edge; it is now its own label, shortened in the middle (`SS_PATHELLIPSIS`).
+
+What I learned:
+- Verified, all from a portable copy (its own empty Config.toml, never the real one):
+  - Empty config: the window opens with "Not set yet" and Play disabled; Quit exits without loading the game (screenshot).
+  - USA disc (the developer's dump in `C:\Emulation\roms\wii\`), extracted `DATA\` folder and the `.rvz`: both logged `This disc (SMNE01 revision 1, USA) is not supported yet`. No `dvd_root` written, no extracted files left behind.
+  - PAL `.rvz`: extracted to `disc\`, `dvd_root` saved, `[launcher] disc: Europe (PAL), revision 1`, and the game ran boot → title → game setup.
+  - Reopened with a disc set: Play enabled, PAL name and shortened path shown (screenshot).
+  - HD pack install: 312 files / 174 MB copied, `texture_replacements = true` written, and the game started.
+  - The developer's own setup (valid disc, no Shift): no window; the self-test reached a level.
+  - The game process is per-monitor DPI-aware (`GetProcessDpiAwareness` = 2) without the launcher setting it, so setting it for the window should not change the game. That API reports 2 for both versions of per-monitor awareness, so this is likely, not proven.
+- The USA dump's `main.dol` SHA-256 is `166eb6b7...`: the retail USA rev 1 pressing that calls `DVDDiskCheck` from `main` (the team branch's `variants.toml`). The USA DLL will need the BCA answer described in `MULTI_REGION_GUIDE.md` section 4.
+  - *BCA* (burst cutting area): a barcode ring on real Wii discs that the game can read to check it is a pressed disc; with no drive, the runtime has to give the answer the game expects.
+
+What's next:
+- The address layer (`nsmbw_va.h` and the tools), then the USA (E1) translation and DLL. Adding a row to the launcher's version table is the last step.
+- Not yet run: the compat DLL, a release (`-DNSMBW_RELEASE`) build of the launcher, `package_nsmbw.ps1`, and the window at a DPI other than this monitor's.

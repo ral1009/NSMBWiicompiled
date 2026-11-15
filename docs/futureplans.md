@@ -41,7 +41,7 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 
 1. **0.2.3 (a day or two):** items 1-3, plus item 9 if the details arrive and the cause is simple. All are small and easy to check on this PC, apart from Linux, which needs the reporter to retest.
 2. **0.3.0:** start with a time-boxed spike for item 8: apply the wider screen record, drive the window to 21:9 with the CRU trick, and record what breaks (HUD position, pop-in at the edges, fades). That result decides whether ultrawide ships in 0.3.0. Do items 4-7 alongside; the 4:3 option (item 4) also proves out the "aspect read at scene creation" question that item 8 depends on.
-3. **After 0.3.0:** item 11 first for NTSC-U, because it also unlocks item 12 and the largest audience. Needs a US disc to test; ask the community for a tester, since the repo cannot be verified without one.
+3. **After 0.3.0:** item 11 first for NTSC-U, because it also unlocks item 12 and the largest audience. Needs a US disc to test (the developer has one since 2026-11-14). Packaging is decided: a launcher plus one DLL per version (section 3).
 
 ## 1a. 4:3 progress (2026-11-07, uncommitted)
 
@@ -110,8 +110,34 @@ Left to do:
 **How:**
 1. *Check first:* does NSMBW-Decomp / NSMBW-Maps hold symbol maps for the other versions? Measure how many of our addresses actually differ.
 2. Replace hard-coded addresses in the override files with a table per version, picked from the disc ID at start-up. Do this refactor once, not once per version.
-3. Translate each version's DOL and RELs with the existing pipeline. Decide whether one exe carries several translated versions or each version gets its own exe.
+3. Translate each version's DOL and RELs with the existing pipeline. Packaging is decided: one launcher plus one DLL per version (see "Decision" below).
 4. Test each version with the self-test (`NSMBW_AUTO_PRESS_SELFTEST`) from boot to a level.
+
+**Reference:** `C:\Users\ryanl\NSMBWRecompCollab\MULTI_REGION_GUIDE.md` (outside this repo, written 2026-11-14) explains how the team branch `merge/phase1-regions` runs USA and PAL from one source tree. Every guest address stays written as one version's address. The macros in `nsmbw_va.h` map it to the other version at compile time, and `verify_variant.py` checks word by word that every hooked function is identical or equivalent on both versions. For us PAL (P1) stays the base address space; the guide measured that 134 of 135 of our hook addresses and all 243 constants map to USA.
+
+**USA disc:** the developer obtained a USA dump on 2026-11-14. Hash its `main.dol` first: there are two USA pressings, and one has no `DVDDiskCheck` call.
+
+**Decision (2026-11-14): one launcher exe plus one game DLL per version.** The team branch builds one exe per version and has the USA exe start the PAL one. Instead, `NSMBWCompiled.exe` becomes a small launcher. It reads the disc ID from `sys/boot.bin`, checks the CPU, loads one game DLL with `LoadLibrary` and calls one exported entry function.
+- *Why:* the compat build (section 2) already makes a second exe, which `host_cpu_baseline.cpp` starts on a CPU without AVX2. Two versions × two CPU levels would be four exes starting each other; the launcher turns it into one choice of which DLL to load, and the compat relaunch goes away.
+- *Why not one exe holding both versions:* the address layer is compile-time (`constexpr`, template arguments such as `InvokeDirectCpu<0x...>`, `case` labels), and both versions' translated code uses the same `func_XXXXXXXX` names. Merging them would mean run-time address lookups, prefixed names, an exe of about 160 MB, and no build-time check that every address maps.
+- *Download size:* not smaller than separate exes. Each DLL carries its own translated code (about 80 MB) and runtime; only aurora, SDL3, Dawn and libc++, which are already DLLs, are shared.
+
+What the split needs (read in source, not tried):
+1. `runtime/cmake/NsmbwProduct.cmake`: `add_executable(NSMBWCompiled ...)` becomes a `SHARED` library per version (and per CPU level), plus a new launcher target.
+2. `-Wl,--stack,16777216` must move to the launcher. Windows takes the main thread's stack size from the exe only, so on the DLL it does nothing and the deep-call-chain stack overflow it fixed comes back. The same applies to `-mwindows` in release builds.
+3. `main()` in `nsmbw_product.cpp` becomes the exported entry function.
+4. `GetModuleHandleW(nullptr)` in `memory.cpp:392` and `nsmbw_product.cpp:597` / `:812` returns the launcher, so the `rvaFromBase` in crash and stall logs would be wrong. Use the DLL's own module handle. `resolve_profile.py` and the symbol lookup must read the DLL rather than the exe.
+5. `GetModuleFileNameW(nullptr)` (finding `nsmbw_data` next to the exe) stays correct as long as the DLLs sit next to the launcher.
+6. `package_nsmbw.ps1` and the POST_BUILD copy steps list the DLLs instead of the exes.
+
+**The launcher is also the setup screen** (developer's request, 2026-11-14). Before loading a DLL it asks for:
+- *Game files:* a disc image (extracted with DolphinTool) or an already-extracted folder. The disc ID in `sys/boot.bin` picks the DLL. This moves `nsmbw_disc_setup.cpp`'s first-launch picker out of the game and into the launcher: the launcher must know the disc before it can choose a DLL.
+- *Texture packs:* the HD-pack install that `OfferTexturePack` does today (copy `SMN` into `nsmbw_data/texture_replacements/`).
+- *Riivolution mods:* a placeholder for now. The shared runtime has a Riivolution loader (`runtime/src/hle/storage/riivolution.cpp`, section 6) that is not wired into NSMBW yet.
+
+*Order:* do the split first with PAL only, and check that it plays the same as before (self-test to a level, crash log addresses resolve) before starting on the address layer. A break then points at the split, not the region work.
+
+*Status (2026-11-14):* the split is built and runs (steps 1-6 above; see the MASTER_PLAN entry of that date). Self-test reached a level twice; window close exits cleanly; the profiler resolves against the DLL. Not yet run: the compat DLL, the release launcher, `package_nsmbw.ps1`. The setup screen is built too (game files, HD pack, Riivolution placeholder) and was tested with the developer's USA and PAL discs: USA is recognised and refused until its DLL exists, PAL extracts and plays. Next: the address layer.
 
 ## 4. Save carry-over
 

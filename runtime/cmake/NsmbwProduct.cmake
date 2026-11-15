@@ -94,12 +94,13 @@ if(MKW_BUILD_NSMBW)
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_layout_patch.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_art.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_draw.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_options_menu.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_movie_skip.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_setup.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/host_cpu_baseline.cpp")
     if(NOT WIN32)
         list(REMOVE_ITEM NSMBW_RUNTIME_COMMON_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/wup028_adapter.cpp")
@@ -171,57 +172,113 @@ if(MKW_BUILD_NSMBW)
         endif()
     endforeach()
 
-    # The Phase 5 milestone executable: no window, no aurora frame, no input - just prove
-    # decode -> lift -> emit -> compile -> link works by initializing guest memory and jumping
-    # into the real dol entry point. See runtime/src/product/nsmbw_product.cpp's own header
-    # comment for why this isn't runtime/src/main.cpp, and for what happens next (an
-    # unimplemented HLE call will hit RuntimeCrash::FatalMissingGuestTarget - expected, and
-    # Phase 6's actual starting point).
-    add_executable(NSMBWCompiled "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
+    # The game: a DLL since 2026-11-14 (docs/futureplans.md section 3). NSMBWCompiled.exe (the
+    # launcher target below) loads one DLL per game version and CPU level and calls its exported
+    # NsmbwGameMain() (nsmbw_product.cpp). The file is NSMBWCompiled-<version>[-compat].dll; the
+    # version is P1 (PAL rev 1), the only one built so far, and -compat marks an MKW_HOST_ISA=v2 build.
+    set(NSMBW_GAME_VERSION "P1" CACHE STRING "Game version this build translates (P1 = PAL rev 1)")
+    set(NSMBW_GAME_DLL_NAME "NSMBWCompiled-${NSMBW_GAME_VERSION}")
+    if(MKW_HOST_ISA_LEVEL LESS 3)
+        string(APPEND NSMBW_GAME_DLL_NAME "-compat")
+    endif()
+    add_library(NSMBWGame SHARED "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_disc_setup.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_layout_patch.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_art.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_draw.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_options_menu.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_movie_skip.cpp")
-    mkw_configure_object_target(NSMBWCompiled)
+    set_target_properties(NSMBWGame PROPERTIES PREFIX "" OUTPUT_NAME "${NSMBW_GAME_DLL_NAME}")
+    mkw_configure_object_target(NSMBWGame)
     # Same product define as nsmbw_runtime_common: runtime_config.h's inline functions read it, and
-    # an inline function compiled differently in two objects of one exe is an ODR violation.
-    target_compile_definitions(NSMBWCompiled PRIVATE MKW_RUNTIME_PRODUCT_NSMBW)
+    # an inline function compiled differently in two objects of one module is an ODR violation.
+    target_compile_definitions(NSMBWGame PRIVATE MKW_RUNTIME_PRODUCT_NSMBW)
     # Release builds (-DNSMBW_RELEASE=ON, made by package_nsmbw.ps1 in build_release\) ask for the
     # disc on first launch and extract it with the bundled DolphinTool.exe. Dev builds never do.
     option(NSMBW_RELEASE "First-launch disc picker for the public release" OFF)
     if(NSMBW_RELEASE)
-        target_compile_definitions(NSMBWCompiled PRIVATE NSMBW_RELEASE)
-        # GUI subsystem: no console window. mingw-w64's startup still calls main().
-        target_link_options(NSMBWCompiled PRIVATE -mwindows)
+        target_compile_definitions(NSMBWGame PRIVATE NSMBW_RELEASE)
     endif()
-    target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
-    target_compile_options(NSMBWCompiled PRIVATE ${MKW_HOST_MARCH_FLAG} -g)
+    target_compile_features(NSMBWGame PRIVATE cxx_std_20)
+    target_compile_options(NSMBWGame PRIVATE ${MKW_HOST_MARCH_FLAG} -g)
     # -g alone only affects compiling; the linker strips debug sections unless told to keep them.
-    # Each translated guest call (MKW_STATIC_TRANSLATED_CALL/InvokeDirectCpu) is a real, nested
-    # native C++ call - PPC call trees several dozen frames deep (seen repeatedly during NSMBW
-    # boot) turn into native stacks deep enough to overflow the platform's 1MB default. Reproduced
-    # a deterministic native SIGSEGV (no guest AccessViolation, so not a guest-memory-bounds issue)
-    # right after clearing several boot blockers that let execution progress further/deeper than
-    # before - raise the reserved stack well past what's been observed so far.
-    target_link_options(NSMBWCompiled PRIVATE -g -Wl,--stack,16777216)
-    target_sources(NSMBWCompiled PRIVATE
+    # The 16 MB stack is on the launcher: Windows takes a thread's default stack size from the exe.
+    target_link_options(NSMBWGame PRIVATE -g)
+    # mkw_cpu_baseline stays in the DLL as a safety net: its constructor runs during LoadLibrary,
+    # before any AVX2 initializer, and stops with a message if the launcher loaded the wrong DLL.
+    target_sources(NSMBWGame PRIVATE
         $<TARGET_OBJECTS:nsmbw_translated>
         $<TARGET_OBJECTS:nsmbw_native>
         $<TARGET_OBJECTS:nsmbw_data_init>
         $<TARGET_OBJECTS:nsmbw_runtime_common>
         $<TARGET_OBJECTS:mkw_cpu_baseline>)
-    target_link_libraries(NSMBWCompiled PRIVATE
+    target_link_libraries(NSMBWGame PRIVATE
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
         mkw::pugixml mkw::toml11 mkw::cryptopp)
     if(WIN32)
-        target_link_libraries(NSMBWCompiled PRIVATE
+        target_link_libraries(NSMBWGame PRIVATE
             dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp setupapi winusb shell32 ole32)
     else()
-        target_link_libraries(NSMBWCompiled PRIVATE mkw::libco)
+        target_link_libraries(NSMBWGame PRIVATE mkw::libco)
+    endif()
+
+    # The launcher, NSMBWCompiled.exe (nsmbw_launcher.cpp): checks the CPU, loads the game DLL and
+    # calls it. Deliberately built without MKW_HOST_MARCH_FLAG, so it runs on any x86-64 CPU and can
+    # explain what is missing. Building this target builds the DLL too (add_dependencies), so the
+    # usual `cmake --build build_nsmbw --target NSMBWCompiled` still builds everything.
+    # nsmbw_launcher_setup.cpp is the setup screen (disc, HD pack, mods slot); it reads and writes
+    # Config.toml through runtime_config.h, the same header the game uses, so it needs that header's
+    # include paths, toml11 and the NSMBW product define (which picks NSMBW's config template).
+    add_executable(NSMBWCompiled
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_setup.cpp"
+        "${MKW_CPU_BASELINE_SOURCE}")
+    mkw_configure_object_target(NSMBWCompiled)
+    target_compile_definitions(NSMBWCompiled PRIVATE MKW_RUNTIME_PRODUCT_NSMBW)
+    target_link_libraries(NSMBWCompiled PRIVATE mkw::toml11)
+    if(WIN32)
+        # Common-controls v6 manifest: themed buttons and group boxes in the setup window instead of
+        # the Windows 95 look. Only that dependency: no DPI or supportedOS entries, which would change
+        # how Windows treats the game running in the same process.
+        enable_language(RC)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_launcher.manifest"
+"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type=\"win32\" name=\"Microsoft.Windows.Common-Controls\" version=\"6.0.0.0\"
+                        processorArchitecture=\"*\" publicKeyToken=\"6595b64144ccf1df\" language=\"*\"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+")
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_launcher_manifest.rc"
+            "1 24 \"${CMAKE_CURRENT_BINARY_DIR}/nsmbw_launcher.manifest\"\n")
+        target_sources(NSMBWCompiled PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_launcher_manifest.rc")
+    endif()
+    # Target-level, not source properties: those would also change the shared mkw_cpu_baseline
+    # object library compiled from the same file. NO_CTOR leaves only the MkwHostCpuMeetsLevel query.
+    target_compile_definitions(NSMBWCompiled PRIVATE
+        MKW_CPU_BASELINE_NO_CTOR MKW_HOST_ISA_LEVEL=${MKW_HOST_ISA_LEVEL})
+    set_target_properties(NSMBWCompiled PROPERTIES UNITY_BUILD OFF)
+    target_compile_features(NSMBWCompiled PRIVATE cxx_std_20)
+    add_dependencies(NSMBWCompiled NSMBWGame)
+    # Each translated guest call (MKW_STATIC_TRANSLATED_CALL/InvokeDirectCpu) is a real, nested
+    # native C++ call - PPC call trees several dozen frames deep (seen repeatedly during NSMBW
+    # boot) turn into native stacks deep enough to overflow the platform's 1MB default. Reproduced
+    # a deterministic native SIGSEGV (no guest AccessViolation, so not a guest-memory-bounds issue)
+    # right after clearing several boot blockers that let execution progress further/deeper than
+    # before - raise the reserved stack well past what's been observed so far. This must be on the
+    # exe: the main thread, and every thread created with the default size, take it from the exe
+    # header, and a DLL's --stack is ignored.
+    target_link_options(NSMBWCompiled PRIVATE -Wl,--stack,16777216)
+    if(NSMBW_RELEASE)
+        # GUI subsystem: no console window. mingw-w64's startup still calls main().
+        target_link_options(NSMBWCompiled PRIVATE -mwindows)
+    endif()
+    if(WIN32)
+        target_link_libraries(NSMBWCompiled PRIVATE user32 shell32 ole32 uuid)
     endif()
 
     # Same runtime-DLL copy PublicProducts.cmake's mkw_configure_product() does for
@@ -233,7 +290,8 @@ if(MKW_BUILD_NSMBW)
     # DLLs here, and the runtime data files below.
     if(EXISTS "${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         include("${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
-        aurora_copy_runtime_dlls(NSMBWCompiled)
+        # The game DLL is what links aurora/SDL3/Dawn; it and the launcher share one output folder.
+        aurora_copy_runtime_dlls(NSMBWGame)
     endif()
     if(WIN32)
         foreach(nsmbw_runtime_dll libc++.dll libunwind.dll)
@@ -328,5 +386,5 @@ END
         message(STATUS "NSMBWCompiled: embedding icon ${NSMBW_ICON}")
     endif()
 
-    message(STATUS "NSMBWCompiled executable target ready.")
+    message(STATUS "NSMBWCompiled launcher + ${NSMBW_GAME_DLL_NAME}.dll targets ready.")
 endif()

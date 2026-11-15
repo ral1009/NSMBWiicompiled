@@ -99,9 +99,9 @@ struct TextBuffer {
     }
 };
 
-// True when the host can run this build. Otherwise `missing` holds the absent
-// feature names, comma separated.
-bool CollectMissingBaselineFeatures(TextBuffer& missing) {
+// True when the host has every feature of x86-64 level `level` (2 or 3). Otherwise
+// `missing` holds the absent feature names, comma separated.
+bool CollectMissingFeaturesForLevel(unsigned level, TextBuffer& missing) {
     const unsigned maxBasic = HostCpuIdMaxLeaf(0);
     const unsigned maxExtended = HostCpuIdMaxLeaf(0x80000000u);
 
@@ -109,7 +109,7 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
     bool haveOsXsave = false;
 
     for (const CpuFeature& feature : kRequiredFeatures) {
-        if (feature.level > MKW_HOST_ISA_LEVEL) {
+        if (feature.level > level) {
             continue;
         }
         const bool leafAvailable = (feature.leaf & 0x80000000u) != 0
@@ -147,6 +147,11 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
     }
 
     return ok;
+}
+
+// True when the host can run this build.
+bool CollectMissingBaselineFeatures(TextBuffer& missing) {
+    return CollectMissingFeaturesForLevel(MKW_HOST_ISA_LEVEL, missing);
 }
 
 // stdio is NOT usable from a .CRT$XIC initializer - the UCRT has not stood it
@@ -298,6 +303,20 @@ void TryRunCompatExe() {
 
 }  // namespace
 
+// For the NSMBW launcher, which picks the game DLL to load by CPU level: a query that never exits.
+// `missing` (may be null) receives the absent features, comma separated.
+extern "C" bool MkwHostCpuMeetsLevel(unsigned level, char* missing, unsigned missingSize) {
+    TextBuffer names;
+    const bool ok = CollectMissingFeaturesForLevel(level, names);
+    if (missing != nullptr && missingSize > 0) {
+        unsigned i = 0;
+        for (; i + 1 < missingSize && names.data[i] != '\0'; ++i) missing[i] = names.data[i];
+        missing[i] = '\0';
+    }
+    return ok;
+}
+
+#if !defined(MKW_CPU_BASELINE_NO_CTOR)
 extern "C" int MkwHostCpuBaselineInit() {
     TextBuffer missing;
     bool supported = CollectMissingBaselineFeatures(missing);
@@ -321,3 +340,4 @@ extern "C" int MkwHostCpuBaselineInit() {
 __attribute__((constructor(101))) static void MkwHostCpuBaselineCtor() {
     MkwHostCpuBaselineInit();
 }
+#endif  // !MKW_CPU_BASELINE_NO_CTOR

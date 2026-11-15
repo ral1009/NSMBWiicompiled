@@ -56,6 +56,9 @@
 #include <timeapi.h>
 #include <unordered_map>
 #include <string>
+// Linker-defined base address of the module this file is linked into. Since the game became a DLL
+// (2026-11-14), GetModuleHandleW(nullptr) is the launcher exe, so offsets from it are meaningless.
+extern "C" IMAGE_DOS_HEADER __ImageBase;
 #endif
 
 // Read by StartProfileSampler.
@@ -594,7 +597,7 @@ void DiagSampleMainThreadNativePc(HANDLE mainThread, int afterSeconds) {
         return;
     }
 #if defined(_M_X64) || defined(__x86_64__)
-    const uint64_t moduleBase = reinterpret_cast<uint64_t>(::GetModuleHandleW(nullptr));
+    const uint64_t moduleBase = reinterpret_cast<uint64_t>(&__ImageBase);
     std::fprintf(stderr,
                  "[nsmbw] diag: still running after %ds - native RIP=0x%016llX RSP=0x%016llX "
                  "moduleBase=0x%016llX rvaFromBase=0x%llX\n",
@@ -809,7 +812,7 @@ LONG WINAPI DiagVectoredExceptionHandler(EXCEPTION_POINTERS* info) {
                                          ? static_cast<uint64_t>(record->ExceptionInformation[0])
                                          : 0;
         const uint64_t rip = reinterpret_cast<uint64_t>(record->ExceptionAddress);
-        const uint64_t moduleBase = reinterpret_cast<uint64_t>(::GetModuleHandleW(nullptr));
+        const uint64_t moduleBase = reinterpret_cast<uint64_t>(&__ImageBase);
         std::fprintf(stderr,
                      "[nsmbw] diag: NATIVE ACCESS VIOLATION - accessType=%llu(0=read,1=write) "
                      "faultAddr=0x%016llX nativeRIP=0x%016llX rvaFromBase=0x%llX\n",
@@ -980,9 +983,9 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
 
 } // namespace
 
-void NsmbwEnsureDiscFolder();
-
-int main() {
+// The game is a DLL (NSMBWCompiled-<version>.dll) that the launcher, NSMBWCompiled.exe
+// (nsmbw_launcher.cpp), loads and enters here. Everything below used to be main().
+extern "C" __declspec(dllexport) int NsmbwGameMain() {
 #ifdef _WIN32
     // Window/taskbar icon: SDL3 only takes an icon from the exe's resources when these hints name
     // one (they can be given as environment variables; set before aurora initializes SDL). Resource
@@ -1060,8 +1063,8 @@ int main() {
     std::printf("[nsmbw] Initializing embedded data sections...\n");
     InitializeDataSections();
     SeedLowMemDefaults();
-    // Release builds only (nsmbw_disc_setup.cpp): ask for the disc if dvd_root isn't valid yet.
-    NsmbwEnsureDiscFolder();
+    // The disc (dvd_root) was checked by the launcher's setup screen (nsmbw_launcher_setup.cpp)
+    // before this DLL was loaded; its disc ID is what chose this DLL.
     // Must precede the guest entry point. NSMBW's own DVDInit (0x801CAE70) inlines
     // __DVDFSInit, which latches OSBootInfo.FSTLocation once and early-returns when it reads
     // zero - so the FST has to be published before the guest starts, or every disc path lookup

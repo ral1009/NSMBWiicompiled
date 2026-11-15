@@ -814,6 +814,31 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix (`ppc_isa_fma_compat.h`): negate only the non-NaN lanes, the same rule as `PpcNegateNonNanLanesInline`.
 - Scope: General.
 
+## 2026-11-14 — Game split into a DLL behind a launcher
+
+### `resolve_profile.py` could not name frames in the game DLL
+- Symptom: after the game became `NSMBWCompiled-P1.dll`, 58% of the busiest thread's samples resolved to `?`.
+- Root cause: the script turned `llvm-nm` addresses into offsets by subtracting a fixed 0x140000000, the default base of an exe. A DLL's default base is 0x180000000, so every lookup missed.
+- Fix (`projects/nsmbw/tools/resolve_profile.py`): read `ImageBase` with `llvm-readobj --file-headers`; default `--exe` is now the game DLL. Same run then resolved to `func_801A39C0`, `Audio_HLE_Poll`, etc.
+- Scope: General (any tool that assumes the exe's base).
+
+### Exe-only assumptions handled before they could fail (DLL split)
+- Symptom: none observed; each would have broken once the game code moved into a DLL.
+- Root cause and fix:
+  - The 16 MB stack reservation is read from the exe header only; moved to the launcher target (`NsmbwProduct.cmake`).
+  - `GetModuleHandleW(nullptr)` is the launcher, so crash/stall offsets would point at the wrong file; now `__ImageBase` (`memory.cpp`, `nsmbw_product.cpp`).
+  - `ExitProcess` on window close would run the DLL's destructors through `DLL_PROCESS_DETACH`; now flush + `TerminateProcess` (`aurora_events.h`). Checked: window close logs `[runtime] window closed - exiting`, exit code 0, no crash event.
+  - A v3 DLL runs AVX2 code while loading, so the CPU check moved into the launcher (`nsmbw_launcher.cpp`, `MkwHostCpuMeetsLevel`).
+- Scope: General.
+
+## 2026-11-14 — Setup screen moved into the launcher
+
+### Launcher source compiled into the game DLL as well
+- Symptom: none at run time; found while adding the setup screen. The DLL contained the launcher's `main()`.
+- Root cause: `NsmbwProduct.cmake` builds the runtime from a glob of `runtime/src/**/*.cpp` and removes the product files by name; `nsmbw_launcher.cpp` (new that day, in `src/product/`) was not on that list.
+- Fix: `nsmbw_launcher.cpp` and `nsmbw_launcher_setup.cpp` added to the `REMOVE_ITEM` list.
+- Scope: General (any new file under `runtime/src/` lands in the runtime unless excluded).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -852,4 +877,5 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - Full-target resolve snapshots (2026-10-25): cropped for sampled/converted copies; MKW's depth-of-field chain, which the upstream comment says needed them, is untested with the crop (`NSMBW_FULL_RESOLVE_SNAPSHOT=1` to compare).
 - GPU timer resolve alignment (2026-10-26): why Dawn reported the unaligned offset despite `skip_validation` in one run (after an injected out-of-memory error) is unexplained.
 - HD-pack preload (2026-11-07): a scene's list records only files that were not already in the replacement cache, so it depends on the order scenes were visited (1-1 recorded 6 files after the title had loaded the shared ones). The first world-map visit after the title is keyed by the title demo's world (0). A 36 ms frame on world-map entry remains; it is not pack loading and was not investigated.
+- DLL split and launcher setup (2026-11-14): compat DLL, the CPU-too-old message boxes, a release build of the launcher, `package_nsmbw.ps1` and the setup window at other DPI settings not yet run.
 - Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.

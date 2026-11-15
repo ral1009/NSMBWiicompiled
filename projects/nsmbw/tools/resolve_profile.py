@@ -1,14 +1,14 @@
 """Resolve NSMBW_PROFILE_SAMPLER output (build_nsmbw/nsmbw_data/../nsmbw_profile.txt) to function names.
 
 Usage:
-  python projects/nsmbw/tools/resolve_profile.py [profile.txt] [--exe build_nsmbw/NSMBWCompiled.exe]
+  python projects/nsmbw/tools/resolve_profile.py [profile.txt] [--exe build_nsmbw/NSMBWCompiled-P1.dll]
          [--window N | --windows A-B] [--top 40] [--thread TID]
 
 The sampler (runtime/src/product/nsmbw_product.cpp, StartProfileSampler) suspends every thread
 ~500 times a second, unwinds its stack and writes one 10 s histogram per window:
   <count> tid=<tid> <module>+0x<rva><<module>+0x<rva><...     (leaf frame first)
 
-Symbols: frames in NSMBWCompiled.exe are named with llvm-nm (translated guest functions are
+Symbols: frames in the game DLL (--exe; NSMBWCompiled-P1.dll since 2026-11-14) are named with llvm-nm (translated guest functions are
 func_<guest address>); frames in Windows DLLs are named by the nearest export (llvm-readobj), which
 is exact for exported functions and "export+large offset" for internal ones.
 
@@ -28,12 +28,18 @@ class Symbols:
     def __init__(self, path, kind):
         rows = []
         if kind == "nm":
+            # llvm-nm prints addresses at the file's preferred base (0x140000000 for an exe,
+            # 0x180000000 for a DLL - the game is a DLL since 2026-11-14); the profile has RVAs.
+            headers = subprocess.run(["llvm-readobj", "--file-headers", path],
+                                     capture_output=True, text=True).stdout
+            m = re.search(r"ImageBase:\s*0x([0-9A-Fa-f]+)", headers)
+            image_base = int(m.group(1), 16) if m else 0x140000000
             out = subprocess.run(["llvm-nm", "--defined-only", "--no-demangle", path],
                                  capture_output=True, text=True).stdout
             for line in out.splitlines():
                 p = line.split()
                 if len(p) == 3 and p[1] in ("T", "t"):
-                    rows.append((int(p[0], 16) - 0x140000000, p[2]))
+                    rows.append((int(p[0], 16) - image_base, p[2]))
         else:
             out = subprocess.run(["llvm-readobj", "--coff-exports", path], capture_output=True, text=True).stdout
             name = None
@@ -59,7 +65,8 @@ class Symbols:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("profile", nargs="?", default="build_nsmbw/nsmbw_profile.txt")
-    ap.add_argument("--exe", default="build_nsmbw/NSMBWCompiled.exe")
+    ap.add_argument("--exe", default="build_nsmbw/NSMBWCompiled-P1.dll",
+                    help="module holding the translated code: the game DLL, not the launcher exe")
     ap.add_argument("--window", type=int, default=None)
     ap.add_argument("--windows", default=None, help="inclusive range A-B, summed")
     ap.add_argument("--top", type=int, default=40)

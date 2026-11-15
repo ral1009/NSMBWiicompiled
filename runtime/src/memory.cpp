@@ -26,6 +26,9 @@
 #endif
 #include <windows.h>
 #include <dbghelp.h>
+// This module's own base (the NSMBW game DLL since 2026-11-14; GetModuleHandleW(nullptr) would be
+// the launcher exe, and backtrace offsets from it would not resolve).
+extern "C" IMAGE_DOS_HEADER __ImageBase;
 #endif
 
 MemoryInline::PageEntry MemoryInline::g_pageTable[MemoryInline::kPageCount]{};
@@ -389,7 +392,7 @@ Region& ResolveRegion(uint32_t address, size_t length) {
 #if defined(_WIN32)
     void* frames[32]{};
     const USHORT captured = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
-    const auto imageBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto imageBase = reinterpret_cast<uintptr_t>(&__ImageBase);
     HANDLE process = GetCurrentProcess();
     static const bool symbolsReady = [] {
         SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);

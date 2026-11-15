@@ -18,9 +18,10 @@
 # first run on another PC (2026-09-27) failed on both, one launch at a time. Test a package from
 # a folder OUTSIDE the repo, or that same fallback hides the gap again.
 #
-# The public package is built from build_release\ (configured with -DNSMBW_RELEASE=ON: first-launch
-# disc picker, nsmbw_disc_setup.cpp) and ships DolphinTool.exe from dolphin_tool\ (gitignored; copy
-# it out of an official Dolphin x64 release together with Dolphin's license) to extract the disc.
+# The public package is built from build_release\ (configured with -DNSMBW_RELEASE=ON: no console
+# window, log file) and ships DolphinTool.exe from dolphin_tool\ (gitignored; copy
+# it out of an official Dolphin x64 release together with Dolphin's license), which the launcher's
+# setup screen (nsmbw_launcher_setup.cpp) uses to extract the player's disc image.
 param(
     [string]$Version = "0.2.2",
     [string]$OutDir = "",
@@ -45,7 +46,8 @@ if ($OutDir -eq "") { $OutDir = Join-Path $root "dist" }
 # Everything the exe needs next to it. The DLLs are the ones it imports that Windows doesn't
 # ship (checked with llvm-objdump -p); any other *.dll in build_nsmbw is copied too.
 $required = @(
-    'NSMBWCompiled.exe',
+    'NSMBWCompiled.exe',                        # the launcher (nsmbw_launcher.cpp)
+    'NSMBWCompiled-P1.dll',                     # the game: PAL rev 1, AVX2 build
     'SDL3.dll', 'webgpu_dawn.dll', 'dxcompiler.dll', 'dxil.dll',
     'libc++.dll', 'libunwind.dll', 'libpng16.dll', 'libz.dll',
     'dsp_coef.bin',                             # AX mixer resampling table (ax_mix.cpp)
@@ -62,17 +64,18 @@ New-Item -ItemType Directory -Force $pkg | Out-Null
 Copy-Item (Join-Path $B 'NSMBWCompiled.exe'), (Join-Path $B 'dsp_coef.bin'), (Join-Path $B 'initial_pipeline_cache.db'), (Join-Path $B 'initial_texture_preload.txt') $pkg
 Get-ChildItem $B -Filter *.dll | Copy-Item -Destination $pkg
 # Optional: without it the package still works on AVX2 CPUs; older ones get the "unsupported
-# processor" box. Both exes use the same DLLs and data files, so only the exe is copied.
+# processor" box. Since 2026-11-14 the game is a DLL: the compat build (-DMKW_HOST_ISA=v2) makes
+# NSMBWCompiled-P1-compat.dll, and the launcher loads it on such a CPU. It shares every other file.
 if ($CompatBuildDir -eq "") { $CompatBuildDir = Join-Path $root $(if ($Private) { "build_compat" } else { "build_release_compat" }) }
-$compatExe = Join-Path $CompatBuildDir 'NSMBWCompiled.exe'
-if (Test-Path $compatExe) {
-    $gap = [Math]::Abs(((Get-Item $compatExe).LastWriteTime - (Get-Item (Join-Path $B 'NSMBWCompiled.exe')).LastWriteTime).TotalMinutes)
+$compatDll = Join-Path $CompatBuildDir 'NSMBWCompiled-P1-compat.dll'
+if (Test-Path $compatDll) {
+    $gap = [Math]::Abs(((Get-Item $compatDll).LastWriteTime - (Get-Item (Join-Path $B 'NSMBWCompiled-P1.dll')).LastWriteTime).TotalMinutes)
     if ($gap -gt 60) {
-        Write-Warning ("the compat exe and the main exe were built {0:N0} minutes apart - rebuild both from the same commit" -f $gap)
+        Write-Warning ("the compat DLL and the main DLL were built {0:N0} minutes apart - rebuild both from the same commit" -f $gap)
     }
-    Copy-Item $compatExe (Join-Path $pkg 'NSMBWCompiled-compat.exe')
+    Copy-Item $compatDll $pkg
 } else {
-    Write-Warning "no compat exe at $compatExe - CPUs without AVX2 will not run this package"
+    Write-Warning "no compat DLL at $compatDll - CPUs without AVX2 will not run this package"
 }
 Copy-Item -Recurse (Join-Path $B 'wii_bootstrap') $pkg
 Copy-Item (Join-Path $tools 'PLAYING.txt') $pkg

@@ -8,6 +8,7 @@
 #include <aurora/gfx.h>
 #include <dolphin/gx/GXAurora.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
@@ -73,7 +74,14 @@ inline void (*g_beforeWindowCloseExit)() = nullptr;
         g_beforeWindowCloseExit();
     }
 #if defined(_WIN32)
-    ::ExitProcess(0);
+    // TerminateProcess, not ExitProcess: since NSMBW's game became a DLL (2026-11-14), ExitProcess
+    // would send it DLL_PROCESS_DETACH, which runs that DLL's atexit handlers and global destructors -
+    // the very C++ teardown this function exists to skip. TerminateProcess runs no DLL code at all,
+    // so flush the (buffered, see nsmbw_product.cpp) logs first.
+    std::fprintf(stderr, "[runtime] window closed - exiting\n");
+    std::fflush(nullptr);
+    ::TerminateProcess(::GetCurrentProcess(), 0);
+    ::ExitProcess(0);  // not reached; TerminateProcess has no noreturn declaration, ExitProcess has
 #else
     std::_Exit(EXIT_SUCCESS);
 #endif
