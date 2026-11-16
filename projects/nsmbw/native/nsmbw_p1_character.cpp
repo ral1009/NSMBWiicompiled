@@ -50,9 +50,18 @@ constexpr uint32_t kPlayerEntryAddr = NSMBW_VA(0x80355150u); // daPyMng_c::mPlay
 constexpr uint32_t kResetTable = NSMBW_VA(0x809352A0u);
 constexpr uint32_t kStartCharTable = NSMBW_VA(0x80933CC0u);
 constexpr uint32_t kStartPosTable = NSMBW_VA(0x80933D20u);
+constexpr uint32_t kPosToCharTable = NSMBW_VA(0x80933D00u); // carousel position -> character
+constexpr uint32_t kCharToPosTable = NSMBW_VA(0x80933D10u); // character -> carousel position
 constexpr std::array<uint32_t, 4> kOrigChars = {0, 1, 3, 2};   // both character tables, per slot
-constexpr std::array<uint32_t, 4> kCharToPos = {0, 3, 1, 2};   // 0x80933D10, unchanged
-constexpr std::array<uint32_t, 4> kOrigStartPos = {0, 3, 2, 1}; // 0x80933D20 = kCharToPos[kOrigChars]
+constexpr std::array<uint32_t, 4> kOrigPosToChar = {0, 2, 3, 1};
+constexpr std::array<uint32_t, 4> kOrigCharToPos = {0, 3, 1, 2};
+// With Mario offered: the leftmost card is the highest position (screen-right moves down a position),
+// so positions 3, 2, 1, 0 read Mario, Luigi, Yellow Toad, Blue Toad from the left - Mario first, the
+// original three in their original order (developer request 2026-11-15; Mario had been position 0,
+// the right end). The code that maps positions to characters by hand (0x8076FD70, 0x807708E0's
+// confirm) reads these tables in the overrides below.
+constexpr std::array<uint32_t, 4> kMarioPosToChar = {2, 3, 1, 0};
+constexpr std::array<uint32_t, 4> kMarioCharToPos = {3, 2, 0, 1};
 
 uint32_t Sigma(uint32_t ch, uint32_t c) {
     if (ch == 0) return c;
@@ -60,15 +69,17 @@ uint32_t Sigma(uint32_t ch, uint32_t c) {
     return ch;
 }
 
-// The three tables' wanted contents for player 1 = c.
+// The five tables' wanted contents for player 1 = c, with or without Mario in the carousel.
 struct Wanted {
-    std::array<uint32_t, 4> chars, startPos;
+    std::array<uint32_t, 4> chars, startPos, posToChar, charToPos;
 };
-Wanted WantedFor(uint32_t c) {
+Wanted WantedFor(uint32_t c, bool mario) {
     Wanted w{};
+    w.posToChar = mario ? kMarioPosToChar : kOrigPosToChar;
+    w.charToPos = mario ? kMarioCharToPos : kOrigCharToPos;
     for (uint32_t s = 0; s < 4; ++s) {
         w.chars[s] = Sigma(kOrigChars[s], c);
-        w.startPos[s] = kCharToPos[w.chars[s]];
+        w.startPos[s] = w.charToPos[w.chars[s]];
     }
     return w;
 }
@@ -78,10 +89,11 @@ bool LogEnabled() {
     return on;
 }
 
-// -1 until the tables were found to hold either the original values or a swap this file wrote;
-// then the character they are currently swapped for (0 = original). If memory ever holds something
-// else (another game version's layout, a mod), nothing is written and it is logged once.
+// -1 until the tables were found to hold either the original values or contents this file wrote;
+// then the character they are swapped for (0 = original). If memory ever holds something else
+// (another game version's layout, a mod), nothing is written and it is logged once.
 int g_applied = -1;
+bool g_appliedMario = false;
 bool g_gaveUp = false;
 
 bool Holds(uint32_t addr, const std::array<uint32_t, 4>& w) {
@@ -91,9 +103,10 @@ bool Holds(uint32_t addr, const std::array<uint32_t, 4>& w) {
     }
     return true;
 }
-bool TablesMatch(uint32_t c) {
-    const Wanted w = WantedFor(c);
-    return Holds(kResetTable, w.chars) && Holds(kStartCharTable, w.chars) && Holds(kStartPosTable, w.startPos);
+bool TablesMatch(uint32_t c, bool mario) {
+    const Wanted w = WantedFor(c, mario);
+    return Holds(kResetTable, w.chars) && Holds(kStartCharTable, w.chars) && Holds(kStartPosTable, w.startPos) &&
+           Holds(kPosToCharTable, w.posToChar) && Holds(kCharToPosTable, w.charToPos);
 }
 void Write(uint32_t addr, const std::array<uint32_t, 4>& w) {
     for (uint32_t i = 0; i < 4; ++i) Memory::Write32(addr + 4 * i, w[i]);
@@ -103,7 +116,12 @@ void ApplyTables(uint32_t c) {
     if (g_gaveUp) return;
     if (g_applied < 0) {
         for (uint32_t k = 0; k < 4 && g_applied < 0; ++k) {
-            if (TablesMatch(k)) g_applied = int(k);
+            for (bool m : {false, true}) {
+                if (g_applied < 0 && TablesMatch(k, m)) {
+                    g_applied = int(k);
+                    g_appliedMario = m;
+                }
+            }
         }
         if (g_applied < 0) {
             g_gaveUp = true;
@@ -112,14 +130,25 @@ void ApplyTables(uint32_t c) {
         }
     }
     // Without Mario in the selector, a slot started on Mario would sit on a position it can't show.
-    if (!NsmbwSelectorHasMario()) c = 0;
-    if (uint32_t(g_applied) == c && TablesMatch(c)) return;
-    const Wanted w = WantedFor(c);
+    const bool mario = NsmbwSelectorHasMario();
+    if (!mario) c = 0;
+    if (uint32_t(g_applied) == c && g_appliedMario == mario && TablesMatch(c, mario)) return;
+    const Wanted w = WantedFor(c, mario);
     Write(kResetTable, w.chars);
     Write(kStartCharTable, w.chars);
     Write(kStartPosTable, w.startPos);
-    if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] start tables swapped for character %u (scene %u)\n", c, g_nsmbwCurrentSceneProfile);
+    Write(kPosToCharTable, w.posToChar);
+    Write(kCharToPosTable, w.charToPos);
+    if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] tables set for character %u, Mario %s (scene %u)\n", c, mario ? "offered" : "not offered", g_nsmbwCurrentSceneProfile);
     g_applied = int(c);
+    g_appliedMario = mario;
+}
+
+// The character at a carousel position, from the (possibly rewritten) table.
+uint32_t CharAtPos(uint32_t pos) {
+    uint32_t ch = 0;
+    Memory::TryRead32(kPosToCharTable + 4 * (pos & 3), ch);
+    return ch;
 }
 
 uint32_t ReadType(uint32_t slot) {
@@ -134,6 +163,15 @@ int g_mapModelType = -1;
 uint32_t g_mapSceneSeen = 0; // g_nsmbwCurrentSceneProfile last frame, to notice a new scene
 int g_menuClosedFrames = 0;
 bool g_reloadRequested = false;
+// Player 1's character picked on the world map's Add/Drop screen (0x807A1510 copy), applied once
+// nothing is paused any more (NsmbwP1CharacterTick); -1 = none.
+int g_mapPick = -1;
+// VI tick of the last frame the Add/Drop screen placed its cards (0x807A0170 runs every frame while
+// it is open). The world map's Add/Drop screen does not set the game-stop word, and the selector
+// writes player 1's character as soon as its card is confirmed, so without this the map reloaded
+// under the open screen (2026-11-15 test).
+uint32_t g_addDropSeenTick = 0;
+extern "C" bool NsmbwP1CharacterSet(int ch);
 
 extern "C" bool NsmbwOptionsMenuIsOpen(); // runtime/src/product/nsmbw_options_menu.cpp
 
@@ -148,13 +186,21 @@ namespace {
 // game functions: on the game thread, with the live context saved and put back.
 constexpr uint32_t kNextSceneAddr = NSMBW_VA(0x80428A40u); // dScene_c::m_nextScene (u16), 0x2EE = none pending
 constexpr uint32_t kReloadMap = NSMBW_VA(0x809218B0u);
+constexpr uint32_t kGameStopWord = NSMBW_VA(0x8042A228u); // dGameCom game-stop flags (nsmbw_options_menu.cpp)
 
 void ReloadMapIfModelIsStale(uint32_t c) {
     if (g_nsmbwCurrentSceneProfile != g_mapSceneSeen) { // a new scene: its map player is new
         g_mapSceneSeen = g_nsmbwCurrentSceneProfile;
         g_reloadRequested = false;
     }
-    g_menuClosedFrames = NsmbwOptionsMenuIsOpen() ? 0 : g_menuClosedFrames + 1;
+    // "Nothing is paused" from the game's own stop word (0x8042A228): F10 sets HOME_MENU while it is
+    // open and clears it when closed, and the map's own menus set it too. The options menu's IsOpen
+    // also counts a held close key / button, which is only polled while the menu draws, so it could
+    // stay "open" after closing and the reload never came (developer report 2026-11-15: Yellow Toad
+    // HUD, Mario on the map).
+    uint32_t stop = 0;
+    Memory::TryRead32(kGameStopWord, stop);
+    g_menuClosedFrames = stop != 0 ? 0 : g_menuClosedFrames + 1;
     static uint32_t frames = 0;
     if (LogEnabled() && g_nsmbwCurrentSceneProfile == 3u && (++frames % 120) == 0) {
         uint32_t w = 0;
@@ -163,7 +209,7 @@ void ReloadMapIfModelIsStale(uint32_t c) {
                      g_mapModelType, c, g_menuClosedFrames, int(g_reloadRequested), w >> 16);
     }
     if (g_nsmbwCurrentSceneProfile != 3u || g_reloadRequested || g_mapModelType < 0 || uint32_t(g_mapModelType) == c ||
-        g_menuClosedFrames < 30) {
+        g_menuClosedFrames < 30 || g_nsmbwCurrentViTick - g_addDropSeenTick < 30u) {
         return;
     }
     uint32_t word = 0; // m_nextScene is the high half of this big-endian word
@@ -180,6 +226,16 @@ void ReloadMapIfModelIsStale(uint32_t c) {
 // Every frame, from the VI pump (nsmbw_tick_read_pump.cpp): keep the tables matching player 1, and
 // rebuild the map if its player model is someone else.
 extern "C" void NsmbwP1CharacterTick() {
+    if (g_mapPick >= 0) {
+        uint32_t stop = 0;
+        Memory::TryRead32(kGameStopWord, stop);
+        if (stop == 0 && g_nsmbwCurrentViTick - g_addDropSeenTick >= 30u) { // the Add/Drop screen is closed
+            const int pick = g_mapPick;
+            g_mapPick = -1;
+            if (ReadType(0) != uint32_t(pick) && !NsmbwP1CharacterSet(pick) && LogEnabled())
+                std::fprintf(stderr, "[nsmbw][p1chara] map pick %d refused\n", pick);
+        }
+    }
     const uint32_t c = ReadType(0);
     if (c > 3) return;
     ApplyTables(c);
@@ -235,6 +291,8 @@ extern "C" bool NsmbwP1CharacterSet(int ch) {
 namespace {
 uint32_t MapPlayerModelType() { // 0..3; remembered so a later change can reload the map
     g_mapModelType = NsmbwP1CharacterGet();
+    g_reloadRequested = false; // a new map player: a later change may reload again (a map -> map
+                               // reload keeps the scene profile, so the per-scene reset missed it)
     return uint32_t(g_mapModelType);
 }
 } // namespace
@@ -473,9 +531,10 @@ extern "C" void NsmbwSelectorCardValue_8076FD70(CpuContext* MKW_RESTRICT ctx) {
     if (value == 2) ch = 1;
     if (value == 1) ch = 3;
     if (value == 0) ch = 2;
-    if (pos == 0 && SelectorOffersMario()) {
-        value = kMarioValue;
-        ch = 0;
+    if (SelectorOffersMario()) { // the character from the rewritten table, then its card value
+        ch = CharAtPos(pos);
+        static constexpr uint32_t kValueForChar[4] = {kMarioValue, 2, 0, 1}; // Mario, Luigi, Blue, Yellow
+        value = kValueForChar[ch & 3];
     }
     ctx->gpr[3] = self;
     ctx->gpr[4] = ch;
@@ -707,6 +766,12 @@ loc_8077097C:
     r0 = (r0_rot_2 & -4);
     r3_addr_2 = (r3 + r0);
     r0 = MemoryInline::FlatRead32(r3_addr_2);
+    if (SelectorOffersMario()) {
+        // EDIT: the checks below map 3/2/1 to Luigi/Yellow/Blue by hand (and 0 to Mario, added);
+        // with the rewritten order, give them the code of the character actually at this position.
+        static constexpr uint32_t kCodeForChar[4] = {0, 3, 1, 2}; // Mario, Luigi, Blue, Yellow
+        r0 = kCodeForChar[CharAtPos(MemoryInline::FlatRead32((r30 + 736))) & 3];
+    }
     SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(3));
 }
 
@@ -1762,10 +1827,26 @@ bool InGameSetup() {
     uint32_t word = 0; // m_nowScene is the low half of the big-endian word at 0x80428A40
     return Memory::TryRead32(kNowScene - 2, word) && (word & 0xFFFFu) == 10u;
 }
-// The Add/Drop screen at `screen` is in "1 player picks a character" mode.
+bool OnWorldMap() {
+    uint32_t word = 0;
+    return Memory::TryRead32(kNowScene - 2, word) && (word & 0xFFFFu) == 3u;
+}
+// The Add/Drop screen at `screen` has player 1 choosing too (any player count): in game setup, and
+// since 2026-11-15 on the world map ("Add/Drop Players"), which replaced the F10 option.
 bool OnePlayerSelect(uint32_t screen) {
     uint32_t count = 0;
-    return SelectorOffersMario() && InGameSetup() && Memory::TryRead32(screen + 1732, count) && count == 1;
+    return SelectorOffersMario() && (InGameSetup() || OnWorldMap()) && Memory::TryRead32(screen + 1732, count) &&
+           count >= 1 && count <= 4;
+}
+
+// The first selector the screen runs in that mode: with one player the middle card (selector 1, the
+// only one the screen places for a count of 1), otherwise selector 0, the left column where player 1
+// used to stand (2026-11-15: with 2-4 players player 1 had no selector, and its standing figure was
+// drawn at its character's place, behind player 2's card).
+uint32_t FirstSelector(uint32_t screen) {
+    uint32_t count = 0;
+    Memory::TryRead32(screen + 1732, count);
+    return count == 1 ? 1u : 0u;
 }
 // dScGameSetup_c with its "Number of Players" screen at +208 set to "1".
 bool OnePlayerChosen(uint32_t gameSetup) {
@@ -1832,7 +1913,7 @@ loc_80918B24:
     r0 = 3;
     r4 = MemoryInline::FlatRead32((r4 + -23972));
     r8 = 0;
-    if (OnePlayerChosen(r3)) r0 = 0; // EDIT: player 1 starts not joined, so it gets a selector
+    if (SelectorOffersMario()) r0 = 0; // EDIT: player 1 starts not joined, so it gets a selector
     MemoryInline::FlatWrite32((r4 + 900), r0);
     MemoryInline::FlatWrite32((r4 + 904), r8);
     MemoryInline::FlatWrite32((r4 + 908), r8);
@@ -2060,6 +2141,9 @@ loc_807A0DE8:
     MemoryInline::FlatWrite32((r30 + 1760), r0);
     MemoryInline::FlatWrite32((r30 + 1776), r0);
     r0 = MemoryInline::FlatRead32((r31 + 900));
+    // EDIT: on the world map player 1 starts not joined inside the screen (dInfo_c keeps its 3), so
+    // selector 0 runs for it like for a joining player and player 1 can pick another character.
+    if (OnWorldMap() && OnePlayerSelect(r30)) r0 = 0;
     MemoryInline::FlatWrite32((r30 + 1680), r0);
 }
 
@@ -2729,7 +2813,8 @@ loc_807A11A0:
     r6 = (r31 + 1744);
     r5 = (r31 + 1760);
     r4 = (r31 + 1776);
-    r9 = OnePlayerSelect(r31) ? 0u : 1u; // EDIT: was 1 (count selectors from selector 1, not count - 1)
+    r9 = OnePlayerSelect(r31) ? 0u : 1u; // EDIT: was 1 (count selectors, not count - 1)
+    if (OnePlayerSelect(r31)) r8 = r31 + 4 * FirstSelector(r31); // EDIT: from FirstSelector
     r7 = 3;
     goto loc_807A1250;
 }
@@ -2914,7 +2999,8 @@ loc_807A1510:
     r0 = (r5 + -1);
     ctr = r0;
     SetCRResident(cr, xer, 0, static_cast<int32_t>(r5), static_cast<int32_t>(1));
-    if (OnePlayerSelect(r3)) { // EDIT: count selectors (from selector 1) instead of count - 1
+    if (OnePlayerSelect(r3)) { // EDIT: count selectors (from FirstSelector) instead of count - 1
+        r4 = r3 + 4 * FirstSelector(r3);
         ctr = r5;
         SetCRResident(cr, xer, 0, static_cast<int32_t>(r5), static_cast<int32_t>(0));
     }
@@ -2985,6 +3071,15 @@ loc_807A1558:
 
 loc_807A1564:
 {
+    if (r3 != 0 && OnWorldMap() && OnePlayerSelect(r31)) { // EDIT: map OK only after player 1 confirmed a card
+        const uint32_t sel = MemoryInline::FlatRead32(r31 + 116); // selector 0 = player 1's slot
+        if (MemoryInline::FlatRead8(sel + 666) == 0) {
+            r3 = 0;
+        } else {
+            g_mapPick = int(MemoryInline::FlatRead32(sel + 724) & 3u);
+            if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] map Add/Drop OK: player 1 picked %d\n", g_mapPick);
+        }
+    }
     if ((static_cast<int32_t>(r3) == static_cast<int32_t>(0))) {
         goto loc_807A1614;
     }
@@ -3097,6 +3192,7 @@ loc_807A15C8:
 {
     r5 = (r31 + 4);
     r6 = OnePlayerSelect(r31) ? 0u : 1u; // EDIT: was 1 (count selectors, not count - 1)
+    if (OnePlayerSelect(r31)) r5 = r31 + 4 * FirstSelector(r31); // EDIT: from FirstSelector
     r4 = 1;
     goto loc_807A15E8;
 }
@@ -3177,6 +3273,7 @@ loc_807A1624:
     r0 = (r3 + -1);
     ctr = r0;
     if (OnePlayerSelect(r31)) { // EDIT: wait for count selectors' choices (+666), not count - 1
+        r4 = r31 + 4 * FirstSelector(r31);
         ctr = r3;
     }
 }
@@ -3220,6 +3317,7 @@ loc_807A1658:
 {
     r5 = (r31 + 4);
     r6 = OnePlayerSelect(r31) ? 0u : 1u; // EDIT: was 1 (count selectors, not count - 1)
+    if (OnePlayerSelect(r31)) r5 = r31 + 4 * FirstSelector(r31); // EDIT: from FirstSelector
     r4 = 1;
     goto loc_807A1678;
 }
@@ -3326,6 +3424,7 @@ loc_807A14D0:
     MemoryInline::FlatWrite8((r3 + 1664), static_cast<uint8_t>(r5));
     r6 = (r3 + 4);
     r7 = OnePlayerSelect(r3) ? 0u : 1u; // EDIT: was 1 (count selectors, not count - 1)
+    if (OnePlayerSelect(r3)) r6 = r3 + 4 * FirstSelector(r3); // EDIT: from FirstSelector
     goto loc_807A14F8;
 }
 
@@ -3379,3 +3478,2222 @@ loc_807A1504:
 }
 
 PPC_NATIVE_OVERRIDE_VOID(807A14D0, NsmbwPeopleChangeRecruitStart_807A14D0, (CpuContext* ctx), (ctx));
+
+// dNumberOfPeopleChange_c card placement (0x807A0170, called every frame from 0x8079FEA0): moves
+// selectors 1-3's cards, arrows and buttons to the layout spot each was given for this player count
+// (+1716, from the table at 0x80935330: count 2 -> spots 7/8, 3 -> 4/5/6, 4 -> 0..3; spots are the
+// null panes at screen+1500). Selector 0 is skipped because in game setup player 1 was pre-joined
+// and drawn as a standing figure at its spot (0x807A0440). With player 1 choosing (2026-11-15:
+// "When you press 2 players, player 1 isnt allowed to choose"), selector 0 has a card that was
+// left at the layout's default place, half under player 2's. Structural copy of
+// build/nsmbw-d_basesNP/functions/func_807A0170.cpp; the EDIT loops over all four selectors.
+namespace {
+bool PlacesPlayer1Card(uint32_t screen) {
+    uint32_t count = 0;
+    return OnePlayerSelect(screen) && Memory::TryRead32(screen + 1732, count) && count >= 2;
+}
+} // namespace
+extern "C" void NsmbwPeopleChangePlaceCards_807A0170(CpuContext* MKW_RESTRICT ctx)
+{
+    g_addDropSeenTick = g_nsmbwCurrentViTick;
+    uint32_t cr0_0 = 0;
+    uint32_t r0_rot_0 = 0;
+    uint32_t r0_rot_1 = 0;
+    uint32_t r0_rot_2 = 0;
+    uint32_t r0_rot_3 = 0;
+    uint8_t* guest_range_0 = nullptr;
+    uint8_t* guest_range_1 = nullptr;
+    uint8_t* guest_range_2 = nullptr;
+    uint8_t* guest_range_3 = nullptr;
+    uint8_t* guest_range_4 = nullptr;
+    uint8_t* guest_range_5 = nullptr;
+    uint8_t* guest_range_6 = nullptr;
+
+    uint32_t r0 = ctx->gpr[0];
+    uint32_t r1 = ctx->gpr[1];
+    uint32_t r3 = ctx->gpr[3];
+    uint32_t r4 = ctx->gpr[4];
+    uint32_t r5 = ctx->gpr[5];
+    uint32_t r6 = ctx->gpr[6];
+    uint32_t r7 = ctx->gpr[7];
+    uint32_t r8 = ctx->gpr[8];
+    uint32_t r9 = ctx->gpr[9];
+    uint32_t r10 = ctx->gpr[10];
+    uint32_t r11 = ctx->gpr[11];
+    uint32_t r12 = ctx->gpr[12];
+    uint32_t r14 = ctx->gpr[14];
+    uint32_t r15 = ctx->gpr[15];
+    uint32_t r16 = ctx->gpr[16];
+    uint32_t r17 = ctx->gpr[17];
+    uint32_t r18 = ctx->gpr[18];
+    uint32_t r19 = ctx->gpr[19];
+    uint32_t r20 = ctx->gpr[20];
+    uint32_t r21 = ctx->gpr[21];
+    uint32_t r22 = ctx->gpr[22];
+    uint32_t r23 = ctx->gpr[23];
+    uint32_t r24 = ctx->gpr[24];
+    uint32_t r25 = ctx->gpr[25];
+    uint32_t r26 = ctx->gpr[26];
+    uint32_t r27 = ctx->gpr[27];
+    uint32_t r28 = ctx->gpr[28];
+    uint32_t r29 = ctx->gpr[29];
+    uint32_t r30 = ctx->gpr[30];
+    uint32_t r31 = ctx->gpr[31];
+    PPC_FPR f0 = ctx->fpr[0];
+    PPC_FPR f1 = ctx->fpr[1];
+    PPC_FPR f2 = ctx->fpr[2];
+    PPC_FPR f3 = ctx->fpr[3];
+    PPC_FPR f4 = ctx->fpr[4];
+    PPC_FPR f5 = ctx->fpr[5];
+    uint32_t cr = ctx->cr;
+    uint32_t ctr = ctx->ctr;
+    uint32_t xer = ctx->xer;
+
+    goto loc_807A0170;
+
+loc_807A0170:
+{
+    MemoryInline::FlatWriteRam32((r1 + -304), r1);
+    r1 = (r1 + -304);
+    r0 = ctx->lr;
+    MemoryInline::FlatWriteRam32((r1 + 308), r0);
+    r11 = (r1 + 304);
+    // inline leaf 0x802DD030 (19 guest instruction(s))
+    guest_range_0 = MemoryInline::ResolveRangeHost((r11 + -72), 0, 72u, false, true);
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 0u, ((static_cast<uint64_t>(static_cast<uint32_t>(r14)) << 32) | static_cast<uint32_t>(r15)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 0u, (r11 + -72), r14);
+        MemoryInline::WriteResolved32(guest_range_0, 4u, (r11 + -68), r15);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 8u, ((static_cast<uint64_t>(static_cast<uint32_t>(r16)) << 32) | static_cast<uint32_t>(r17)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 8u, (r11 + -64), r16);
+        MemoryInline::WriteResolved32(guest_range_0, 12u, (r11 + -60), r17);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 16u, ((static_cast<uint64_t>(static_cast<uint32_t>(r18)) << 32) | static_cast<uint32_t>(r19)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 16u, (r11 + -56), r18);
+        MemoryInline::WriteResolved32(guest_range_0, 20u, (r11 + -52), r19);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 24u, ((static_cast<uint64_t>(static_cast<uint32_t>(r20)) << 32) | static_cast<uint32_t>(r21)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 24u, (r11 + -48), r20);
+        MemoryInline::WriteResolved32(guest_range_0, 28u, (r11 + -44), r21);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 32u, ((static_cast<uint64_t>(static_cast<uint32_t>(r22)) << 32) | static_cast<uint32_t>(r23)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 32u, (r11 + -40), r22);
+        MemoryInline::WriteResolved32(guest_range_0, 36u, (r11 + -36), r23);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 40u, ((static_cast<uint64_t>(static_cast<uint32_t>(r24)) << 32) | static_cast<uint32_t>(r25)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 40u, (r11 + -32), r24);
+        MemoryInline::WriteResolved32(guest_range_0, 44u, (r11 + -28), r25);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 48u, ((static_cast<uint64_t>(static_cast<uint32_t>(r26)) << 32) | static_cast<uint32_t>(r27)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 48u, (r11 + -24), r26);
+        MemoryInline::WriteResolved32(guest_range_0, 52u, (r11 + -20), r27);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 56u, ((static_cast<uint64_t>(static_cast<uint32_t>(r28)) << 32) | static_cast<uint32_t>(r29)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 56u, (r11 + -16), r28);
+        MemoryInline::WriteResolved32(guest_range_0, 60u, (r11 + -12), r29);
+    }
+    if (!MemoryInline::WriteResolvedPair32(guest_range_0, 64u, ((static_cast<uint64_t>(static_cast<uint32_t>(r30)) << 32) | static_cast<uint32_t>(r31)))) {
+        MemoryInline::WriteResolved32(guest_range_0, 64u, (r11 + -8), r30);
+        MemoryInline::WriteResolved32(guest_range_0, 68u, (r11 + -4), r31);
+    }
+    // end of inlined leaf 0x802DD030
+    r6 = NSMBW_VA_PAIR(0x80930000u, 21284);
+    r5 = NSMBW_VA_PAIR(0x80930000u, 21276);
+    r0 = 3;
+    r4 = (r3 + 4);
+    if (PlacesPlayer1Card(r3)) { r0 = 4; r4 = r3; } // EDIT: was selectors 1-3 (player 1 had no card)
+    f5.d = MemoryInline::FlatReadFloat32((r6 + 21284));
+    f4.d = MemoryInline::FlatReadFloat32((r5 + 21276));
+    ctr = r0;
+}
+
+loc_807A01A0:
+{
+    r0 = MemoryInline::FlatRead32((r4 + 1716));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(10));
+}
+
+loc_807A01A8:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_807A0418;
+    }
+}
+
+loc_807A01AC:
+{
+    r0_rot_2 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_2 & -4);
+    guest_range_2 = MemoryInline::ResolveRangeHost((r4 + 116), 0, 52u, true, false);
+    r6 = MemoryInline::ReadResolved32(guest_range_2, 0u, (r4 + 116));
+    r5 = (r3 + r0);
+    MemoryInline::FlatWriteRamFloat32((r1 + 24), f4.d);
+    r5 = MemoryInline::FlatRead32((r5 + 1500));
+    r10 = MemoryInline::FlatRead32((r6 + 612));
+    guest_range_3 = MemoryInline::ResolveRangeHost((r5 + 132), 0, 48u, true, false);
+    r0 = MemoryInline::ReadResolved32(guest_range_3, 28u, (r5 + 160));
+    MemoryInline::FlatWriteRam32((r1 + 204), r0);
+    r0 = MemoryInline::ReadResolved32(guest_range_3, 12u, (r5 + 144));
+    MemoryInline::FlatWriteRam32((r1 + 188), r0);
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_3, 0u);
+        if (resolved_pair.valid) {
+            r9 = resolved_pair.first;
+            r8 = resolved_pair.second;
+        } else {
+            r9 = MemoryInline::ReadResolved32(guest_range_3, 0u, (r5 + 132));
+            r8 = MemoryInline::ReadResolved32(guest_range_3, 4u, (r5 + 136));
+        }
+    }
+    r7 = MemoryInline::ReadResolved32(guest_range_3, 8u, (r5 + 140));
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_3, 16u);
+        if (resolved_pair.valid) {
+            r6 = resolved_pair.first;
+            r0 = resolved_pair.second;
+        } else {
+            r6 = MemoryInline::ReadResolved32(guest_range_3, 16u, (r5 + 148));
+            r0 = MemoryInline::ReadResolved32(guest_range_3, 20u, (r5 + 152));
+        }
+    }
+    r15 = MemoryInline::ReadResolved32(guest_range_3, 24u, (r5 + 156));
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_3, 32u);
+        if (resolved_pair.valid) {
+            r16 = resolved_pair.first;
+            r17 = resolved_pair.second;
+        } else {
+            r16 = MemoryInline::ReadResolved32(guest_range_3, 32u, (r5 + 164));
+            r17 = MemoryInline::ReadResolved32(guest_range_3, 36u, (r5 + 168));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_3, 40u);
+        if (resolved_pair.valid) {
+            r18 = resolved_pair.first;
+            r19 = resolved_pair.second;
+        } else {
+            r18 = MemoryInline::ReadResolved32(guest_range_3, 40u, (r5 + 172));
+            r19 = MemoryInline::ReadResolved32(guest_range_3, 44u, (r5 + 176));
+        }
+    }
+    f0.d = MemoryInline::FlatReadFloat32((r1 + 204));
+    f3.d = MemoryInline::FlatReadFloat32((r1 + 188));
+    MemoryInline::FlatWriteFloat32((r10 + 44), f3.d);
+    f2.d = static_cast<double>(PpcForceSingleValueInline(f5.d + f0.d));
+    MemoryInline::FlatWriteFloat32((r10 + 48), f2.d);
+    MemoryInline::FlatWriteFloat32((r10 + 52), f4.d);
+    r5 = MemoryInline::ReadResolved32(guest_range_2, 32u, (r4 + 148));
+    MemoryInline::FlatWriteRam32((r1 + 176), r9);
+    r5 = MemoryInline::FlatRead32((r5 + 580));
+    MemoryInline::FlatWriteRam32((r1 + 196), r0);
+    f1.d = MemoryInline::FlatReadFloat32((r1 + 176));
+    MemoryInline::FlatWriteFloat32((r5 + 44), f3.d);
+    f0.d = MemoryInline::FlatReadFloat32((r1 + 196));
+    MemoryInline::FlatWriteFloat32((r5 + 48), f2.d);
+    MemoryInline::FlatWriteFloat32((r5 + 52), f4.d);
+    r5 = MemoryInline::ReadResolved32(guest_range_2, 48u, (r4 + 164));
+    MemoryInline::FlatWriteRam32((r1 + 192), r6);
+    r5 = MemoryInline::FlatRead32((r5 + 520));
+    MemoryInline::FlatWriteRam32((r1 + 180), r8);
+    MemoryInline::FlatWriteFloat32((r5 + 44), f3.d);
+    MemoryInline::FlatWriteFloat32((r5 + 48), f2.d);
+    MemoryInline::FlatWriteFloat32((r5 + 52), f4.d);
+    MemoryInline::FlatWriteFloat32((r5 + 68), f1.d);
+    MemoryInline::FlatWriteFloat32((r5 + 72), f0.d);
+    r5 = MemoryInline::ReadResolved32(guest_range_2, 0u, (r4 + 116));
+    MemoryInline::FlatWriteRam32((r1 + 184), r7);
+    r6 = MemoryInline::FlatRead32((r5 + 624));
+    r30 = MemoryInline::FlatRead32((r5 + 616));
+    guest_range_4 = MemoryInline::ResolveRangeHost((r6 + 132), 0, 48u, true, false);
+    r5 = MemoryInline::ReadResolved32(guest_range_4, 12u, (r6 + 144));
+    MemoryInline::FlatWriteRam32((r1 + 44), r5);
+    r0 = MemoryInline::ReadResolved32(guest_range_4, 28u, (r6 + 160));
+    MemoryInline::FlatWriteRam32((r1 + 60), r0);
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_4, 0u);
+        if (resolved_pair.valid) {
+            r20 = resolved_pair.first;
+            r21 = resolved_pair.second;
+        } else {
+            r20 = MemoryInline::ReadResolved32(guest_range_4, 0u, (r6 + 132));
+            r21 = MemoryInline::ReadResolved32(guest_range_4, 4u, (r6 + 136));
+        }
+    }
+    r22 = MemoryInline::ReadResolved32(guest_range_4, 8u, (r6 + 140));
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_4, 16u);
+        if (resolved_pair.valid) {
+            r23 = resolved_pair.first;
+            r24 = resolved_pair.second;
+        } else {
+            r23 = MemoryInline::ReadResolved32(guest_range_4, 16u, (r6 + 148));
+            r24 = MemoryInline::ReadResolved32(guest_range_4, 20u, (r6 + 152));
+        }
+    }
+    r25 = MemoryInline::ReadResolved32(guest_range_4, 24u, (r6 + 156));
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_4, 32u);
+        if (resolved_pair.valid) {
+            r26 = resolved_pair.first;
+            r27 = resolved_pair.second;
+        } else {
+            r26 = MemoryInline::ReadResolved32(guest_range_4, 32u, (r6 + 164));
+            r27 = MemoryInline::ReadResolved32(guest_range_4, 36u, (r6 + 168));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_4, 40u);
+        if (resolved_pair.valid) {
+            r28 = resolved_pair.first;
+            r29 = resolved_pair.second;
+        } else {
+            r28 = MemoryInline::ReadResolved32(guest_range_4, 40u, (r6 + 172));
+            r29 = MemoryInline::ReadResolved32(guest_range_4, 44u, (r6 + 176));
+        }
+    }
+    guest_range_5 = MemoryInline::ResolveRangeHost((r30 + 132), 0, 48u, true, false);
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_5, 0u);
+        if (resolved_pair.valid) {
+            r31 = resolved_pair.first;
+            r12 = resolved_pair.second;
+        } else {
+            r31 = MemoryInline::ReadResolved32(guest_range_5, 0u, (r30 + 132));
+            r12 = MemoryInline::ReadResolved32(guest_range_5, 4u, (r30 + 136));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_5, 8u);
+        if (resolved_pair.valid) {
+            r11 = resolved_pair.first;
+            r10 = resolved_pair.second;
+        } else {
+            r11 = MemoryInline::ReadResolved32(guest_range_5, 8u, (r30 + 140));
+            r10 = MemoryInline::ReadResolved32(guest_range_5, 12u, (r30 + 144));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_5, 16u);
+        if (resolved_pair.valid) {
+            r9 = resolved_pair.first;
+            r8 = resolved_pair.second;
+        } else {
+            r9 = MemoryInline::ReadResolved32(guest_range_5, 16u, (r30 + 148));
+            r8 = MemoryInline::ReadResolved32(guest_range_5, 20u, (r30 + 152));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_5, 24u);
+        if (resolved_pair.valid) {
+            r7 = resolved_pair.first;
+            r6 = resolved_pair.second;
+        } else {
+            r7 = MemoryInline::ReadResolved32(guest_range_5, 24u, (r30 + 156));
+            r6 = MemoryInline::ReadResolved32(guest_range_5, 28u, (r30 + 160));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_5, 32u);
+        if (resolved_pair.valid) {
+            r5 = resolved_pair.first;
+            r0 = resolved_pair.second;
+        } else {
+            r5 = MemoryInline::ReadResolved32(guest_range_5, 32u, (r30 + 164));
+            r0 = MemoryInline::ReadResolved32(guest_range_5, 36u, (r30 + 168));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_5, 40u);
+        if (resolved_pair.valid) {
+            r14 = resolved_pair.first;
+            r30 = resolved_pair.second;
+        } else {
+            r14 = MemoryInline::ReadResolved32(guest_range_5, 40u, (r30 + 172));
+            r30 = MemoryInline::ReadResolved32(guest_range_5, 44u, (r30 + 176));
+        }
+    }
+    MemoryInline::FlatWriteRam32((r1 + 200), r15);
+    f1.d = MemoryInline::FlatReadFloat32((r1 + 44));
+    MemoryInline::FlatWriteRam32((r1 + 208), r16);
+    f0.d = MemoryInline::FlatReadFloat32((r1 + 60));
+    MemoryInline::FlatWriteRam32((r1 + 212), r17);
+    MemoryInline::FlatWriteRam32((r1 + 216), r18);
+    MemoryInline::FlatWriteRam32((r1 + 220), r19);
+    MemoryInline::FlatWriteRam32((r1 + 32), r20);
+    MemoryInline::FlatWriteRam32((r1 + 36), r21);
+    MemoryInline::FlatWriteRam32((r1 + 40), r22);
+    MemoryInline::FlatWriteRam32((r1 + 48), r23);
+    MemoryInline::FlatWriteRam32((r1 + 52), r24);
+    MemoryInline::FlatWriteRam32((r1 + 56), r25);
+    MemoryInline::FlatWriteRam32((r1 + 64), r26);
+    MemoryInline::FlatWriteRam32((r1 + 68), r27);
+    MemoryInline::FlatWriteRam32((r1 + 72), r28);
+    MemoryInline::FlatWriteRam32((r1 + 76), r29);
+    MemoryInline::FlatWriteRam32((r1 + 80), r31);
+    MemoryInline::FlatWriteRam32((r1 + 84), r12);
+    MemoryInline::FlatWriteRam32((r1 + 88), r11);
+    MemoryInline::FlatWriteRam32((r1 + 92), r10);
+    MemoryInline::FlatWriteRam32((r1 + 96), r9);
+    MemoryInline::FlatWriteRam32((r1 + 100), r8);
+    MemoryInline::FlatWriteRam32((r1 + 104), r7);
+    MemoryInline::FlatWriteRam32((r1 + 108), r6);
+    MemoryInline::FlatWriteRam32((r1 + 112), r5);
+    MemoryInline::FlatWriteRam32((r1 + 116), r0);
+    MemoryInline::FlatWriteRam32((r1 + 120), r14);
+    MemoryInline::FlatWriteRam32((r1 + 124), r30);
+    r5 = MemoryInline::ReadResolved32(guest_range_2, 16u, (r4 + 132));
+    f3.d = MemoryInline::FlatReadFloat32((r1 + 80));
+    r5 = MemoryInline::FlatRead32((r5 + 592));
+    f2.d = MemoryInline::FlatReadFloat32((r1 + 100));
+    MemoryInline::FlatWriteFloat32((r5 + 44), f1.d);
+    MemoryInline::FlatWriteFloat32((r5 + 48), f0.d);
+    MemoryInline::FlatWriteFloat32((r5 + 52), f4.d);
+    MemoryInline::FlatWriteFloat32((r5 + 68), f3.d);
+    MemoryInline::FlatWriteFloat32((r5 + 72), f2.d);
+    r6 = MemoryInline::ReadResolved32(guest_range_2, 0u, (r4 + 116));
+    r5 = MemoryInline::ReadResolved32(guest_range_2, 16u, (r4 + 132));
+    r16 = MemoryInline::FlatRead32((r6 + 620));
+    r17 = MemoryInline::FlatRead32((r5 + 588));
+    guest_range_6 = MemoryInline::ResolveRangeHost((r16 + 132), 0, 48u, true, false);
+    r0 = MemoryInline::ReadResolved32(guest_range_6, 12u, (r16 + 144));
+    MemoryInline::FlatWriteRam32((r1 + 140), r0);
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_6, 0u);
+        if (resolved_pair.valid) {
+            r15 = resolved_pair.first;
+            r14 = resolved_pair.second;
+        } else {
+            r15 = MemoryInline::ReadResolved32(guest_range_6, 0u, (r16 + 132));
+            r14 = MemoryInline::ReadResolved32(guest_range_6, 4u, (r16 + 136));
+        }
+    }
+    r12 = MemoryInline::ReadResolved32(guest_range_6, 8u, (r16 + 140));
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_6, 16u);
+        if (resolved_pair.valid) {
+            r11 = resolved_pair.first;
+            r10 = resolved_pair.second;
+        } else {
+            r11 = MemoryInline::ReadResolved32(guest_range_6, 16u, (r16 + 148));
+            r10 = MemoryInline::ReadResolved32(guest_range_6, 20u, (r16 + 152));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_6, 24u);
+        if (resolved_pair.valid) {
+            r9 = resolved_pair.first;
+            r5 = resolved_pair.second;
+        } else {
+            r9 = MemoryInline::ReadResolved32(guest_range_6, 24u, (r16 + 156));
+            r5 = MemoryInline::ReadResolved32(guest_range_6, 28u, (r16 + 160));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_6, 32u);
+        if (resolved_pair.valid) {
+            r8 = resolved_pair.first;
+            r7 = resolved_pair.second;
+        } else {
+            r8 = MemoryInline::ReadResolved32(guest_range_6, 32u, (r16 + 164));
+            r7 = MemoryInline::ReadResolved32(guest_range_6, 36u, (r16 + 168));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_6, 40u);
+        if (resolved_pair.valid) {
+            r6 = resolved_pair.first;
+            r0 = resolved_pair.second;
+        } else {
+            r6 = MemoryInline::ReadResolved32(guest_range_6, 40u, (r16 + 172));
+            r0 = MemoryInline::ReadResolved32(guest_range_6, 44u, (r16 + 176));
+        }
+    }
+    f1.d = MemoryInline::FlatReadFloat32((r1 + 140));
+    MemoryInline::FlatWriteRam32((r1 + 156), r5);
+    f0.d = MemoryInline::FlatReadFloat32((r1 + 156));
+    MemoryInline::FlatWriteFloat32((r17 + 44), f1.d);
+    MemoryInline::FlatWriteFloat32((r17 + 48), f0.d);
+    MemoryInline::FlatWriteFloat32((r17 + 52), f4.d);
+    MemoryInline::FlatWriteFloat32((r17 + 68), f3.d);
+    MemoryInline::FlatWriteFloat32((r17 + 72), f2.d);
+    r5 = MemoryInline::ReadResolved32(guest_range_2, 32u, (r4 + 148));
+    MemoryInline::FlatWriteRamFloat32((r1 + 8), f3.d);
+    r5 = MemoryInline::FlatRead32((r5 + 580));
+    MemoryInline::FlatWriteRamFloat32((r1 + 12), f2.d);
+    MemoryInline::FlatWriteFloat32((r5 + 68), f3.d);
+    MemoryInline::FlatWriteRam32((r1 + 128), r15);
+    MemoryInline::FlatWriteRam32((r1 + 132), r14);
+    MemoryInline::FlatWriteRam32((r1 + 136), r12);
+    MemoryInline::FlatWriteRam32((r1 + 144), r11);
+    MemoryInline::FlatWriteRam32((r1 + 148), r10);
+    MemoryInline::FlatWriteRam32((r1 + 152), r9);
+    MemoryInline::FlatWriteRam32((r1 + 160), r8);
+    MemoryInline::FlatWriteRam32((r1 + 164), r7);
+    MemoryInline::FlatWriteRam32((r1 + 168), r6);
+    MemoryInline::FlatWriteRam32((r1 + 172), r0);
+    MemoryInline::FlatWriteRamFloat32((r1 + 16), f1.d);
+    MemoryInline::FlatWriteRamFloat32((r1 + 20), f0.d);
+    MemoryInline::FlatWriteFloat32((r5 + 72), f2.d);
+}
+
+loc_807A0418:
+{
+    r4 = (r4 + 4);
+    ctr = (ctr + -1);
+    if ((ctr != 0)) {
+        goto loc_807A01A0;
+    }
+}
+
+loc_807A0420:
+{
+    r11 = (r1 + 304);
+    // inline leaf 0x802DD07C (19 guest instruction(s))
+    guest_range_1 = MemoryInline::ResolveRangeHost((r11 + -72), 0, 72u, true, false);
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 0u);
+        if (resolved_pair.valid) {
+            r14 = resolved_pair.first;
+            r15 = resolved_pair.second;
+        } else {
+            r14 = MemoryInline::ReadResolved32(guest_range_1, 0u, (r11 + -72));
+            r15 = MemoryInline::ReadResolved32(guest_range_1, 4u, (r11 + -68));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 8u);
+        if (resolved_pair.valid) {
+            r16 = resolved_pair.first;
+            r17 = resolved_pair.second;
+        } else {
+            r16 = MemoryInline::ReadResolved32(guest_range_1, 8u, (r11 + -64));
+            r17 = MemoryInline::ReadResolved32(guest_range_1, 12u, (r11 + -60));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 16u);
+        if (resolved_pair.valid) {
+            r18 = resolved_pair.first;
+            r19 = resolved_pair.second;
+        } else {
+            r18 = MemoryInline::ReadResolved32(guest_range_1, 16u, (r11 + -56));
+            r19 = MemoryInline::ReadResolved32(guest_range_1, 20u, (r11 + -52));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 24u);
+        if (resolved_pair.valid) {
+            r20 = resolved_pair.first;
+            r21 = resolved_pair.second;
+        } else {
+            r20 = MemoryInline::ReadResolved32(guest_range_1, 24u, (r11 + -48));
+            r21 = MemoryInline::ReadResolved32(guest_range_1, 28u, (r11 + -44));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 32u);
+        if (resolved_pair.valid) {
+            r22 = resolved_pair.first;
+            r23 = resolved_pair.second;
+        } else {
+            r22 = MemoryInline::ReadResolved32(guest_range_1, 32u, (r11 + -40));
+            r23 = MemoryInline::ReadResolved32(guest_range_1, 36u, (r11 + -36));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 40u);
+        if (resolved_pair.valid) {
+            r24 = resolved_pair.first;
+            r25 = resolved_pair.second;
+        } else {
+            r24 = MemoryInline::ReadResolved32(guest_range_1, 40u, (r11 + -32));
+            r25 = MemoryInline::ReadResolved32(guest_range_1, 44u, (r11 + -28));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 48u);
+        if (resolved_pair.valid) {
+            r26 = resolved_pair.first;
+            r27 = resolved_pair.second;
+        } else {
+            r26 = MemoryInline::ReadResolved32(guest_range_1, 48u, (r11 + -24));
+            r27 = MemoryInline::ReadResolved32(guest_range_1, 52u, (r11 + -20));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 56u);
+        if (resolved_pair.valid) {
+            r28 = resolved_pair.first;
+            r29 = resolved_pair.second;
+        } else {
+            r28 = MemoryInline::ReadResolved32(guest_range_1, 56u, (r11 + -16));
+            r29 = MemoryInline::ReadResolved32(guest_range_1, 60u, (r11 + -12));
+        }
+    }
+    {
+        const auto resolved_pair = MemoryInline::ReadResolvedPair32(guest_range_1, 64u);
+        if (resolved_pair.valid) {
+            r30 = resolved_pair.first;
+            r31 = resolved_pair.second;
+        } else {
+            r30 = MemoryInline::ReadResolved32(guest_range_1, 64u, (r11 + -8));
+            r31 = MemoryInline::ReadResolved32(guest_range_1, 68u, (r11 + -4));
+        }
+    }
+    // end of inlined leaf 0x802DD07C
+    r0 = MemoryInline::FlatRead32((r1 + 308));
+    ctx->lr = r0;
+    r1 = (r1 + 304);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[7] = r7;
+    ctx->gpr[8] = r8;
+    ctx->gpr[9] = r9;
+    ctx->gpr[10] = r10;
+    ctx->gpr[11] = r11;
+    ctx->gpr[12] = r12;
+    ctx->gpr[14] = r14;
+    ctx->gpr[15] = r15;
+    ctx->gpr[16] = r16;
+    ctx->gpr[17] = r17;
+    ctx->gpr[18] = r18;
+    ctx->gpr[19] = r19;
+    ctx->gpr[20] = r20;
+    ctx->gpr[21] = r21;
+    ctx->gpr[22] = r22;
+    ctx->gpr[23] = r23;
+    ctx->gpr[24] = r24;
+    ctx->gpr[25] = r25;
+    ctx->gpr[26] = r26;
+    ctx->gpr[27] = r27;
+    ctx->gpr[28] = r28;
+    ctx->gpr[29] = r29;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->fpr[1] = f1;
+    ctx->fpr[2] = f2;
+    ctx->fpr[3] = f3;
+    ctx->fpr[4] = f4;
+    ctx->fpr[5] = f5;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    return;
+}
+
+}
+
+PPC_NATIVE_OVERRIDE_VOID(807A0170, NsmbwPeopleChangePlaceCards_807A0170, (CpuContext* ctx), (ctx));
+
+// The selector's confirm voice (0x80771090): by the chosen character (+724) it plays
+// SE_VOC_LU_PLAYER_JOIN (869) for 1, SE_VOC_KO_PLAYER_JOIN (940) for 2 and SE_VOC_KO2_PLAYER_JOIN
+// (1010) for anything else, each +1 (the _MAME variant) when that player is small. The original
+// never offered Mario, so Mario (0) got Yellow Toad's voice (developer report 2026-11-15: "when you
+// choose mario he makes a toad noise"). Mario's are SE_VOC_MA_PLAYER_JOIN 797 / _MAME 798 (names
+// from the disc's wii_mj2d_sound.brsar). Structural copy of
+// build/nsmbw-d_basesNP/functions/func_80771090.cpp.
+namespace {
+bool MarioChosen(uint32_t selector) {
+    uint32_t ch = 0xFFFFFFFFu;
+    const bool mario = SelectorOffersMario() && Memory::TryRead32(selector + 724, ch) && ch == 0;
+    if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] join voice for character %u%s\n", ch, mario ? " (Mario's)" : "");
+    return mario;
+}
+} // namespace
+extern "C" void NsmbwSelectorJoinVoice_80771090(CpuContext* MKW_RESTRICT ctx)
+{
+    uint32_t cr0_0 = 0;
+    uint32_t r0_rot_0 = 0;
+    uint32_t r0_rot_1 = 0;
+    uint32_t r0_rot_2 = 0;
+    uint32_t r0_rot_3 = 0;
+    uint32_t r0_rot_4 = 0;
+    uint32_t r3_addr_0 = 0;
+    uint32_t r3_rot_0 = 0;
+    uint32_t r4_rot_0 = 0;
+
+    uint32_t r0 = ctx->gpr[0];
+    uint32_t r1 = ctx->gpr[1];
+    uint32_t r3 = ctx->gpr[3];
+    uint32_t r4 = ctx->gpr[4];
+    uint32_t r5 = ctx->gpr[5];
+    uint32_t r31 = ctx->gpr[31];
+    PPC_FPR f0 = ctx->fpr[0];
+    uint32_t cr = ctx->cr;
+    uint32_t xer = ctx->xer;
+
+    goto loc_80771090;
+
+loc_80771090:
+{
+    MemoryInline::FlatWriteRam32((r1 + -16), r1);
+    r1 = (r1 + -16);
+    r0 = ctx->lr;
+    MemoryInline::FlatWriteRam32((r1 + 20), r0);
+    MemoryInline::FlatWriteRam32((r1 + 12), r31);
+    r31 = r3;
+    r0 = MemoryInline::FlatRead32((r3 + 724));
+}
+
+loc_807710AC:
+{
+    if ((static_cast<int32_t>(r0) != static_cast<int32_t>(1))) {
+        goto loc_807710F8;
+    }
+}
+
+loc_807710B0:
+{
+    r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_0 & -4);
+    r3 = (r3 + r0);
+    r3 = MemoryInline::FlatRead32((r3 + 128));
+    r0 = MemoryInline::FlatRead32((r3 + 568));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(3));
+}
+
+loc_807710C4:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_807710E0;
+    }
+}
+
+loc_807710C8:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 870;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807710DCu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r31 = ctx->gpr[31];
+    f0 = ctx->fpr[0];
+    cr = ctx->cr;
+    xer = ctx->xer;
+    goto loc_8077118C;
+}
+
+loc_807710E0:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 869;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807710F4u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r31 = ctx->gpr[31];
+    f0 = ctx->fpr[0];
+    cr = ctx->cr;
+    xer = ctx->xer;
+    goto loc_8077118C;
+}
+
+loc_807710F8:
+{
+}
+
+loc_807710FC:
+{
+    if ((static_cast<int32_t>(r0) != static_cast<int32_t>(2))) {
+        goto loc_80771148;
+    }
+}
+
+loc_80771100:
+{
+    r0_rot_1 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_1 & -4);
+    r3 = (r3 + r0);
+    r3 = MemoryInline::FlatRead32((r3 + 128));
+    r0 = MemoryInline::FlatRead32((r3 + 568));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(3));
+}
+
+loc_80771114:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_80771130;
+    }
+}
+
+loc_80771118:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 941;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x8077112Cu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r31 = ctx->gpr[31];
+    f0 = ctx->fpr[0];
+    cr = ctx->cr;
+    xer = ctx->xer;
+    goto loc_8077118C;
+}
+
+loc_80771130:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 940;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x80771144u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r31 = ctx->gpr[31];
+    f0 = ctx->fpr[0];
+    cr = ctx->cr;
+    xer = ctx->xer;
+    goto loc_8077118C;
+}
+
+loc_80771148:
+{
+    r0_rot_2 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_2 & -4);
+    r3 = (r3 + r0);
+    r3 = MemoryInline::FlatRead32((r3 + 128));
+    r0 = MemoryInline::FlatRead32((r3 + 568));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(3));
+}
+
+loc_8077115C:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_80771178;
+    }
+}
+
+loc_80771160:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = MarioChosen(r31) ? 798u : 1011u; // EDIT: Mario has his own voice (was always Yellow Toad's)
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x80771174u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r31 = ctx->gpr[31];
+    f0 = ctx->fpr[0];
+    cr = ctx->cr;
+    xer = ctx->xer;
+    goto loc_8077118C;
+}
+
+loc_80771178:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = MarioChosen(r31) ? 797u : 1010u; // EDIT: SE_VOC_MA_PLAYER_JOIN, not SE_VOC_KO2_PLAYER_JOIN
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x8077118Cu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r31 = ctx->gpr[31];
+    f0 = ctx->fpr[0];
+    cr = ctx->cr;
+    xer = ctx->xer;
+}
+
+loc_8077118C:
+{
+    r0 = MemoryInline::FlatRead32((r31 + 728));
+    r3 = NSMBW_VA_PAIR(0x80350000u, 20832);
+    r5 = MemoryInline::FlatRead32((r31 + 724));
+    r3 = (r3 + 20832);
+    r4_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r4 = (r4_rot_0 & -4);
+    r0_rot_4 = PpcRotl32Inline(static_cast<uint32_t>(r5), static_cast<uint32_t>(2));
+    r0 = (r0_rot_4 & -4);
+    r3_addr_0 = (r3 + r4);
+    MemoryInline::FlatWrite32(r3_addr_0, r5);
+    r3 = (r31 + r0);
+    r5 = MemoryInline::FlatRead32((r3 + 128));
+    r0 = MemoryInline::FlatRead8((r5 + 610));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_807711B8:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_807711EC;
+    }
+}
+
+loc_807711BC:
+{
+    r0 = MemoryInline::FlatRead8((r5 + 611));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_807711C4:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_807711EC;
+    }
+}
+
+loc_807711C8:
+{
+    r4 = 1;
+    MemoryInline::FlatWrite8((r5 + 611), static_cast<uint8_t>(r4));
+    r0 = 2;
+    r3 = NSMBW_VA_PAIR(0x80930000u, 15696);
+    MemoryInline::FlatWrite32((r5 + 572), r0);
+    f0.d = MemoryInline::FlatReadFloat32((r3 + 15696));
+    MemoryInline::FlatWrite32((r5 + 576), r4);
+    MemoryInline::FlatWriteFloat32((r5 + 592), f0.d);
+    MemoryInline::FlatWrite8((r5 + 613), static_cast<uint8_t>(r4));
+}
+
+loc_807711EC:
+{
+    r3 = MemoryInline::FlatRead32((r31 + 724));
+    r0 = 1;
+    f0.d = MemoryInline::FlatReadFloat32((r31 + 752));
+    r3_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r3), static_cast<uint32_t>(2));
+    r3 = (r3_rot_0 & -4);
+    r3 = (r31 + r3);
+    r3 = MemoryInline::FlatRead32((r3 + 128));
+    MemoryInline::FlatWriteFloat32((r3 + 604), f0.d);
+    MemoryInline::FlatWrite8((r31 + 662), static_cast<uint8_t>(r0));
+    r31 = MemoryInline::FlatRead32((r1 + 12));
+    r0 = MemoryInline::FlatRead32((r1 + 20));
+    ctx->lr = r0;
+    r1 = (r1 + 16);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[31] = r31;
+    ctx->fpr[0] = f0;
+    ctx->cr = cr;
+    return;
+}
+
+}
+
+PPC_NATIVE_OVERRIDE_VOID(80771090, NsmbwSelectorJoinVoice_80771090, (CpuContext* ctx), (ctx));
+
+// "Number of Players" decision (dSelectPlayer_c, 0x807AC7A0): choosing "1" (+620 == 0) played
+// SE_VOC_MA_PLAYER_DECIDE (803, Mario's "here we go"), because player 1 was always Mario. With the
+// character select, "1" opens the selector first and the chosen character's own voice plays on its
+// confirm (0x80771090), so the EDIT skips it (developer report 2026-11-15). dScGameSetup_c's
+// VoiceEndWait (0x80919130) only waits while 803 plays, so it just moves on. Structural copy of
+// build/nsmbw-d_basesNP/functions/func_807AC7A0.cpp.
+extern "C" void NsmbwSelectPlayerDecide_807AC7A0(CpuContext* MKW_RESTRICT ctx)
+{
+    uint32_t cr0_0 = 0;
+    uint32_t cr1_0 = 0;
+    uint32_t r0_rot_0 = 0;
+    uint32_t r0_rot_1 = 0;
+    uint32_t r0_rot_2 = 0;
+
+    uint32_t r0 = ctx->gpr[0];
+    uint32_t r1 = ctx->gpr[1];
+    uint32_t r3 = ctx->gpr[3];
+    uint32_t r4 = ctx->gpr[4];
+    uint32_t r5 = ctx->gpr[5];
+    uint32_t r6 = ctx->gpr[6];
+    uint32_t r12 = ctx->gpr[12];
+    uint32_t r30 = ctx->gpr[30];
+    uint32_t r31 = ctx->gpr[31];
+    uint32_t cr = ctx->cr;
+    uint32_t ctr = ctx->ctr;
+    uint32_t xer = ctx->xer;
+
+    goto loc_807AC7A0;
+
+loc_807AC7A0:
+{
+    MemoryInline::FlatWriteRam32((r1 + -16), r1);
+    r1 = (r1 + -16);
+    r0 = ctx->lr;
+    r4 = NSMBW_VA_PAIR(0x80430000u, -24016);
+    MemoryInline::FlatWriteRam32((r1 + 20), r0);
+    MemoryInline::FlatWriteRam32((r1 + 12), r31);
+    r31 = NSMBW_VA_PAIR(0x80990000u, 19112);
+    r31 = (r31 + 19112);
+    MemoryInline::FlatWriteRam32((r1 + 8), r30);
+    r30 = r3;
+    r6 = MemoryInline::FlatRead32((r3 + 620));
+    r5 = MemoryInline::FlatRead32((r4 + -24016));
+    SetCRResident(cr, xer, 1, static_cast<int32_t>(r6), static_cast<int32_t>(0));
+}
+
+loc_807AC7D0:
+{
+    if (((cr & 0x02000000u) != 0)) {
+        goto loc_807AC83C;
+    }
+}
+
+loc_807AC7D4:
+{
+    r4 = NSMBW_VA_PAIR(0x80430000u, -22716);
+    r0 = MemoryInline::FlatRead32((r4 + -22716));
+    r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_0 & -4);
+    r4 = (r5 + r0);
+    r4 = MemoryInline::FlatRead32((r4 + 4));
+    r4 = MemoryInline::FlatRead32((r4 + 28));
+    r0 = (r4 & 2);
+}
+
+loc_807AC7F0:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_807AC804;
+    }
+}
+
+loc_807AC7F4:
+{
+    if (((cr & 0x02000000u) != 0)) {
+        goto loc_807AC7FC;
+    }
+}
+
+loc_807AC7F8:
+{
+    MemoryInline::FlatWrite32((r3 + 636), r6);
+}
+
+loc_807AC7FC:
+{
+    r6 = 0;
+    goto loc_807AC860;
+}
+
+loc_807AC804:
+{
+    r0 = (r4 & 8);
+}
+
+loc_807AC808:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_807AC820;
+    }
+}
+
+loc_807AC80C:
+{
+    r6 = (r6 + -1);
+}
+
+loc_807AC814:
+{
+    if ((static_cast<int32_t>(r6) >= static_cast<int32_t>(1))) {
+        goto loc_807AC860;
+    }
+}
+
+loc_807AC818:
+{
+    r6 = 1;
+    goto loc_807AC860;
+}
+
+loc_807AC820:
+{
+    r0 = (r4 & 4);
+}
+
+loc_807AC824:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_807AC860;
+    }
+}
+
+loc_807AC828:
+{
+    r6 = (r6 + 1);
+}
+
+loc_807AC830:
+{
+    if ((static_cast<int32_t>(r6) <= static_cast<int32_t>(3))) {
+        goto loc_807AC860;
+    }
+}
+
+loc_807AC834:
+{
+    r6 = 3;
+    goto loc_807AC860;
+}
+
+loc_807AC83C:
+{
+    r4 = NSMBW_VA_PAIR(0x80430000u, -22716);
+    r0 = MemoryInline::FlatRead32((r4 + -22716));
+    r0_rot_1 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_1 & -4);
+    r4 = (r5 + r0);
+    r4 = MemoryInline::FlatRead32((r4 + 4));
+    r0 = MemoryInline::FlatRead32((r4 + 28));
+    r0 = (r0 & 1);
+}
+
+loc_807AC858:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_807AC860;
+    }
+}
+
+loc_807AC85C:
+{
+    r6 = MemoryInline::FlatRead32((r3 + 636));
+}
+
+loc_807AC860:
+{
+    r0 = MemoryInline::FlatRead32((r3 + 620));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r6), static_cast<int32_t>(r0));
+}
+
+loc_807AC868:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_807AC888;
+    }
+}
+
+loc_807AC86C:
+{
+    MemoryInline::FlatWrite32((r3 + 620), r6);
+    r4 = (r31 + 208);
+    r3 = (r3 + 112);
+    r12 = MemoryInline::FlatRead32(r3);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807AC884u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    goto loc_807AC934;
+}
+
+loc_807AC888:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22712);
+    r4 = 2304;
+    r3 = MemoryInline::FlatRead32((r3 + -22712));
+    r12 = MemoryInline::FlatRead32(r3);
+    r12 = MemoryInline::FlatRead32((r12 + 32));
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807AC8A4u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r3), static_cast<int32_t>(0));
+}
+
+loc_807AC8A8:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_807AC8F0;
+    }
+}
+
+loc_807AC8AC:
+{
+    r0 = 1;
+    MemoryInline::FlatWrite32((r30 + 624), r0);
+    r3 = (r30 + 112);
+    r4 = (r31 + 400);
+    r12 = MemoryInline::FlatRead32((r30 + 112));
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807AC8CCu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    r0 = MemoryInline::FlatRead32((r30 + 620));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_807AC8D4:
+{
+    if (((cr & 0x20000000u) != 0) && SelectorOffersMario() && LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] \"1\" chosen: Mario's decide voice skipped\n");
+    if (((cr & 0x20000000u) == 0) || SelectorOffersMario()) { // EDIT: no Mario voice for "1"
+        goto loc_807AC934;
+    }
+}
+
+loc_807AC8D8:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 803;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807AC8ECu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    goto loc_807AC934;
+}
+
+loc_807AC8F0:
+{
+    r3 = 0;
+    ctx->lr = NSMBW_VA(0x807AC8F8u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x800B53F0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r3), static_cast<int32_t>(0));
+}
+
+loc_807AC8FC:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_807AC934;
+    }
+}
+
+loc_807AC900:
+{
+    r0 = -1;
+    MemoryInline::FlatWrite32((r30 + 624), r0);
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 122;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807AC91Cu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    r12 = MemoryInline::FlatRead32((r30 + 112));
+    r3 = (r30 + 112);
+    r4 = (r31 + 464);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807AC934u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r6 = ctx->gpr[6];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+}
+
+loc_807AC934:
+{
+    r0 = MemoryInline::FlatRead32((r1 + 20));
+    r31 = MemoryInline::FlatRead32((r1 + 12));
+    r30 = MemoryInline::FlatRead32((r1 + 8));
+    ctx->lr = r0;
+    r1 = (r1 + 16);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    return;
+}
+
+}
+
+PPC_NATIVE_OVERRIDE_VOID(807AC7A0, NsmbwSelectPlayerDecide_807AC7A0, (CpuContext* ctx), (ctx));
+
+// ---- Start Game / Back after the characters are chosen ---------------------------------------------
+//
+// dNumberOfPeopleChange_c's ButtonSelect (0x807A1B60) has the cursor in +1736: 0 Start Game, 1 Back.
+//   - Start Game played SE_VOC_MA_PLAYER_DECIDE (803, 804 when small) whoever player 1 is, and
+//     dScGameSetup_c's VoiceEndWait (0x80919130) waits while 803 plays. EDIT: player 1's own
+//     character's decide voice (Luigi 875, Blue Toad 946, Yellow Toad 1016; only Mario has a small
+//     variant; names from the disc's wii_mj2d_sound.brsar), and VoiceEndWait waits on that one.
+//   - Back ends the screen with +1736 = 1, and dScGameSetup_c's ConnectionCheck (0x80918D10) then
+//     goes back to StartMember ("Number of Players"). With player 1 choosing, Back should return to
+//     the character select (developer report 2026-11-15). ButtonSelect's Back marks
+//     g_reopenSelector and ConnectionCheck re-opens the screen with the same player count, the way
+//     StartMember opens it (join states cleared, +1662 = 1, the screen's "active" flag). Pressing
+//     back on the selectors themselves (0x807A1510's 0x807A0D20 path) still leaves to "Number of
+//     Players", since it doesn't set the flag.
+namespace {
+bool g_reopenSelector = false;
+uint32_t g_decideVoice = 803; // SE_VOC_MA_PLAYER_DECIDE
+
+// Player 1's character on the Add/Drop screen: the started selector (+661) whose slot (+728) is
+// remote 0. Falls back to daPyMng_c::mPlayerType[0].
+uint32_t Player1Character(uint32_t screen) {
+    for (uint32_t i = 0; i < 4; ++i) {
+        uint32_t sel = 0, slot = 0xFFFFFFFFu, ch = 0;
+        if (!Memory::TryRead32(screen + 116 + 4 * i, sel) || sel == 0) continue;
+        uint32_t started = 0;
+        if (!Memory::TryRead32(sel + 660, started) || ((started >> 16) & 0xFFu) == 0) continue; // +661
+        if (Memory::TryRead32(sel + 728, slot) && slot == 0 && Memory::TryRead32(sel + 724, ch) && ch < 4) return ch;
+    }
+    uint32_t ch = 0;
+    Memory::TryRead32(NSMBW_VA(0x80355160u), ch); // daPyMng_c::mPlayerType[0]
+    return ch & 3u;
+}
+
+uint32_t DecideVoice(uint32_t screen, bool small) {
+    static constexpr uint32_t kVoice[4] = {803, 875, 946, 1016}; // MA, LU, KO (Blue), KO2 (Yellow)
+    const uint32_t ch = SelectorOffersMario() ? Player1Character(screen) : 0u;
+    const uint32_t voice = (ch == 0 && small) ? 804u : kVoice[ch];
+    g_decideVoice = voice;
+    if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] Start Game: player 1 character %u, decide voice %u\n", ch, voice);
+    return voice;
+}
+} // namespace
+
+// ButtonSelect execute (0x807A1B60; see above). Structural copy of
+// build/nsmbw-d_basesNP/functions/func_807A1B60.cpp.
+extern "C" void NsmbwPeopleChangeButtonSelect_807A1B60(CpuContext* MKW_RESTRICT ctx)
+{
+    uint32_t cr0_0 = 0;
+    uint32_t r0_rot_0 = 0;
+    uint32_t r0_rot_1 = 0;
+    uint32_t r0_rot_2 = 0;
+    uint32_t r0_rot_3 = 0;
+
+    uint32_t r0 = ctx->gpr[0];
+    uint32_t r1 = ctx->gpr[1];
+    uint32_t r3 = ctx->gpr[3];
+    uint32_t r4 = ctx->gpr[4];
+    uint32_t r5 = ctx->gpr[5];
+    uint32_t r12 = ctx->gpr[12];
+    uint32_t r30 = ctx->gpr[30];
+    uint32_t r31 = ctx->gpr[31];
+    uint32_t cr = ctx->cr;
+    uint32_t ctr = ctx->ctr;
+    uint32_t xer = ctx->xer;
+
+    goto loc_807A1B60;
+
+loc_807A1B60:
+{
+    MemoryInline::FlatWriteRam32((r1 + -16), r1);
+    r1 = (r1 + -16);
+    r0 = ctx->lr;
+    r4 = NSMBW_VA_PAIR(0x80430000u, -24016);
+    MemoryInline::FlatWriteRam32((r1 + 20), r0);
+    MemoryInline::FlatWriteRam32((r1 + 12), r31);
+    MemoryInline::FlatWriteRam32((r1 + 8), r30);
+    r30 = r3;
+    r5 = MemoryInline::FlatRead32((r3 + 1736));
+    r4 = MemoryInline::FlatRead32((r4 + -24016));
+}
+
+loc_807A1B88:
+{
+    r31 = r5;
+    if ((static_cast<int32_t>(r5) != static_cast<int32_t>(0))) {
+        goto loc_807A1BB8;
+    }
+}
+
+loc_807A1B90:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22716);
+    r0 = MemoryInline::FlatRead32((r3 + -22716));
+    r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_0 & -4);
+    r3 = (r4 + r0);
+    r3 = MemoryInline::FlatRead32((r3 + 4));
+    r0 = MemoryInline::FlatRead32((r3 + 28));
+    r0 = (r0 & 8);
+}
+
+loc_807A1BAC:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_807A1BE4;
+    }
+}
+
+loc_807A1BB0:
+{
+    r31 = 1;
+    goto loc_807A1BE4;
+}
+
+loc_807A1BB8:
+{
+}
+
+loc_807A1BBC:
+{
+    if ((static_cast<int32_t>(r5) != static_cast<int32_t>(1))) {
+        goto loc_807A1BE4;
+    }
+}
+
+loc_807A1BC0:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22716);
+    r0 = MemoryInline::FlatRead32((r3 + -22716));
+    r0_rot_2 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_2 & -4);
+    r3 = (r4 + r0);
+    r3 = MemoryInline::FlatRead32((r3 + 4));
+    r0 = MemoryInline::FlatRead32((r3 + 28));
+    r0 = (r0 & 4);
+}
+
+loc_807A1BDC:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_807A1BE4;
+    }
+}
+
+loc_807A1BE0:
+{
+    r31 = 0;
+}
+
+loc_807A1BE4:
+{
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r5), static_cast<int32_t>(r31));
+}
+
+loc_807A1BE8:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_807A1C2C;
+    }
+}
+
+loc_807A1BEC:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 120;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807A1C00u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    r0 = MemoryInline::FlatRead32((r30 + 1736));
+    r4 = NSMBW_VA_PAIR(0x80990000u, 15776);
+    MemoryInline::FlatWrite32((r30 + 1740), r0);
+    r3 = (r30 + 1436);
+    r4 = (r4 + 15776);
+    MemoryInline::FlatWrite32((r30 + 1736), r31);
+    r12 = MemoryInline::FlatRead32((r30 + 1436));
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807A1C28u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    goto loc_807A1CE8;
+}
+
+loc_807A1C2C:
+{
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22712);
+    r4 = 2304;
+    r3 = MemoryInline::FlatRead32((r3 + -22712));
+    r12 = MemoryInline::FlatRead32(r3);
+    r12 = MemoryInline::FlatRead32((r12 + 32));
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807A1C48u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r3), static_cast<int32_t>(0));
+}
+
+loc_807A1C4C:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_807A1CE8;
+    }
+}
+
+loc_807A1C50:
+{
+    r0 = MemoryInline::FlatRead32((r30 + 1736));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_807A1C58:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_807A1CB8;
+    }
+}
+
+loc_807A1C5C:
+{
+    r31 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 121;
+    r3 = MemoryInline::FlatRead32((r31 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807A1C70u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    r3 = NSMBW_VA_PAIR(0x80430000u, -23968);
+    r0 = MemoryInline::FlatRead32((r3 + -23968));
+    r0 = (r0 & 16);
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_807A1C7C:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_807A1CCC;
+    }
+}
+
+loc_807A1C80:
+{
+    r3 = MemoryInline::FlatRead32((r30 + 1612));
+    r0 = MemoryInline::FlatRead32((r3 + 568));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(3));
+}
+
+loc_807A1C8C:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_807A1CA4;
+    }
+}
+
+loc_807A1C90:
+{
+    r3 = MemoryInline::FlatRead32((r31 + -22680));
+    r4 = DecideVoice(r30, true); // EDIT: was 804 (Mario's, small)
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807A1CA0u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    goto loc_807A1CCC;
+}
+
+loc_807A1CA4:
+{
+    r3 = MemoryInline::FlatRead32((r31 + -22680));
+    r4 = DecideVoice(r30, false); // EDIT: was 803 (Mario's)
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807A1CB4u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    goto loc_807A1CCC;
+}
+
+loc_807A1CB8:
+{
+    if (SelectorOffersMario() && InGameSetup()) { // EDIT: Back returns to the character select
+        g_reopenSelector = true;
+        if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] Back on Start Game/Back: re-opening the character select\n");
+    }
+    r3 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    r4 = 122;
+    r3 = MemoryInline::FlatRead32((r3 + -22680));
+    r5 = 1;
+    ctx->lr = NSMBW_VA(0x807A1CCCu);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x801954C0u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+}
+
+loc_807A1CCC:
+{
+    r12 = MemoryInline::FlatRead32((r30 + 1436));
+    r4 = NSMBW_VA_PAIR(0x80990000u, 15904);
+    r3 = (r30 + 1436);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    r4 = (r4 + 15904);
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x807A1CE8u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r5 = ctx->gpr[5];
+    r12 = ctx->gpr[12];
+    r30 = ctx->gpr[30];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+}
+
+loc_807A1CE8:
+{
+    r0 = MemoryInline::FlatRead32((r1 + 20));
+    r31 = MemoryInline::FlatRead32((r1 + 12));
+    r30 = MemoryInline::FlatRead32((r1 + 8));
+    ctx->lr = r0;
+    r1 = (r1 + 16);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[12] = r12;
+    ctx->gpr[30] = r30;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    return;
+}
+
+}
+
+PPC_NATIVE_OVERRIDE_VOID(807A1B60, NsmbwPeopleChangeButtonSelect_807A1B60, (CpuContext* ctx), (ctx));
+
+// dScGameSetup_c ConnectionCheck execute (0x80918D10): waits for the Add/Drop screen (+184) to finish
+// (+1662 back to 0), then Start Game -> LowBatteryCheck, Back (+1736 != 0) -> StartMember. EDIT: see
+// g_reopenSelector above. Structural copy of build/nsmbw-d_basesNP/functions/func_80918D10.cpp.
+extern "C" void NsmbwGameSetupConnectionCheck_80918D10(CpuContext* MKW_RESTRICT ctx)
+{
+    uint32_t cr0_0 = 0;
+    uint32_t r0_rot_0 = 0;
+    uint32_t r0_rot_1 = 0;
+    uint32_t r0_rot_2 = 0;
+
+    uint32_t r0 = ctx->gpr[0];
+    uint32_t r3 = ctx->gpr[3];
+    uint32_t r4 = ctx->gpr[4];
+    uint32_t r5 = ctx->gpr[5];
+    uint32_t r6 = ctx->gpr[6];
+    uint32_t r12 = ctx->gpr[12];
+    uint32_t cr = ctx->cr;
+    uint32_t ctr = ctx->ctr;
+    uint32_t xer = ctx->xer;
+
+    goto loc_80918D10;
+
+loc_80918D10:
+{
+    r4 = MemoryInline::FlatRead32((r3 + 184));
+    r6 = NSMBW_VA_PAIR(0x809A0000u, 3048);
+    r6 = (r6 + 3048);
+    r0 = MemoryInline::FlatRead8((r4 + 1664));
+}
+
+loc_80918D24:
+{
+    if ((static_cast<int32_t>(r0) == static_cast<int32_t>(0))) {
+        goto loc_80918D68;
+    }
+}
+
+loc_80918D28:
+{
+    r5 = NSMBW_VA_PAIR(0x80430000u, -22716);
+    r4 = NSMBW_VA_PAIR(0x80430000u, -24016);
+    r0 = MemoryInline::FlatRead32((r5 + -22716));
+    r4 = MemoryInline::FlatRead32((r4 + -24016));
+    r0_rot_0 = PpcRotl32Inline(static_cast<uint32_t>(r0), static_cast<uint32_t>(2));
+    r0 = (r0_rot_0 & -4);
+    r4 = (r4 + r0);
+    r4 = MemoryInline::FlatRead32((r4 + 4));
+    r0 = MemoryInline::FlatRead32((r4 + 28));
+    r0 = (r0 & 16);
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_80918D4C:
+{
+    if (((cr & 0x20000000u) != 0)) {
+        goto loc_return;
+    }
+}
+
+loc_80918D50:
+{
+    r3 = (r3 + 116);
+    r12 = MemoryInline::FlatRead32(r3);
+    r4 = (r6 + 400);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->gpr[0] = r0;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectJump(ctr, ctx);
+    return;
+    return;
+}
+
+loc_80918D68:
+{
+    r0 = MemoryInline::FlatRead8((r4 + 1662));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_80918D70:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_return;
+    }
+}
+
+loc_80918D74:
+{
+    r0 = MemoryInline::FlatRead32((r4 + 1736));
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), static_cast<int32_t>(0));
+}
+
+loc_80918D7C:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_80918D94;
+    }
+}
+
+loc_80918D80:
+{
+    r3 = (r3 + 116);
+    r12 = MemoryInline::FlatRead32(r3);
+    r4 = (r6 + 464);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->gpr[0] = r0;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectJump(ctr, ctx);
+    return;
+    return;
+}
+
+loc_80918D94:
+{
+    if (g_reopenSelector) { // EDIT: re-open the character select instead of "Number of Players"
+        g_reopenSelector = false;
+        const uint32_t info = MemoryInline::FlatRead32(NSMBW_VA(0x8042A25Cu)); // as StartMember: join states
+        for (uint32_t i = 0; i < 4; ++i) MemoryInline::FlatWrite32(info + 900 + 4 * i, 0);
+        MemoryInline::FlatWrite32((r4 + 1736), 0);
+        MemoryInline::FlatWrite8((r4 + 1662), 1);
+        return;
+    }
+    r3 = (r3 + 116);
+    r12 = MemoryInline::FlatRead32(r3);
+    r4 = (r6 + 272);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    ctr = r12;
+    ctx->gpr[0] = r0;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectJump(ctr, ctx);
+    return;
+    return;
+}
+
+loc_return:
+{
+    ctx->gpr[0] = r0;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[5] = r5;
+    ctx->gpr[6] = r6;
+    ctx->gpr[12] = r12;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    return;
+}
+
+}
+
+PPC_NATIVE_OVERRIDE_VOID(80918D10, NsmbwGameSetupConnectionCheck_80918D10, (CpuContext* ctx), (ctx));
+
+// dScGameSetup_c VoiceEndWait execute (0x80919130): waits while the decide voice plays, then moves on.
+// EDIT: waits on the voice ButtonSelect actually played. Structural copy of
+// build/nsmbw-d_basesNP/functions/func_80919130.cpp.
+extern "C" void NsmbwGameSetupVoiceEndWait_80919130(CpuContext* MKW_RESTRICT ctx)
+{
+    uint32_t cr0_0 = 0;
+
+    uint32_t r0 = ctx->gpr[0];
+    uint32_t r1 = ctx->gpr[1];
+    uint32_t r3 = ctx->gpr[3];
+    uint32_t r4 = ctx->gpr[4];
+    uint32_t r12 = ctx->gpr[12];
+    uint32_t r31 = ctx->gpr[31];
+    uint32_t cr = ctx->cr;
+    uint32_t ctr = ctx->ctr;
+    uint32_t xer = ctx->xer;
+
+    goto loc_80919130;
+
+loc_80919130:
+{
+    MemoryInline::FlatWriteRam32((r1 + -16), r1);
+    r1 = (r1 + -16);
+    r0 = ctx->lr;
+    r4 = NSMBW_VA_PAIR(0x80430000u, -22680);
+    MemoryInline::FlatWriteRam32((r1 + 20), r0);
+    MemoryInline::FlatWriteRam32((r1 + 12), r31);
+    r31 = r3;
+    r3 = MemoryInline::FlatRead32((r4 + -22680));
+    r4 = SelectorOffersMario() ? g_decideVoice : 803u; // EDIT: the voice ButtonSelect played
+    ctx->lr = NSMBW_VA(0x80919154u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[12] = r12;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeDirectCpu<NSMBW_VA(0x80196740u)>(ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r12 = ctx->gpr[12];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+    SetCRResident(cr, xer, 0, static_cast<int32_t>(r3), static_cast<int32_t>(0));
+}
+
+loc_80919158:
+{
+    if (((cr & 0x20000000u) == 0)) {
+        goto loc_80919178;
+    }
+}
+
+loc_8091915C:
+{
+    r12 = MemoryInline::FlatRead32((r31 + 116));
+    r4 = NSMBW_VA_PAIR(0x809A0000u, 3704);
+    r3 = (r31 + 116);
+    r12 = MemoryInline::FlatRead32((r12 + 24));
+    r4 = (r4 + 3704);
+    ctr = r12;
+    ctx->lr = NSMBW_VA(0x80919178u);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[12] = r12;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    InvokeIndirectCpu(ctr, ctx);
+    r0 = ctx->gpr[0];
+    r1 = ctx->gpr[1];
+    r3 = ctx->gpr[3];
+    r4 = ctx->gpr[4];
+    r12 = ctx->gpr[12];
+    r31 = ctx->gpr[31];
+    cr = ctx->cr;
+    ctr = ctx->ctr;
+    xer = ctx->xer;
+}
+
+loc_80919178:
+{
+    r0 = MemoryInline::FlatRead32((r1 + 20));
+    r31 = MemoryInline::FlatRead32((r1 + 12));
+    ctx->lr = r0;
+    r1 = (r1 + 16);
+    ctx->gpr[0] = r0;
+    ctx->gpr[1] = r1;
+    ctx->gpr[3] = r3;
+    ctx->gpr[4] = r4;
+    ctx->gpr[12] = r12;
+    ctx->gpr[31] = r31;
+    ctx->cr = cr;
+    ctx->ctr = ctr;
+    return;
+}
+
+}
+
+PPC_NATIVE_OVERRIDE_VOID(80919130, NsmbwGameSetupVoiceEndWait_80919130, (CpuContext* ctx), (ctx));
