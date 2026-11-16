@@ -1595,3 +1595,45 @@ What I learned:
 What's next:
 - The developer tries it with a controller (F10 option, Add/Drop with two players, "1 player" select).
 - The "1 Players" title; the Mario portrait image; committing.
+
+## 2026-11-15 — Character select: fixes from the developer's play test
+
+**What I did**
+- Carousel order: Mario is now the leftmost card (positions 3, 2, 1, 0 = Mario, Luigi, Yellow, Blue; the position <-> character tables are rewritten with Mario on, and 0x8076FD70 / 0x807708E0 map through them instead of hard-coding position 0).
+- Player 1 chooses with any player count in game setup, each card in its own column (0x807A0170 copy places selector 0 too).
+- Voices: no Mario "here we go" on choosing "1" (0x807AC7A0); Mario's own join voice on his card (0x80771090); Start Game plays player 1's character's decide voice and VoiceEndWait waits on it (0x807A1B60, 0x80919130).
+- Back on Start Game / Back re-opens the character select (0x807A1B60 flag + 0x80918D10 copy).
+- Map reload after a character change waits on the game-stop word (0x8042A228) instead of the options menu's own state, and the request is cleared when a map player is built.
+- Default portrait: made from the developer's original 64x64 Mario Kart Wii image, resampled to 150x150 without the AI upscale (developer request); the HD file is renamed to the new hash (`tex1_150x150_809770f85bf8b175_5.png`).
+
+**What broke**
+- Scripted 2-player runs played as 1 player: with the stop scene set to the map, the self-test's own presses picked "1" first. Scripts that need game setup must stop the self-test at scene 10.
+- The Number of Players screen has "1" on top and 2/3/4 below, so "2" is a down press, not right.
+
+**What I learned**
+- A *structural copy* is our own C++ copy of a translated game function with one changed line (marked EDIT), registered at the function's address so the game calls ours.
+- Card placement per player count is a 4x4 table (0x80935330: count 2 -> spots 7/8, 3 -> 4/5/6, 4 -> 0..3) into ten null panes at screen+1500.
+- Sound names come from the disc's BRSAR: Mario JOIN 797/798, DECIDE 803/804; Luigi 869 / 875; Blue Toad (KO) 940 / 946; Yellow Toad (KO2) 1010 / 1016.
+
+**What's next**
+- Developer play test with sound; Free Mode / Coin Battle number-of-players screens with the "1" voice skip; map model after an F10 change from the real menu (checked here through the debug setter, which uses the same setter).
+
+## 2026-11-15 — Player 1's character moves from F10 to Add/Drop Players
+
+**What I did** (developer request: remove the F10 option, let the map's Add/Drop Players change player 1)
+- Removed the "Player 1 character" row from F10 > Advanced (`nsmbw_options_menu.cpp`). The setter stays for `NSMBW_DEBUG_P1_CHARACTER` and the map pick.
+- World map Add/Drop Players: player 1 now has its own card (left spot) running the same selector as game setup. Inside the screen player 1 starts not joined (0x807A0DB0 copy writes state 0 into the screen's copy only), selector 0 claims remote 0, and OK (0x807A1510 copy, 0x807A0D20) is taken only once player 1's card is confirmed.
+- After OK the map reloads with the new model once the screen has closed.
+
+**What broke**
+- The first version reloaded the map as soon as player 1's card was confirmed, under the open screen: the selector writes `mPlayerType[0]` on confirm and the map's Add/Drop screen does not set the game-stop word. Fixed by also waiting until the screen's per-frame card placement (0x807A0170) has stopped for 30 frames (docs/issues.md).
+- Test scripting: after a fresh game setup the map's opening swallowed early menu presses; the 2-player test used the second map visit (`3.2@...`).
+
+**What I learned**
+- On the map the recruit state ends only on player 1's OK; it never waits for choices (that wait is game-setup only), so the OK had to be gated on player 1's card.
+- The map HUD lists players in character order, not slot order (Luigi above Blue Toad with player 1 as Blue Toad).
+
+**Verified** (portable copy, scripted): 1 player picks Blue Toad on the map -> map reloads with Blue Toad's model and HUD; same with player 2 as Luigi in the game. **Not checked:** the 2-player Add/Drop screen itself on screen (only its result), dropping/adding other players in the same visit, a real controller, USA.
+
+**What's next**
+- Developer play test of the map pick.

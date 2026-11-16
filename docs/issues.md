@@ -898,6 +898,42 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: structural copies of both in `projects/nsmbw/native/nsmbw_p1_character.cpp` use position 0 when Mario is offered. Verified: Mario's card shows only the left arrow at first and after returning from Blue Toad (`sel13_*.png`).
 - Scope: NSMBW-specific (follows from adding a fourth carousel position).
 
+### Choosing "1 player" played Mario's "here we go"
+- Symptom: with the character select, choosing "1" on Number of Players played Mario's voice before anyone had picked a character (developer report).
+- Root cause: dSelectPlayer_c's decision (d_basesNP 0x807AC7A0) plays SE_VOC_MA_PLAYER_DECIDE (803) when "1" (+620 == 0) is chosen, because player 1 was always Mario.
+- Fix: `nsmbw_p1_character.cpp` structural copy of 0x807AC7A0 skips it while the selector offers Mario. Verified: log `"1" chosen: Mario's decide voice skipped`, and game setup's VoiceEndWait moves on.
+- Scope: NSMBW-specific.
+
+### Mario's card confirmed with Yellow Toad's voice
+- Symptom: confirming Mario in the Add/Drop selector played a Toad voice (developer report).
+- Root cause: the selector's confirm voice (0x80771090) plays Luigi's (869) for character 1, Blue Toad's (940) for 2 and Yellow Toad's (1010) for anything else; Mario (0) was never offered.
+- Fix: structural copy plays SE_VOC_MA_PLAYER_JOIN 797 (798 small) for Mario. IDs from the disc's `wii_mj2d_sound.brsar`. Verified by log (`join voice for character 0 (Mario's)`); not listened to.
+- Scope: NSMBW-specific.
+
+### Start Game played Mario's voice for any player 1
+- Symptom: found while tracing the above: Start Game on the Add/Drop screen plays SE_VOC_MA_PLAYER_DECIDE (803/804) whoever player 1 is, and game setup's VoiceEndWait (0x80919130) waits on 803 only.
+- Root cause: 0x807A1B60 (ButtonSelect) hard-codes Mario's voice.
+- Fix: structural copies of 0x807A1B60 (player 1's character's decide voice: Luigi 875, Blue Toad 946, Yellow Toad 1016) and 0x80919130 (waits on the voice played). Verified by log with Luigi (`decide voice 875`, then VoiceEndWait -> NextSceneWait -> map).
+- Scope: NSMBW-specific.
+
+### Back after choosing a character went to Number of Players
+- Symptom: Back on the Start Game / Back buttons after picking a character returned to Number of Players (developer report).
+- Root cause: original flow: ButtonSelect (0x807A1B60) ends the screen with +1736 = 1 and game setup's ConnectionCheck (0x80918D10) goes to StartMember.
+- Fix: in game setup with the character select, ButtonSelect's Back sets a flag and the ConnectionCheck copy re-opens the screen with the same count (join states cleared, +1662 = 1, as StartMember opens it). Back on the selectors themselves still leaves to Number of Players. Verified: Back, then Luigi, then Start Game reaches the map as Luigi (`build_nsmbw/shots/back4_1.png`).
+- Scope: NSMBW-specific.
+
+### Map reloaded under the open Add/Drop screen
+- Symptom: first version of the world-map character pick: confirming player 1's card reloaded the map at once, under the still-open Add/Drop screen (2026-11-15 test, log `map player was built as 0, player 1 is 2` while the selector was still in PlayerOnStageWait).
+- Root cause: the selector writes `mPlayerType[0]` on confirm, and the reload waited only for the game-stop word (0x8042A228), which the map's Add/Drop screen does not set.
+- Fix: the reload (and the pick fallback) also waits until 0x807A0170, which places the screen's cards every frame while it is open, has not run for 30 frames (`g_addDropSeenTick`, `nsmbw_p1_character.cpp`). Verified: confirm, OK, screen exit, then the reload; the map shows Blue Toad's model and HUD (`build_nsmbw/shots/mapadd4_4.png`; with player 2 as Luigi, `map2p3_*.png`).
+- Scope: NSMBW-specific.
+
+### With 2-4 players, player 1 had no selector and its card overlapped player 2's
+- Symptom: choosing 2 players let only player 2 choose, with player 1's figure standing beside player 2's card; with 3 or 4, player 1 was hidden behind player 2's card (developer report and screenshots).
+- Root cause: in game setup player 1 was pre-joined and drawn as a figure; once it was given a selector (all counts), its card stayed at the layout's default place because the per-frame card placement (0x807A0170) only moves selectors 1-3 to their spots (+1716, table 0x80935330).
+- Fix: player 1 starts not joined for every count, the screen runs `count` selectors from selector 0 (selector 1 for one player), and a structural copy of 0x807A0170 also places selector 0. Verified: 2, 3 and 4 players show two, three and four cards side by side (`two7_1.png`, `three1_1.png`, `four1_1.png`), and a 2-player game reaches 1-1 as Mario and Luigi (`two10_1.png`).
+- Scope: NSMBW-specific.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -940,4 +976,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - USA (E1) build: plays title, map and levels (2026-11-15). Not yet checked there: French/Spanish text, F10 menu fonts, the extra pause/map buttons, full save, HD pack, BCA disc check, later worlds, 180 FPS.
 - DLL split and launcher setup (2026-11-14): compat DLL, the CPU-too-old message boxes, a release build of the launcher, `package_nsmbw.ps1` and the setup window at other DPI settings not yet run.
 - Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.
-- Player 1 character (2026-11-15): not yet seen - the F10 row, a file saved with a non-Mario player 1 started from the title, the other players' map models in multiplayer (0x808EB7D0), the custom-TPL Mario portrait in the selector, and USA with the selector overrides. Player 1's own selector after "1 player" is not built (docs/futureplans.md 7a).
+- Player 1 character (2026-11-15): not yet seen - a file saved with a non-Mario player 1 started from the title, the other players' map models in multiplayer (0x808EB7D0), the custom-TPL Mario portrait in the selector, and USA with the selector overrides. The selector voices (0x80771090, 0x807A1B60) are checked by log only, not by ear; Free Mode / Coin Battle with the "1" voice skip are untested.
