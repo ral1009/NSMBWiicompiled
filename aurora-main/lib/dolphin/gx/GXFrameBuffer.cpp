@@ -501,6 +501,19 @@ void GXCopyTex(void* dest, GXBool clear) {
   const u32 copyRectWidth = std::max<u32>(static_cast<u32>(g_gxState.texCopySrc.width) >> (g_gxState.texCopyHalfScale ? 1 : 0), 1);
   const u32 copyRectHeight = std::max<u32>(static_cast<u32>(g_gxState.texCopySrc.height) >> (g_gxState.texCopyHalfScale ? 1 : 0), 1);
   const bool stridedSubRect = g_gxState.texCopyDstWidth > copyRectWidth;
+  // NSMBW_LOG_SMALL_COPIES=1: every copy whose rectangle is at most 64x64 (first 200) - where the
+  // animated tiles' copies go (2026-11-15, the ? block / brick HD regression).
+  static const bool logSmallCopies = std::getenv("NSMBW_LOG_SMALL_COPIES") != nullptr;
+  if (logSmallCopies && copyRectWidth <= 64 && copyRectHeight <= 64) {
+    static int logged = 0;
+    if (logged < 200) {
+      ++logged;
+      std::fprintf(stderr, "[smallcopy] dest=%p rect=%ux%u dst=%ux%u fmt=%u strided=%d src=(%d,%d)\n", dest,
+                   copyRectWidth, copyRectHeight, g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight,
+                   static_cast<unsigned>(g_gxState.texCopyFmt), stridedSubRect ? 1 : 0, g_gxState.texCopySrc.x,
+                   g_gxState.texCopySrc.y);
+    }
+  }
   // Keep guest dimensions for cache identity while preserving scaled GPU detail.
   const auto logicalDstWidth = stridedSubRect ? copyRectWidth : std::max<u32>(g_gxState.texCopyDstWidth, 1);
   const auto logicalDstHeight = stridedSubRect ? copyRectHeight : std::max<u32>(g_gxState.texCopyDstHeight, 1);

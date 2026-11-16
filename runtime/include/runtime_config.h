@@ -138,9 +138,12 @@ inline std::string RemoveComment(std::string_view line) {
     return std::string(line);
 }
 
+// 0 = Auto (match the window); otherwise any scale from 1 (native 528 rows) to 8. This was a fixed
+// list (0, 1, 1.5, 2, 3, 4, 6, 8) until 2026-11-15: the F10 presets became heights on 2026-11-07
+// (1080p = 1080 / 528 = 2.0455, 4K = 4.0909, ...), so every preset but Auto and native was saved and
+// then rejected on the next launch, which fell back to 1.0.
 inline bool IsSupportedResolutionMultiplier(float value) {
-    static constexpr std::array values{0.0f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f};
-    return std::find(values.begin(), values.end(), value) != values.end();
+    return value == 0.0f || (std::isfinite(value) && value >= 1.0f && value <= 8.0f);
 }
 
 // Must stay in step with the backend table in main.cpp, which is what actually

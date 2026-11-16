@@ -964,16 +964,19 @@ void ResetPersistentStateForCleanRun(const std::filesystem::path& cacheDir) {
     const bool resetWindow =
         (AURORA_ENV("NSMBW_AUTO_PRESS_SELFTEST") != nullptr || AURORA_ENV("NSMBW_RESET_WINDOW") != nullptr) &&
         AURORA_ENV("NSMBW_KEEP_WINDOW") == nullptr;
-    constexpr float kMaxStartupResolutionScale = 4.0f;
+    // The 4K preset (2160 / 528 rows = 4.0909, settings_overlay.cpp ScaleForHeight). The cap was 4.0
+    // from the old "4x" preset, which rewrote a saved 4K to 4.0 on every launch (2026-11-15); the
+    // margin absorbs Config.toml's 6-digit rounding ("4.09091").
+    constexpr float kMaxStartupResolutionScale = 2160.0f / 528.0f + 0.01f;
     if (resetWindow) {
         bool wroteVideo = RuntimeConfigFile::SetDisplayMode("windowed") && RuntimeConfigFile::SetWindowSize(640u, 480u);
         if (RuntimeConfigFile::ResolutionMultiplier(1.0f) > kMaxStartupResolutionScale) {
-            wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(kMaxStartupResolutionScale) && wroteVideo;
+            wroteVideo = RuntimeConfigFile::SetResolutionMultiplier(2160.0f / 528.0f) && wroteVideo;
         }
         std::printf("[nsmbw] Reset: Config.toml video/window keys -> windowed 640x480, render scale kept (%s)\n",
                     wroteVideo ? "ok" : "FAILED");
     } else if (RuntimeConfigFile::ResolutionMultiplier(1.0f) > kMaxStartupResolutionScale) {
-        RuntimeConfigFile::SetResolutionMultiplier(kMaxStartupResolutionScale);
+        RuntimeConfigFile::SetResolutionMultiplier(2160.0f / 528.0f);
     }
 
     const auto marker = cacheDir / kCrashMarkerName;

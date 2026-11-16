@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -1663,6 +1664,19 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
       }
     }
 
+    // NSMBW_LOG_TILE_FRAME_BIND=1: for 32x32 RGB5A3 textures (NSMBW's animated tile frames), which
+    // branch bound them and the bound size (256 = HD pack art), once per address and branch.
+    static const bool logTileFrameBind = std::getenv("NSMBW_LOG_TILE_FRAME_BIND") != nullptr;
+    if (logTileFrameBind && obj.width() == 32 && obj.height() == 32 && obj.format() == GX_TF_RGB5A3) {
+      static std::set<std::pair<uintptr_t, int>> s_logged;
+      const int branch = copyRef != nullptr ? 0 : 1;
+      if (s_logged.emplace(reinterpret_cast<uintptr_t>(obj.data), branch).second && s_logged.size() < 200) {
+        std::fprintf(stderr, "[tileframe] data=%p bound by %s -> %ux%u%s frame=%u\n", obj.data,
+                     branch == 0 ? "EFB copy" : "RAM/static", handle ? handle->size.width : 0u,
+                     handle ? handle->size.height : 0u, handle && handle->isReplacement ? " (pack)" : "",
+                     gfx::current_frame());
+      }
+    }
     // DIAGNOSTIC (NSMBW_DEBUG_TEXWHITE=<w>x<h>:<fmt>): sample solid white instead of any texture of
     // that shape, to test whether a draw's black output comes from that texture input.
     {

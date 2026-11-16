@@ -1424,6 +1424,22 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   }
 
   const RuntimeTextureKey key = build_runtime_key(obj);
+  // AURORA_LOG_REPLACEMENT_LOOKUPS=1: each pack-shaped lookup's outcome, once per key and outcome.
+  static const bool logLookups = std::getenv("AURORA_LOG_REPLACEMENT_LOOKUPS") != nullptr;
+  const auto logLookup = [&](const char* outcome, const gfx::TextureHandle* handle) {
+    if (!logLookups) {
+      return;
+    }
+    static absl::flat_hash_set<std::string> s_logged;
+    const std::string name = format_replacement_filename(key);
+    if (!s_logged.insert(name + outcome).second) {
+      return;
+    }
+    std::fprintf(stderr, "[texture_replacement] lookup %s: %s%s\n", name.c_str(), outcome,
+                 handle != nullptr && *handle != nullptr
+                     ? fmt::format(" -> {}x{}", (*handle)->size.width, (*handle)->size.height).c_str()
+                     : "");
+  };
   if (patchCandidate) {
     if (auto patched = find_patched(key, obj, packOn); patched.has_value()) {
       return patched;
@@ -1434,15 +1450,26 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   }
   const auto* path = find_replacement_path(key);
   if (path == nullptr) {
+    logLookup("no pack entry", nullptr);
     report_missing_key(key, obj);
     return std::nullopt;
   }
 
   if (const auto* cached = find_cached_replacement(key); cached != nullptr) {
+    logLookup("cached", cached);
+    if (logLookups) {
+      static absl::flat_hash_map<std::string, uint32_t> s_hits;
+      const std::string name = format_replacement_filename(key);
+      if (const uint32_t n = ++s_hits[name]; (n & (n - 1)) == 0) {
+        std::fprintf(stderr, "[texture_replacement] lookup %s: cached hit #%u (frame %u)\n", name.c_str(), n,
+                     gfx::current_frame());
+      }
+    }
     return *cached;
   }
 
   if (s_failedKeys.contains(key)) {
+    logLookup("failed earlier", nullptr);
     return std::nullopt;
   }
 
@@ -1452,6 +1479,7 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept {
   }
 
   cache_replacement(key, handle);
+  logLookup("loaded now", &handle);
   // Once per load (cache hits return above), so a run shows which pack files actually matched.
   Log.info("texture_replacement: loaded {}", fs_path_to_string(path->path.filename()));
   record_scene_load(path->path);

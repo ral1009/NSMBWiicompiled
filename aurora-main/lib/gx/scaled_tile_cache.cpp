@@ -2,6 +2,9 @@
 
 #include "../gfx/texture.hpp"
 #include "../internal.hpp"
+#include "../webgpu/gpu.hpp"
+
+#include <string>
 
 #include <dolphin/gx/GXTexture.h>
 
@@ -61,6 +64,61 @@ std::map<uintptr_t, Slot> s_slots;
 std::map<uintptr_t, Atlas> s_atlases;
 const bool s_disabled = AURORA_ENV("AURORA_NO_SCALED_TILE_CACHE") != nullptr;
 const bool s_log = AURORA_ENV("AURORA_LOG_SCALED_TILE_CACHE") != nullptr;
+// AURORA_DUMP_TILE_ATLAS=<dir>: ~300 frames after an atlas build, writes the atlas composite once and
+// every tile slot's latest copy 16 times, 20 frames apart, as PPM files named by atlas position
+// (tile_f<frame>_slot_<x>_<y>.ppm). Tells whether HD-pack tile art reaches the copies: a ? block
+// slot at 1x is 32x32 with square rivets, at 4x 128x128 with round ones (2026-11-15).
+const char* const s_dumpDir = AURORA_ENV("AURORA_DUMP_TILE_ATLAS");
+u32 s_dumpAtFrame = 0;
+
+void dump_texture(const gfx::TextureHandle& tex, const std::string& path) noexcept {
+  if (!tex || !tex->texture) {
+    return;
+  }
+  const u32 w = tex->size.width;
+  const u32 h = tex->size.height;
+  const u32 bytesPerRow = (w * 4 + 255) / 256 * 256;
+  const wgpu::BufferDescriptor bufferDescriptor{
+      .label = "Tile atlas dump",
+      .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead,
+      .size = static_cast<uint64_t>(bytesPerRow) * h,
+  };
+  wgpu::Buffer buffer = webgpu::g_device.CreateBuffer(&bufferDescriptor);
+  wgpu::CommandEncoder encoder = webgpu::g_device.CreateCommandEncoder();
+  const wgpu::TexelCopyTextureInfo src{.texture = tex->texture};
+  const wgpu::TexelCopyBufferInfo dst{
+      .layout = wgpu::TexelCopyBufferLayout{.bytesPerRow = bytesPerRow, .rowsPerImage = h},
+      .buffer = buffer,
+  };
+  const wgpu::Extent3D size{.width = w, .height = h, .depthOrArrayLayers = 1};
+  encoder.CopyTextureToBuffer(&src, &dst, &size);
+  const wgpu::CommandBuffer commands = encoder.Finish();
+  webgpu::g_queue.Submit(1, &commands);
+  const bool bgra = tex->format == wgpu::TextureFormat::BGRA8Unorm || tex->format == wgpu::TextureFormat::BGRA8UnormSrgb;
+  buffer.MapAsync(wgpu::MapMode::Read, 0, bufferDescriptor.size, wgpu::CallbackMode::AllowSpontaneous,
+                  [buffer, w, h, bytesPerRow, path, bgra](wgpu::MapAsyncStatus status, wgpu::StringView) {
+                    if (status != wgpu::MapAsyncStatus::Success) {
+                      return;
+                    }
+                    const auto* bytes = static_cast<const u8*>(buffer.GetConstMappedRange(0, static_cast<size_t>(bytesPerRow) * h));
+                    if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+                      std::fprintf(file, "P6\n%u %u\n255\n", w, h);
+                      std::vector<u8> row(static_cast<size_t>(w) * 3);
+                      for (u32 y = 0; y < h; ++y) {
+                        const u8* in = bytes + static_cast<size_t>(y) * bytesPerRow;
+                        for (u32 x = 0; x < w; ++x) {
+                          row[x * 3 + 0] = in[x * 4 + (bgra ? 2 : 0)];
+                          row[x * 3 + 1] = in[x * 4 + 1];
+                          row[x * 3 + 2] = in[x * 4 + (bgra ? 0 : 2)];
+                        }
+                        std::fwrite(row.data(), 1, row.size(), file);
+                      }
+                      std::fclose(file);
+                      std::fprintf(stderr, "[scaled_tile_cache] dumped %s (%ux%u)\n", path.c_str(), w, h);
+                    }
+                    buffer.Unmap();
+                  });
+}
 
 struct BlockInfo {
   u32 width;
@@ -154,6 +212,9 @@ void queue_build(uintptr_t base, Atlas& atlas) noexcept {
   }
   atlas.needsBuild = false;
   atlas.built = true;
+  if (s_dumpDir != nullptr) {
+    s_dumpAtFrame = now + 300;
+  }
   if (s_log) {
     std::fprintf(stderr, "[scaled_tile_cache] build atlas base=%p %ux%u fmt=%u x%u -> %ux%u, %u tiles pasted\n",
                  reinterpret_cast<const void*>(base), atlas.width, atlas.height, static_cast<unsigned>(atlas.format),
@@ -260,6 +321,23 @@ bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
   for (auto& [base, atlas] : s_atlases) {
     if (key < base || key >= base + atlas.bytes || !atlas.composite) {
       continue;
+    }
+    if (s_dumpDir != nullptr && s_dumpAtFrame != 0 && gfx::current_frame() >= s_dumpAtFrame) {
+      // Atlas once, then the slots 16 times 20 frames apart (animation frames vary).
+      static u32 s_slotDumps = 0;
+      const bool first = s_slotDumps % 16 == 0;
+      s_dumpAtFrame = (++s_slotDumps % 16 == 0) ? 0 : gfx::current_frame() + 20;
+      const std::string prefix = std::string(s_dumpDir) + "/tile_f" + std::to_string(gfx::current_frame());
+      if (first) {
+        dump_texture(atlas.composite, prefix + "_atlas.ppm");
+      }
+      for (auto it = s_slots.lower_bound(base); it != s_slots.end() && it->first < base + atlas.bytes; ++it) {
+        const auto pos = slot_position(base, atlas, it->first, it->second);
+        if (pos) {
+          dump_texture(it->second.scaled, prefix + "_slot_" + std::to_string(pos->first) + "_" +
+                                              std::to_string(pos->second) + ".ppm");
+        }
+      }
     }
     const bool wasBuilt = atlas.built;
     if (atlas.needsBuild) {
