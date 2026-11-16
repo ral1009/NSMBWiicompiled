@@ -28,6 +28,7 @@
 #include "dvd_generated_files.h"
 #include "runtime_config.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -37,6 +38,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+std::filesystem::path NsmbwDataDirPath(); // nsmbw_product.cpp: nsmbw_data next to the exe
 
 namespace nsmbw_layout_patch {
 namespace {
@@ -296,6 +299,195 @@ void ExtendAnimation(Sectioned& a, const std::string& group, const std::map<std:
             sec = std::move(out);
         }
     }
+}
+
+// ---- Adding a file, a texture and a material -----------------------------------------------------
+
+// Inserts a file node as the last entry of directory `dir` ("arc/timg"). U8 nodes are one flat list:
+// a directory node holds its parent's index and the index one past its last descendant, so every
+// directory index and end at or after the insertion point moves up by one.
+void AddArchiveFile(Archive& arc, const std::string& dir, const std::string& name, Bytes data) {
+    const uint32_t count = Get32(arc.header, 8);
+    Bytes nodes(arc.header.begin(), arc.header.begin() + count * 12);
+    Bytes names(arc.header.begin() + count * 12, arc.header.end());
+    // Find the directory: its path is the common prefix of its files.
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (nodes[i * 12] == 1 && i > 0) {
+            const uint32_t end = Get32(nodes, i * 12 + 8);
+            for (uint32_t j = i + 1; j < end; ++j) {
+                if (arc.path[j].rfind(dir + "/", 0) == 0) at = end;
+            }
+        }
+    }
+    Require(at != 0, "archive directory not found");
+    for (uint32_t i = 0; i < count; ++i) {
+        if (nodes[i * 12] != 1) continue;
+        if (i > 0 && Get32(nodes, i * 12 + 4) >= at) Put32(nodes, i * 12 + 4, Get32(nodes, i * 12 + 4) + 1);
+        if (Get32(nodes, i * 12 + 8) >= at) Put32(nodes, i * 12 + 8, Get32(nodes, i * 12 + 8) + 1);
+    }
+    Bytes node(12, 0);
+    Put32(node, 0, uint32_t(names.size())); // type 0 (file) in the top byte, name offset below
+    nodes.insert(nodes.begin() + at * 12, node.begin(), node.end());
+    names.insert(names.end(), name.begin(), name.end());
+    names.push_back(0);
+    arc.header = nodes;
+    arc.header.insert(arc.header.end(), names.begin(), names.end());
+    arc.path.insert(arc.path.begin() + at, dir + "/" + name);
+    arc.data.insert(arc.data.begin() + at, std::move(data));
+}
+
+Bytes& Section(Sectioned& l, const char* magic) {
+    for (Bytes& sec : l.sections) {
+        if (Magic(sec) == magic) return sec;
+    }
+    throw Failure{std::string("missing section ") + magic};
+}
+
+// txl1: count at +8, 8-byte entries from +12 (name offset relative to +12, then 0), then names.
+// Returns the new texture's index.
+uint16_t AddTexture(Sectioned& l, const std::string& name) {
+    Bytes& sec = Section(l, "txl1");
+    const uint16_t count = Get16(sec, 8);
+    std::vector<std::string> list;
+    for (uint16_t i = 0; i < count; ++i) list.push_back(Name(sec, 12 + Get32(sec, 12 + 8 * i), 256));
+    list.push_back(name);
+    Bytes out(12 + 8 * list.size(), 0);
+    std::memcpy(out.data(), "txl1", 4);
+    Put16(out, 8, uint16_t(list.size()));
+    for (size_t i = 0; i < list.size(); ++i) {
+        Put32(out, 12 + 8 * i, uint32_t(out.size() - 12));
+        out.insert(out.end(), list[i].begin(), list[i].end());
+        out.push_back(0);
+    }
+    out.resize((out.size() + 3) & ~size_t(3), 0);
+    Put32(out, 4, uint32_t(out.size()));
+    sec = std::move(out);
+    return uint16_t(list.size() - 1);
+}
+
+// mat1: count at +8, offset table (from the section start) at +12. Appends a copy of material
+// `from` under `name`, with its first texture map pointing at `texture`. Returns its index.
+uint16_t CloneMaterial(Sectioned& l, const std::string& fromName, const std::string& name, uint16_t texture) {
+    Bytes& sec = Section(l, "mat1");
+    const uint16_t count = Get16(sec, 8);
+    std::vector<Bytes> mats;
+    for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t start = Get32(sec, 12 + 4 * i);
+        const uint32_t end = i + 1 < count ? Get32(sec, 12 + 4 * (i + 1)) : uint32_t(sec.size());
+        mats.emplace_back(sec.begin() + start, sec.begin() + end);
+    }
+    const Bytes* from = nullptr;
+    for (const Bytes& m : mats) {
+        if (Name(m, 0, 20) == fromName) from = &m;
+    }
+    Require(from != nullptr && from->size() >= 0x44 && (Get32(*from, 0x3C) & 0xF) >= 1, "material to clone");
+    Bytes copy = *from;
+    PutName(copy, 0, 20, name);
+    Put16(copy, 0x40, texture); // first TexMap: texture index (then wrap S / T)
+    mats.push_back(std::move(copy));
+    Bytes out(12 + 4 * mats.size(), 0);
+    std::memcpy(out.data(), "mat1", 4);
+    Put16(out, 8, uint16_t(mats.size()));
+    for (size_t i = 0; i < mats.size(); ++i) {
+        Put32(out, 12 + 4 * i, uint32_t(out.size()));
+        out.insert(out.end(), mats[i].begin(), mats[i].end());
+    }
+    Put32(out, 4, uint32_t(out.size()));
+    sec = std::move(out);
+    return uint16_t(mats.size() - 1);
+}
+
+// ---- Mario in the character selector -------------------------------------------------------------
+//
+// The Add/Drop Players selector (charaChangeSelectContents_05) has, on each of its two cards
+// (N_CharaP_00 / _01), a picture pane per character it can offer: P_lui, P_kinoB, P_kinoY (150x150
+// RGB5A3 portraits). Mario was never offered. This adds Im_plofileMario_00.tpl, a material per card
+// cloned from Luigi's with that texture, and P_mario_00 / _01 cloned from P_lui_00 / _01 (same
+// place and size, hidden like the others until the game's code shows one). No animation names a
+// portrait pane (only PbuttonShine and the card nodes), so nothing else changes. The code that
+// shows these panes is projects/nsmbw/native/nsmbw_p1_character.cpp.
+
+std::optional<Bytes> ReadFile(const fs::path& path); // below
+
+// A 150x150 RGB5A3 TPL with Mario: nsmbw_data/portraits/Im_plofileMario_00.tpl when present
+// (projects/nsmbw/tools/make_portrait_tpl.py makes one from a PNG), otherwise the disc's own Mario
+// head from the score screen (pointResult.arc, im_mario_00, 128x128) centred on a transparent card.
+constexpr int kPortraitSide = 150;
+constexpr size_t kPortraitPixels = size_t((kPortraitSide + 3) / 4) * ((kPortraitSide + 3) / 4) * 32;
+
+std::optional<Bytes> FindArchiveFile(const Bytes& a, const std::string& name) {
+    const Archive arc = ReadArchive(a);
+    for (size_t i = 0; i < arc.path.size(); ++i) {
+        const size_t slash = arc.path[i].rfind('/');
+        if (arc.path[i].substr(slash == std::string::npos ? 0 : slash + 1) == name) return arc.data[i];
+    }
+    return std::nullopt;
+}
+
+// First image of a TPL: (pixel data offset, width, height, format), or nothing.
+std::optional<std::array<uint32_t, 4>> TplImage(const Bytes& t) {
+    if (t.size() < 0x40 || Get32(t, 0) != 0x0020AF30u || Get32(t, 4) == 0) return std::nullopt;
+    const uint32_t header = Get32(t, Get32(t, 8));
+    if (header + 12 > t.size()) return std::nullopt;
+    return std::array<uint32_t, 4>{Get32(t, header + 8), Get16(t, header + 2), Get16(t, header), Get32(t, header + 4)};
+}
+
+size_t Rgb5a3Index(int x, int y, int w) {
+    return (size_t(y / 4) * ((w + 3) / 4) + size_t(x / 4)) * 32 + size_t((y % 4) * 4 + (x % 4)) * 2;
+}
+
+std::optional<Bytes> MarioPortrait(const Bytes& lui) {
+    const fs::path custom = ::NsmbwDataDirPath() / "portraits" / "Im_plofileMario_00.tpl";
+    if (auto t = ReadFile(custom)) {
+        const auto img = TplImage(*t);
+        if (img && (*img)[1] == kPortraitSide && (*img)[2] == kPortraitSide && (*img)[3] == 5 &&
+            (*img)[0] + kPortraitPixels <= t->size()) {
+            std::fprintf(stderr, "[nsmbw][layout] selector: Mario portrait from %s\n", custom.string().c_str());
+            return t;
+        }
+        std::fprintf(stderr, "[nsmbw][layout] selector: %s is not a 150x150 RGB5A3 TPL\n", custom.string().c_str());
+    }
+    // Disc fallback: Luigi's TPL as the container (same size and format), its pixels replaced.
+    const auto lu = TplImage(lui);
+    const fs::path pr = RuntimeDvd::HostPathFor("/Layout/pointResult/pointResult.arc");
+    const auto prArc = pr.empty() ? std::nullopt : ReadFile(pr);
+    const auto head = prArc ? FindArchiveFile(*prArc, "im_mario_00.tpl") : std::nullopt;
+    const auto hi = head ? TplImage(*head) : std::nullopt;
+    if (!lu || !hi || (*hi)[3] != 5 || (*hi)[1] > kPortraitSide || (*hi)[2] > kPortraitSide) return std::nullopt;
+    Bytes out = lui;
+    std::fill(out.begin() + (*lu)[0], out.begin() + (*lu)[0] + kPortraitPixels, uint8_t(0)); // transparent
+    const int w = int((*hi)[1]), h = int((*hi)[2]);
+    const int ox = (kPortraitSide - w) / 2, oy = kPortraitSide - h - 4; // centred, near the bottom
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const size_t s = (*hi)[0] + Rgb5a3Index(x, y, w), d = (*lu)[0] + Rgb5a3Index(x + ox, y + oy, kPortraitSide);
+            if (s + 1 < head->size()) {
+                out[d] = (*head)[s];
+                out[d + 1] = (*head)[s + 1];
+            }
+        }
+    }
+    std::fprintf(stderr, "[nsmbw][layout] selector: Mario portrait from the disc's score screen\n");
+    return out;
+}
+
+Bytes PatchCharaContents(const Bytes& original) {
+    Archive arc = ReadArchive(original);
+    const auto mario = MarioPortrait(File(arc, "arc/timg/Im_plofileLuiji_00.tpl"));
+    Require(mario.has_value(), "no Mario portrait");
+    AddArchiveFile(arc, "arc/timg", "Im_plofileMario_00.tpl", *mario);
+    Bytes& lytFile = File(arc, "arc/blyt/characterChangeSelectContents_05.brlyt");
+    Sectioned lyt = ReadSectioned(lytFile);
+    const uint16_t texture = AddTexture(lyt, "Im_plofileMario_00.tpl");
+    for (const char* card : {"00", "01"}) {
+        const std::string lui = std::string("P_lui_") + card, mar = std::string("P_mario_") + card;
+        const uint16_t material = CloneMaterial(lyt, lui, mar, texture);
+        CloneSubtree(lyt, lui, {{lui, mar}});
+        Put16(Pane(lyt, mar), 0x5C, material); // pic1: material index
+    }
+    lytFile = WriteSectioned(lyt);
+    return WriteArchive(arc);
 }
 
 // ---- The pause window ---------------------------------------------------------------------------
@@ -582,11 +774,14 @@ bool Generate(const char* dvdPath, const char* outName, Bytes (*patch)(const Byt
 
 bool g_pauseMenuPatched = false;
 bool g_mapMenuPatched = false;
+bool g_selectorHasMario = false;
 
 void GenerateFiles() {
     g_pauseMenuPatched = Generate("/Layout/pauseMenu/pauseMenu.arc", "pauseMenu.arc", &PatchPauseMenu);
     g_mapMenuPatched =
         Generate("/Layout/corseSelectMenu/corseSelectMenu.arc", "corseSelectMenu.arc", &PatchCourseSelectMenu);
+    g_selectorHasMario = Generate("/Layout/charaChangeSelectContents/charaChangeSelectContents.arc",
+                                  "charaChangeSelectContents.arc", &PatchCharaContents);
     // The Wii Remote icon set keeps the game's own bubble: its hop belongs to the remote art.
     if (RuntimeConfigFile::ButtonIcons("auto") != "wii") {
         Generate("/Layout/fukidashiInfo/fukidashiInfo.arc", "fukidashiInfo.arc", &PatchFukidashi);
@@ -615,3 +810,5 @@ void Register() noexcept { RuntimeDvd::SetGeneratedFilesHook(&GenerateFiles); }
 
 extern "C" bool NsmbwPauseMenuHasOptions() { return nsmbw_layout_patch::g_pauseMenuPatched; }
 extern "C" bool NsmbwMapMenuHasOptions() { return nsmbw_layout_patch::g_mapMenuPatched; }
+// The selector layout has P_mario_00 / _01 (nsmbw_p1_character.cpp offers Mario only then).
+extern "C" bool NsmbwSelectorHasMario() { return nsmbw_layout_patch::g_selectorHasMario; }

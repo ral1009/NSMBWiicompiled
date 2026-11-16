@@ -834,6 +834,10 @@ LONG WINAPI DiagVectoredExceptionHandler(EXCEPTION_POINTERS* info) {
 
 } // namespace
 
+// nsmbw_data's path for code that can't include runtime_config.h (it needs toml.hpp, which the
+// native-override target has no include path for): the selector's Mario portrait, nsmbw_layout_patch.cpp.
+std::filesystem::path NsmbwDataDirPath() { return NsmbwDataDir(); }
+
 namespace {
 
 // Fresh-state policy for every NSMBW launch (requested 2026-09-19, after a crashed run left the
