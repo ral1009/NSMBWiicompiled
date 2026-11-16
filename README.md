@@ -1,4 +1,8 @@
-# NSMBWiicompiled
+<p align="center">
+  <img src="NSMBWRECOMPART.png" width="400" alt="New Super Mario Bros. Wiicompiled">
+</p>
+
+---
 
 **New Super Mario Bros. Wii as a native Windows game.** Play in high resolution and widescreen, at up to 180 fps, with keyboard or any gamepad, Dolphin HD texture packs and up to four players. No emulator needed.
 
@@ -99,6 +103,12 @@ Defaults; change them in **Options → Controls**.
 | Options menu | Back + Start (- and +) | F10 |
 | Switch options tab | LB / RB | Q / E |
 
+## Future Plans
+- Support for all game versions beyond the PAL rev 1 disc
+- Lower the system requirements, specifically AVX2
+- Android, Linux, Mac Support
+- Player 1 Character Select
+
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
 - **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Known problems: the end of the Bowser-face wipe leaves the sides uncovered; on the title screen the ground ends before the right edge. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
@@ -131,8 +141,8 @@ You don't need to build anything to play. To build the port yourself or work on 
 ## Credits
 - [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the Mario Kart Wii recompilation this port is built on
 - [aurora](https://github.com/encounter/aurora), which draws the game's graphics on modern GPUs
-- The [NSMBW decompilation project](https://github.com/NSMBW-Community/NSMBW-Decomp), used as a reference
 - [Dolphin](https://github.com/dolphin-emu/dolphin)'s `DolphinTool`, which extracts your disc image (GPLv2+)
 - Button prompt art: [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0)
+- Repository art (Will be added to game): [POOTERMAN](https://www.deviantart.com/pooterman)
 
 This is a student project, made with AI assistance. Licensed under [GPL-3.0](LICENSE); third-party licenses are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
