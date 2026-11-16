@@ -1455,6 +1455,57 @@ What's next:
 - Check the remaining features on USA (F10 fonts, pause/map buttons, full save, French/Spanish, HD pack, later worlds, 180 FPS).
 - Run a compat DLL on a real older CPU or under Intel SDE.
 
+## 2026-11-15 — 180 FPS interpolation stuck at 40 fps: cause found and fixed
+
+What I did:
+- Developer report: with 180 FPS interpolation at 528p, the game drops to 40 fps and the log repeats `Presenter fell behind; dropped 140/147 stale presentation jobs` every second. The queue holds 9 jobs (`enqueue_presentations`, `aurora.cpp`), 3 per game frame at 180, and an overflow clears the 7 waiting, so 140-147 dropped of 180 made = about 40 shown.
+- Ruled out with 90 s portable runs (each held 178-180 fps): window size (640x480 and borderless 2560x1440), render scale (4K behaved like 528p), the window being covered by a topmost window, the HD pack. The game thread had 66-96 % spare time throughout.
+- Reproduced in a 200 s borderless run with the HD pack: about 140 s in, on the world map, it fell to exactly 40.0 fps and stayed there. In that state `AURORA_LOG_WORKER_TIMING` shows acquire 0.02 ms and Present 0.27 ms but **schedule wait 24.6 ms average, 44 ms max**: the presenter is not slow, it is sleeping until deadlines that are too far in the future.
+- Added `AURORA_LOG_PRESENT_ANCHOR=1` (`encode_sealed_frame`): logs a group's lead over its own anchor whenever it changes.
+
+What broke / what I didn't expect:
+- Before the collapse, every run shows a slow ramp on the map: the presenter's wait for the GPU (acquire) climbs from 0.02 ms to about 5 ms over ~20-30 s, then sits at the 5.5 ms budget. Timed GPU work is flat (~75 ms per second, `AURORA_GPU_TIMING`), and Immediate present mode ramps the same way. The display here runs at 179.953 Hz (`DwmGetCompositionTimingInfo`: 10000000/55570), the game paces 180.0 presents/s: 0.047 extra frames/s, one 5.56 ms frame every ~21 s, which matches the ramp rate (~0.2 ms/s measured, 0.26 predicted). Once saturated, the frame worker is held up and a group occasionally finishes encoding after its own anchor.
+
+What I learned:
+- Root cause (the 40 fps lock): `encode_sealed_frame` slides a late group's anchor forward by whole periods, and the cursor `s_lastGroupAnchor` then forces every later group to `last + interval`. The cursor only advances, so a slide is never undone: the whole schedule stays that many periods ahead for the rest of the session. Evidence: the anchor log showed lead 0, then one slide to 16.67 ms (1 period) after a late group (`encode done +4.25 ms vs own anchor`), and the lead stayed at 1.0 period for the remaining ~150 s with no further line.
+- Why 2 periods locks it: a group's first slot is due ~14 ms after it is enqueued plus the lead. With 1 period of lead, 5 jobs are still waiting when the next group of 3 arrives (8 <= 9, fine). With 2 periods, 8 are waiting (11 > 9), so every arrival clears the queue and the presenter sleeps toward deadlines it is never allowed to reach. Arithmetic, not yet logged at the moment of a 2-period slide.
+- Two other game instances (a USA build and another session's package test) were running during some of these runs, so the GPU timings are not clean. The pacing logic itself does not depend on that.
+
+- Fix (same day): the cursor now lets a lead decay. A group whose own anchor is earlier may start up to 1/24 period (~0.7 ms) before `last + interval`, so one period of lead is gone after ~24 groups (0.4 s); groups still never share an anchor. A 240 s run with the fix: 11 slides to 1.0 period, each logged back down to 0.0 within ~0.4 s, never above 1.0, every 2 s window 179.9-180 fps, one drop of 7 jobs.
+- Trade-off seen in that run: slides happen more often than before (11 vs 1 in a similar run), because a lead no longer stays around to absorb the next late group. Each slide holds one frame for a period; not checked on screen whether that is visible.
+
+- Frame interpolation "Match display" (same day, developer's request): Config.toml `frame_interpolation_fps = 1`, F10 and ImGui pickers. aurora caches the window's display refresh (`aurora_get_display_refresh_hz`, `window.cpp`): SDL's display mode, replaced on Windows by DWM's composition rate when they agree within 1 Hz, because Windows modes report whole hertz. On each paced frame `vi.cpp` (`MatchDisplayRateTick`) picks slots = round(refresh / 60) and, within 0.5 % of that multiple, stretches the 60 Hz game frame to slots / refresh (16671 us here), so presents equal the refresh exactly; otherwise it uses the multiple below the refresh with the clock unchanged (144 Hz -> 120). The VI interval is now kept in nanoseconds. 240 FPS is offered again (the config reader used to rewrite 240 to 180).
+- Match display test (240 s, borderless 2560x1440, 528p, HD pack): log `179.953 Hz (DWM 179.953, display mode 179.959) -> 180 fps interpolation, game frame 16671.000 us`; 0 slides (11 with fixed 180), fps 178.9-180, one drop of 7 jobs, audio backlog 0.002 s.
+- **Correction:** the creep is not the refresh mismatch. With presents matched to the display it still ramps the same way (acquire 0.02 -> ~1.8 ms, then Present 0.2 -> ~3.8 ms over ~30 s on the map, back to 0.2 after a scene change). The ~0.2 ms/s agreement above was a coincidence. Ruled out since: live textures and texture caches (`AURORA_LOG_TEXTURE_STATS`, flat or cycling), GPU work (flat), GPU clock (flat ~1150-1170 MHz across a ramp), present mode (Immediate ramps too). With the lead-decay fix it no longer costs frames, only up to ~5 ms of extra latency. Cause unknown.
+- DWM's reported rate varied between runs (179.953 in most, 180.002 in two), so the matched interval follows whatever DWM reports when the window opens or changes display.
+- 240 FPS test (150 s, 2560x1440 borderless, scale 4.09 in the config): presented 178-181 fps (the display's limit), 8821 jobs dropped (~60/s), 17 slides, game thread 56-76 % idle, timed GPU work 113 ms/s. The log only shows aurora's initial "scale 1" line, and the GPU-timing labels are logical sizes, so the 4K render scale is unconfirmed; the screenshot's geometry edges look smooth.
+
+What's next:
+- The developer plays with Match display and reports hitches or latency.
+- Find the creep: PresentMon (present mode composed vs independent flip, display latency per present), and whether it happens at 120 or with interpolation off.
+
+## 2026-11-15 — Render scale not kept between launches (fixed); it also explained the missing HD tiles
+
+What I did:
+- **Render scale not remembered.** `runtime_config.h` `IsSupportedResolutionMultiplier` accepts only 0, 1, 1.5, 2, 3, 4, 6, 8 when Config.toml is read (unchanged since `ec226e8`). Since `31d39f4` (2026-11-07, presets by height) the menu saves 720p = 1.3636, 1080p = 2.0455, 1440p = 2.7273, 4K = 4.0909, 5K/6K likewise, so every preset except Auto and 528p is written correctly and rejected on the next launch, which falls back to 1.0. Evidence: the same portable copy with `resolution_multiplier = 4.09091` rendered `native 640x528` passes (`AURORA_GPU_TIMING`); with `NSMBW_RES_SCALE=4.09091` the same config gave `native 2618x2160`. Consequence: the 240 FPS "4K" test above actually ran at 528p.
+- **HD pack missing on ? blocks, bricks and placed coins in levels.** These are animated tiles; their pack art is the 32x32 format-5 frames in `World\Blocks\{Yellow,Blue,Orange}` and `World\Bricks`. Old builds run from scratch copies (same save, scale 4, their own pack): 10/28 (`fde1606`) shows the HD art; v0.2.2 (`32e8f44`, 11/07) and current looked like the original 32x32 art upscaled. Aurora commits in that range: `cd62742`, `e9039fb`, `65ad310`.
+- **Render-scale fix:** `IsSupportedResolutionMultiplier` accepts 0 or any finite 1-8. A second cap hid behind it: `nsmbw_product.cpp` pulled any saved scale above 4.0 (the old "4x" preset) back to 4.0 at startup, so a saved 4K would have become 4.0 / "Custom"; the cap is now the 4K value (2160 / 528, +0.01 for the 6-digit rounding in Config.toml). 5K/6K are still pulled back to 4K at launch, as that comment intended. Verified on a portable copy without `NSMBW_RES_SCALE`: saved 4.09091 rendered `native 2618x2160`, saved 2.72727 (1440p) rendered `native 1745x1440`, and Config.toml kept both values.
+- Added `AURORA_LOG_REPLACEMENT_LOOKUPS=1` (`texture_replacement.cpp` `find_replacement`): each pack lookup's outcome once per key (cached / loaded now / no pack entry / failed earlier) and the size handed back.
+
+What broke / what I didn't expect:
+- **Three wrong turns, all from screenshots judged by eye.** (1) "Removing the preload lists brings the HD tiles back": a clean A/B (no lists at all vs the seed list) looked the same in 1-1, and the lookup log shows the 17 tile frames resolving to their 256x256 pack textures in both (`loaded now` then `cached`, or `cached`). The preload is not the cause. (2) Building with the 10/28 `scaled_tile_cache.cpp` (before `e9039fb`) looked HD in one run, but three repeat runs of the current file looked the same as it, and `e9039fb`'s only behaviour change (dropping an atlas whose tile copies change scale) never logged a drop. The ? block's "?" animates, so crops from different frames differ in shape; judging HD vs original from that shape is unreliable.
+
+What I learned:
+- **The HD-tile report is the render-scale bug.** ? blocks, bricks and placed coins are animated tiles: each frame the game draws the tile's animation frame (HD pack art, bound as 256x256 - `NSMBW_LOG_TILE_FRAME_BIND`) into a 32x32 area of the frame and copies it into the tileset atlas with a strided `GXCopyTex` (`NSMBW_LOG_SMALL_COPIES`: six slots in 1-1, the blue coin, brick and ? block at (480/512/544, 32), coins at (960, 0/32) and (992, 0)). That copy is made at the render scale, so at 528p it is 32x32 and the HD art is squeezed back to the original size; sprites sample the HD texture directly and stay HD at any scale. Dumped slot copies (`AURORA_DUMP_TILE_ATLAS`): the ? block at 1x is 32x32 with square rivets and a stair-stepped "?", at 4x 128x128 with round rivets and clean 45-degree chamfers - the pack's art, which is itself drawn in a pixel style. Since `31d39f4` (11-07) every launch ran at 528p whatever the menu said, so the tiles looked un-HD from v0.2.2 on; with the render-scale fix they are HD again at any scale above native.
+- The earlier "not caused by the render-scale bug" was wrong: I judged the pack's pixel-style "?" as original art. The atlas dump with and without `e9039fb`'s scale drop was identical, and the preload made no difference, so neither is involved.
+- Coverage of this pack (not a regression): the ? block strip has 20 frames, 16 in the pack (`World\Blocks\Yellow`); 4 have no entry. The brick animation frames (RGB5A3) have no entry either - the pack's one `World\Bricks` file is format 14 - so animated bricks stay original art even at 4x. The 10/28 build loaded the same 16 Yellow frames.
+- At 528p these tiles cannot show HD art in any build: the copy is native size by design.
+- The pack's tile frames are 256x256 BC7 DDS (DX10 header, 65,684 bytes).
+
+What's next:
+- The developer checks ? blocks and coins at their usual render scale after a restart.
+
+
 ## 2026-11-15 — Player 1 character: every write found (investigation, no code yet)
 
 What I did:

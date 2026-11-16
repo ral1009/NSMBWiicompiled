@@ -879,6 +879,18 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: `nsmbw_launcher.cpp` clears the variable after reading it. Verified: both compat DLLs from the zip reach the opening movie with the switch set.
 - Scope: General.
 
+### 180 FPS interpolation locked at 40 fps after a while
+- Symptom: 180 FPS interpolation (528p, any window size) dropped to exactly 40 fps and stayed there; the log repeated `Presenter fell behind; dropped 140/147 stale presentation jobs` every second (developer report; reproduced ~140 s into a 200 s run on the world map). In that state the presenter waited 24.6 ms on average for each slot's deadline while acquire and Present took under 0.3 ms.
+- Root cause: `encode_sealed_frame` (`aurora-main/lib/aurora.cpp`) slides a group that finished encoding after its anchor forward by whole periods, and the cursor `s_lastGroupAnchor` forced every later group to `last + interval`, so the schedule could only get further ahead, never catch up. With 2 periods of lead, 8 jobs were waiting when each group of 3 arrived, over the presenter queue's 9, so every arrival cleared the queue. The late groups come from the presenter saturating on a 179.953 Hz display at 180.0 presents/s (see Open items).
+- Fix: a group whose own anchor is earlier may start up to 1/24 period before `last + interval`, so a lead of one period decays in ~24 groups (0.4 s). `AURORA_LOG_PRESENT_ANCHOR=1` logs the lead. Verified: 240 s run, 11 slides, each back to 0 within ~0.4 s, lead never above 1.0 period, every 2 s window 179.9-180 fps, one drop of 7 jobs (before: one slide stuck at 1.0 period for the rest of the run, and the long run locked at 40).
+- Scope: General (aurora presenter; any title using frame interpolation).
+
+### Fixed 180 FPS presented faster than the display
+- Symptom: at 180 FPS on a 179.953 Hz display, frame groups slid one period ~11 times per 240 s on the world map (held frames), and those slides fed the 40 fps lock above.
+- Root cause: the VI clock is 16666 us (60.002 Hz), so 180 FPS presents 180.007/s, faster than the display; together with the presenter creep (Open items) the presenter runs out of time and groups finish late.
+- Fix: new interpolation option "Match display" (`frame_interpolation_fps = 1`): slots from the display refresh (`aurora_get_display_refresh_hz`, DWM's exact rate on Windows), and the 60 Hz game frame stretched to slots / refresh (`vi.cpp` `MatchDisplayRateTick`). Verified: 240 s, 0 slides, 178.9-180 fps. The fixed 120/180/240 options are unchanged.
+- Scope: General.
+
 ### World-map player always drawn as Mario
 - Symptom: with player 1 set to another character (`NSMBW_DEBUG_P1_CHARACTER=1`), the map HUD and the level showed Luigi, but the map walked Mario, even in a map scene built afterwards (`build_nsmbw/shots/p1luigi_level_0.png`).
 - Root cause: the world-map player's constructor (d_basesNP 0x809027C0) builds its model manager (`dPyMdlMng_c`, 0x800D6DB0) with model type 0, i.e. Mario, whoever player 1 is; the original never lets player 1 be anyone else.
@@ -934,6 +946,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: player 1 starts not joined for every count, the screen runs `count` selectors from selector 0 (selector 1 for one player), and a structural copy of 0x807A0170 also places selector 0. Verified: 2, 3 and 4 players show two, three and four cards side by side (`two7_1.png`, `three1_1.png`, `four1_1.png`), and a 2-player game reaches 1-1 as Mario and Luigi (`two10_1.png`).
 - Scope: NSMBW-specific.
 
+### Render-scale setting not kept between launches
+- Symptom: any F10 render scale except Auto and 528p came back as 528p on the next launch (developer report).
+- Root cause: `runtime_config.h` `IsSupportedResolutionMultiplier` accepted only 0, 1, 1.5, 2, 3, 4, 6, 8 (unchanged since the first commit); the presets became heights on 2026-11-07 (`31d39f4`: 1080p = 2.0455, 4K = 4.0909, ...), so they were saved and then rejected on load. Behind it, `nsmbw_product.cpp` capped a saved scale above 4.0 to 4.0 at startup, which would have turned 4K into 4.0.
+- Fix: accept 0 or any finite 1-8; the startup cap is now the 4K value (2160 / 528). Verified: saved 4K rendered 2618x2160 and 1440p 1745x1440, values kept in Config.toml.
+- Also explains the second report, "HD pack not applied to ? blocks, bricks and coins in levels": those are animated tiles, copied into the tileset atlas at the render scale, so at 528p the HD art is squeezed to 32x32. Slot dumps: ? block 32x32 with square rivets at 1x, 128x128 with the pack's round rivets at 4x. Animated bricks have no pack entry for their format (pack limitation, not ours).
+- Scope: General (config reader; the cap is NSMBW product code).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -975,5 +994,7 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - `vi.cpp` `WriteGuestStateLocked` writes Mario Kart Wii addresses into NSMBW memory every retrace (initialized flag 0x80386B38, TV format, render/XFB sizes, frame-buffer pointers) and gates the post-retrace callback on MKW's `sSystem` (0x80386F60). Harmless in practice so far (NSMBW registers no post-retrace callback), but they overwrite whatever NSMBW keeps there. Mapped per version on 2026-11-14 so USA behaves as PAL; not removed.
 - USA (E1) build: plays title, map and levels (2026-11-15). Not yet checked there: French/Spanish text, F10 menu fonts, the extra pause/map buttons, full save, HD pack, BCA disc check, later worlds, 180 FPS.
 - DLL split and launcher setup (2026-11-14): compat DLL, the CPU-too-old message boxes, a release build of the launcher, `package_nsmbw.ps1` and the setup window at other DPI settings not yet run.
+- Animated tiles at 528p (2026-11-15): ? blocks and coins copied into the tileset atlas at the render scale can't show HD-pack art at native resolution (32x32 copy). By design; HD at any higher scale.
+- Presenter creep on the world map (2026-11-15): the presenter's GPU wait climbs 0.02 -> ~1.8 ms and Present 0.2 -> ~3.8 ms over ~30 s, then stays until a scene change. Not the refresh mismatch (it ramps with Match display too), not textures/caches, GPU work, GPU clock or present mode. With fixed 180 FPS it makes groups late (11 one-period slides in 240 s); with Match display there were none. Cause unknown.
 - Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.
 - Player 1 character (2026-11-15): not yet seen - a file saved with a non-Mario player 1 started from the title, the other players' map models in multiplayer (0x808EB7D0), the custom-TPL Mario portrait in the selector, and USA with the selector overrides. The selector voices (0x80771090, 0x807A1B60) are checked by log only, not by ear; Free Mode / Coin Battle with the "1" voice skip are untested.
