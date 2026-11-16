@@ -742,18 +742,27 @@ uint32_t ListBitInverse(uint32_t bit) { return ListBit(bit); }
 // "3.1@120+4=8" taps screen-left 120 frames into the first world-map visit, and
 // "5.2@60+600=104/40:20" holds right (0x4) and 2 (0x100) for 20 of every 40 frames - the pulse
 // applies to all the bits of that entry - in the second course visit (the title is visit 1).
+// An entry starting "p<N>:" is player N's instead (e.g. "p2:3.1@300+4=100" presses 2 for player 2);
+// a player named there counts as connected (NsmbwControlsPlayerCount), so the game reads them.
 struct TestInput {
+    uint32_t player = 0; // channel
     uint32_t scene = 0, visit = 0;
     int start = 0, frames = 0, period = 0, on = 0;
     uint32_t bits = 0;
 };
-uint32_t TestInputBits() {
+const std::vector<TestInput>& TestInputScript() {
     static const std::vector<TestInput> script = [] {
         std::vector<TestInput> v;
         const char* s = std::getenv("NSMBW_TEST_INPUT");
         while (s && *s) {
             TestInput t;
             int used = 0;
+            unsigned player = 0;
+            if (std::sscanf(s, "p%u:%n", &player, &used) == 1 && player >= 1 && player <= 4) {
+                t.player = player - 1;
+                s += used;
+            }
+            used = 0;
             if (std::sscanf(s, "%u.%u@%d+%d=%x%n", &t.scene, &t.visit, &t.start, &t.frames, &t.bits, &used) < 5) break;
             s += used;
             if (*s == '/') {
@@ -765,18 +774,31 @@ uint32_t TestInputBits() {
         }
         return v;
     }();
+    return script;
+}
+uint32_t TestInputPlayers() { // 1 + the highest scripted channel, 0 when there is no script
+    uint32_t n = 0;
+    for (const auto& t : TestInputScript()) n = std::max(n, t.player + 1);
+    return n;
+}
+// Called once per channel per frame; the scene / frame clock advances on channel 0's call.
+uint32_t TestInputBits(uint32_t chan) {
+    const auto& script = TestInputScript();
     if (script.empty()) return 0;
     static uint32_t scene = 0xFFFFFFFFu;
     static std::map<uint32_t, uint32_t> visits;
     static int frame = 0;
-    if (g_nsmbwCurrentSceneProfile != scene) {
-        scene = g_nsmbwCurrentSceneProfile;
-        ++visits[scene];
-        frame = 0;
+    if (chan == 0) {
+        if (g_nsmbwCurrentSceneProfile != scene) {
+            scene = g_nsmbwCurrentSceneProfile;
+            ++visits[scene];
+            frame = 0;
+        }
+        ++frame;
     }
-    ++frame;
     uint32_t bits = 0;
     for (const auto& t : script) {
+        if (t.player != chan) continue;
         if (t.scene != scene || t.visit != visits[scene] || frame < t.start || frame >= t.start + t.frames) continue;
         if (t.period > 0 && (frame - t.start) % t.period >= t.on) continue;
         bits |= t.bits;
@@ -1262,7 +1284,7 @@ extern "C" uint32_t NsmbwControlsPlayerCount() {
     for (uint32_t p = 0; p < kPlayers; ++p) {
         if (devices[p].keyboard || devices[p].pad != nullptr) count = p + 1;
     }
-    return count;
+    return std::max(count, TestInputPlayers()); // NSMBW_TEST_INPUT's "p<N>:" players
 }
 
 extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
@@ -1331,10 +1353,8 @@ extern "C" uint32_t NsmbwControlsReadWpad(uint32_t chan) {
         }
         if (down) out |= defs[i].wpad;
     }
-    if (chan == 0) {
-        out |= TestInputBits();
-        DumpHintList();
-    }
+    out |= TestInputBits(chan);
+    if (chan == 0) DumpHintList();
     const uint32_t actions = out;
     const bool hintList = c == Context::Menu && HintListOpen();
     if (hintList) out = ListBit(out);
