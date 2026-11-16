@@ -766,7 +766,7 @@ What I did:
   - 0x8077AA10 picks the button text: message 7 "Quick Save" unless beaten, then 4 "Save".
   - 0x8092FC30 is the menu's item-selected handler. Unbeaten, it enters `dCourseSelectManager_c::StateID_InterruptSave...` (Nintendo's name for quick save: suspend and quit to title); beaten, it enters `StateID_Save...`.
   - Other readers of that bit are the file-select stars (0x80796080 / 0x80796250 / 0x8077D9A0) and the routine that sets it after W8 (0x801028D0). None of them gates saving.
-- **Investigation: player 1 character.** Each player's character is `daPyMng_c::mPlayerType[4]` (0x80355160, u32 per player: 0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad); the Add/Drop Players screen is the `dCharacterChangeSelect*` classes in d_basesNP. Experiment: a new env switch `NSMBW_DEBUG_P1_CHARACTER=<0..3>` writes `mPlayerType[0]` while on the world map only. With `=1`, 1-1 loaded with Luigi as player 1: model, HUD head icon and his own life count (screenshot `p1luigi_lvl4_0.png`).
+- **Investigation: player 1 character.** Each player's character is `daPyMng_c::mPlayerType[4]` (0x80355160, u32 per player: 0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad - *corrected 2026-11-15: 2 is Blue Toad and 3 Yellow Toad; NSMBW-Decomp's enum names swap them*); the Add/Drop Players screen is the `dCharacterChangeSelect*` classes in d_basesNP. Experiment: a new env switch `NSMBW_DEBUG_P1_CHARACTER=<0..3>` writes `mPlayerType[0]` while on the world map only. With `=1`, 1-1 loaded with Luigi as player 1: model, HUD head icon and his own life count (screenshot `p1luigi_lvl4_0.png`).
 
 What broke / what I didn't expect:
 - I first read `func_800B61F0`'s branch backwards and fed acc.z. That path is the extension (nunchuk) one; the log showed acc.z moving and the angle not.
@@ -1454,3 +1454,144 @@ What's next:
 - The developer checks the map-menu Options button on screen.
 - Check the remaining features on USA (F10 fonts, pause/map buttons, full save, French/Spanish, HD pack, later worlds, 180 FPS).
 - Run a compat DLL on a real older CPU or under Intel SDE.
+
+## 2026-11-15 — Player 1 character: every write found (investigation, no code yet)
+
+What I did:
+- Traced everything that writes `daPyMng_c::mPlayerType[4]` (0x80355160), the table of which character each player slot plays, as groundwork for an F10 "player 1 character" option. The plan and the full table of writers are in docs/futureplans.md section 7a.
+- The DOL side was easy (NSMBW-Decomp's `syms.txt` names it). The Add/Drop Players screen lives in `d_basesNP.rel`, which has no symbols, so two small scripts did the mapping:
+  - a relocation scanner: a REL stores, for every instruction that refers to a DOL address, a *relocation* entry (the loader patches the address in at link time). Listing every relocation that points at 0x80355150-0x803551A0 gives every REL function that touches the player tables, without reading 1.8 MB of code;
+  - a class labeller: each class's state table (pointers to its state functions) sits right before its `Class_c::StateID_Name` strings in the REL's data, so a state function's pointer location names its class. That labelled `dCharacterChangeSelectBase_c` (the selector), `dNumberOfPeopleChange_c` (the Add/Drop screen that owns the selectors) and ~20 others.
+  - Both scripts were in the session's temporary folder, not the repo.
+- Read the save manager's two copy loops, the five writers and the selector's scroll and "taken" logic in the translated code (`build/nsmbw*/functions/func_<addr>.cpp`), and read the constant tables they index straight from `NSMBW-Decomp/original/d_basesNP.rel`.
+- Checked the disc and the HD pack for a Mario portrait in the selector's style: there is none (the selector only ever shows Luigi and the two Toads). Made candidate images from an upscaled Mario Kart Wii mugshot (Real-ESRGAN's anime model, then reframed to match Luigi's portrait); which image to use is not decided.
+
+What broke / what I didn't expect:
+- My first pass only matched the table's exact address and decided the Add/Drop screen never writes it. It does, through a register that holds the table's base with an offset in the store (`FlatWriteRam32(r6, ...)` after `r6 = 0x80350000 + 20832`), which my "write through the base register" count missed. Reading the loop bodies found the commit (0x807A0BF0) and the slot reset (0x807714C0; *corrected later the same day: it runs when a slot's selector starts, not on cancel*).
+- Two of the relevant helpers are inlined into their callers (0x800BB180 into the `dInfo_c` constructor and 0x807A0DB0; 0x8076FE60 / 0x8076FE40 into 0x807702A0 / 0x80770D80), so overriding them at their own address would not change those call sites (CLAUDE.md's second bug class).
+
+What I learned:
+- The save already keeps the table (it stores, per character, the slot that plays it), so a changed player 1 survives save and reload without new code.
+- Player 1 turns back into Mario because `dNumberOfPeopleChange_c` (0x807A1E80) resets the whole table to Mario/Luigi/Yellow/Blue when a file is started from game setup (scene 10), and a slot's selector starts it on a fixed default (0x807714C0). Player 1 never gets a selector of its own: the reset marks slot 0 as already joined.
+- Nobody but player 1 can ever be Mario: the selector cycles positions 1-3 only, and position 0 (Mario) has no portrait in `charaChangeSelectContents.arc`.
+- Not verified by running: the meaning of the `+0x6C8 == 1` condition in 0x807A1E80 (probably "one player"), and what the selector shows if a slot is handed Mario. Everything here is PAL; the USA REL has not been compared.
+
+What's next:
+- On the developer's go-ahead: the F10 option and the overrides in futureplans 7a steps 1-3, tested with `NSMBW_WATCH_WRITE=80355160`; then decide on step 4 (Mario for players 2-4, needs a fourth portrait).
+
+## 2026-11-15 — Player 1 can play any character (F10 > Advanced)
+
+What I did:
+- New option "Player 1 character" (F10 > Advanced; Mario, Luigi, Blue Toad, Yellow Toad), changeable on the world map. It writes `daPyMng_c::mPlayerType[0]` and swaps with the slot that had that character. The save already stores that table, so the choice is per game file. Design and open points: docs/futureplans.md 7a.
+- The investigation entry above planned five code overrides. Reading every reader of the selector's constants (through the REL's relocation table) showed the Add/Drop Players code only knows characters through five constant tables in d_basesNP's read-only data, all loaded from memory at run time. So `nsmbw_p1_character.cpp` rewrites four of them every frame with Mario and player 1's character swapped (a *transposition*: a swap of two values that leaves the others alone). The game's own code then keeps player 1's character at file start, starts no other slot on it, and offers Mario in its place. No code override was needed for steps 2-3.
+- Two overrides, both structural copies with marked `EDIT` lines:
+  - 0x80773840, the selector card's lives cache: the card standing in for Mario shows Mario's lives.
+  - 0x809027C0, the world-map player's constructor: it always built Mario's model (model type 0). It now passes player 1's character.
+- The selector card's picture: `nsmbw_mario_portrait.cpp` overwrites player 1's character's portrait with a Mario picture right after the game reads `charaChangeSelectContents.arc`. Same size and format, so every pointer into the archive stays valid; the original is put back when player 1 changes.
+  - To know when and where the archive was read, the shared DVD layer got a read notification, `RuntimeDvd::SetReadObserver` (`dvd.cpp`, `dvd_generated_files.h`).
+  - The picture comes from `nsmbw_data/portraits/Im_plofileMario_00.tpl`, made from any PNG with the new `projects/nsmbw/tools/make_portrait_tpl.py`. Failing that, the disc's own Mario head from the score screen is used.
+- `NSMBW_DEBUG_P1_CHARACTER` now calls the option's setter once on the first map; `NSMBW_LOG_P1_CHARACTER=1` logs the swaps and patches. `nsmbw_product.cpp` exposes `NsmbwDataDirPath()` for native files.
+
+What broke / what I didn't expect:
+- **The Toads' numbers are the other way round from NSMBW-Decomp's `PLAYER_TYPE_e`.** Setting 2 ("Yellow Toad" there) gave Blue Toad in the level and on the HUD. The decomp's own code agrees with the game: its map HUD table maps 2 to `P_BkinoFace`, and the selector card that shows lives of 2 makes `P_kinoB` visible (pane slot card+4; the names are fetched in the order lui, kinoB, kinoY). The menu labels and the portrait mapping were fixed, and the investigation entry above is corrected. Trust the decomp's code over its enum names.
+- **The map player stayed Mario** while the HUD showed Luigi, even in a freshly built map scene. The world-map player's constructor hardcodes model type 0.
+  - My first fix took the model type from the REL table 0x8093CDF0 ({0,1,3,2}), which the other map players use. Blue Toad then walked the map as Yellow Toad: that table maps a slot to its default character, it does not map a character to a model. The model type is the character number itself.
+- **A build error:** `runtime_config.h` includes `toml.hpp`, which the native-override target has no include path for. That's why the data folder now comes through `NsmbwDataDirPath()`.
+
+What I learned:
+- Verified in game (portable copy, self-test with `NSMBW_AUTO_PRESS_STOP_IN_LEVEL=1`, so the player dies and the map is rebuilt):
+  - Each of Luigi, Blue Toad and Yellow Toad set on the map gave that character in 1-1, with its own HUD head and lives (Luigi x04, Blue x05, Yellow x05).
+  - The next map showed that character's model and head.
+  - Shots: `build_nsmbw/shots/p1luigi3_map2_0.png`, `p1c2_*`, `p1c3_*`.
+  - The portrait patch found the archive at file select (scene 10) and on every map, and logged the right picture (Luigi -> `Im_plofileLuiji_00`, 2 -> `Im_plofileKinoB_00`), from both the disc fallback and a made TPL.
+- `make_portrait_tpl.py`'s XXH64 matches the reference test vectors. Hashing the disc's three portraits reproduces the three file names in the developer's HD pack exactly (`tex1_150x150_4b19253008e5a918_5` = Luigi, etc.), so the HD name it prints for a new portrait is the one the loader will look for.
+- USA: the five tables and both overridden functions are at the same addresses with identical bytes in the USA REL. The DOL's player tables are -0x300, mapped by `NSMBW_VA`. The USA DLL compiled; it did not link because a USA game was running from `build_nsmbw-E1`.
+- Not verified:
+  - the Add/Drop Players selector itself (needs a second player): Mario offered in player 1's character's place, with his portrait and lives;
+  - the F10 row on screen;
+  - switching back to Mario;
+  - starting a file whose save has a non-Mario player 1;
+  - the other players' map models in multiplayer (0x808EB7D0 indexes the slot -> default character table by its actor parameter);
+  - the USA build running.
+
+What's next:
+- The developer: check the F10 row, then Add/Drop Players with a second controller, and save, quit and reload with Luigi.
+- Choose the Mario portrait; install it with `make_portrait_tpl.py --hd-pack`.
+- Link and run the USA build once its running game is closed.
+- (Later the same day) Developer report: changing the character in F10 did not change the map. The constructor fix only applies to a map player built afterwards. Now the map reloads itself after a change: `NsmbwP1CharacterTick` remembers the model type the constructor used, and when it differs from player 1 on the map, F10 has been closed for 30 frames and no scene change is pending, it calls `0x809218B0` (dScGameOver_c's "back to the map": `setNextScene(WORLD_MAP, 0x80102B50())`, the parameter built from `dInfo_c`'s current world and node). The first test showed nothing because the test switch fired on the map's first frame, before the map player existed (logged `model 1`); it now waits 300 frames. Verified: the map reloaded and showed Luigi on the same node. The USA build was linked (its game had already been closed) but not run.
+
+## 2026-11-15 — Mario in the Add/Drop Players selector (four characters)
+
+What I did:
+- The developer asked for a character select for player 1 even after choosing 1 player, using the game's own Add/Drop screen. Stage 1, done: that screen's carousel now offers all four characters. Design: docs/futureplans.md 7a.
+- Layout (`nsmbw_layout_patch.cpp`, `PatchCharaContents`), generated at boot like the pause menu:
+  - adds `Im_plofileMario_00.tpl` to `charaChangeSelectContents.arc` (new: inserting a node into a U8 archive, `AddArchiveFile`);
+  - adds a texture-list entry (`AddTexture`) and two materials cloned from Luigi's (`CloneMaterial`);
+  - adds `P_mario_00` / `_01` cloned from `P_lui_00` / `_01`.
+  Verified by parsing the generated archive: texture 5, materials 14 / 15, panes using them, a 150x150 RGB5A3 picture.
+- Code, in `nsmbw_p1_character.cpp`:
+  - native `0x8076FD70` (position -> card value; Mario is 7, greyed 10);
+  - copies of `0x807708E0` (Mario taken check; scroll to position 0), `0x807736B0` (show Mario's pane and lives for his value), `0x8076E600` and `0x8076EA00` (arrow ends).
+- Retired from the first version, because Mario now has his own position and card:
+  - swapping the position tables;
+  - the lives-cache override (0x80773840);
+  - overwriting a portrait in memory, and the DVD read notification it needed (`dvd.cpp` and `dvd_generated_files.h` are back to their committed state).
+  What stays swapped: the file-start reset, each slot's start character, and the slot -> start position table.
+- `NSMBW_TEST_INPUT` entries can start with `p<N>:` to script players 2-4; a scripted player counts as connected (`nsmbw_controls.cpp`).
+
+What broke / what I didn't expect:
+- The first design (swap Mario and player 1's character in the position tables) was only half right. The selector's confirm code (0x807708E0) and its greyed-out check (0x8076FD70) map positions to characters by hand, not through the tables, so a Mario sitting in Luigi's place would have been judged "Luigi, taken" and could not be chosen. Replaced by the four-position carousel.
+- Scripting player 2: the first runs confirmed player 2 at once.
+  - A logged confirm (now permanent under `NSMBW_LOG_P1_CHARACTER`) moved by exactly 120 frames when the "join" tap did, so it was that tap.
+  - A scripted remote is connected from the start, so its selector opens without joining, and the first `2` is the confirm.
+  - Also: `$Input` is a reserved PowerShell variable, which emptied the script in an earlier run.
+- The scroll directions are the reverse of what I assumed: screen-right goes down a position. Luigi is position 3, so Mario is three presses right.
+- Arrows: both showed on Mario's card. The arrow code (0x8076E600, and 0x8076EA00 when arriving at an end) hard-codes position 1 as the first end.
+
+What I learned:
+- Verified (portable copy, scripted players 1 and 2; shots `build_nsmbw/shots/sel10_*`, `sel12_*`, `sel13_*`):
+  - player 2 scrolls Luigi -> Yellow -> Blue -> Mario, with the portraits and x05 lives on each card;
+  - with player 1 as Mario, Mario's card is greyed and confirming it is refused (logged);
+  - with player 1 as Luigi, player 2 opens on Mario with only the left arrow, scrolls to Blue (both arrows) and back (left arrow only), confirms Mario, jumps in next to Luigi, and the map HUD shows Luigi x05 and Mario x05.
+- The card picture value is the selector's only notion of a portrait (0 Blue, 1 Yellow, 2 Luigi, +3 greyed, 6 none); the card code has a function per character for the picture and lives.
+- Not verified: player 2's map model as Mario; the custom-TPL portrait in the selector (only the disc fallback was on screen this time); USA with these overrides.
+
+What's next:
+- Stage 2: player 1's own selector after "1 player".
+  - Log the 2-player game-setup path (script "2 players" with a `p2:` player).
+  - Then make 1 player take it with slot 0 not pre-joined (`dInfo+0x384`).
+- USA: `gen_version_tables.py E1`, compare the new functions' bytes, build and run.
+
+## 2026-11-15 — A character select for 1 player
+
+What I did:
+- Stage 2 of the developer's request: choosing "1 player" on the Number of Players screen now opens the game's own Add/Drop screen ("1 Players") with a selector for player 1, offering all four characters. Code: `nsmbw_p1_character.cpp`. Design: docs/futureplans.md 7a.
+- How game setup works, from state logs of both paths (scripted input):
+  - "1" went StartMember -> LowBatteryCheck -> map.
+  - "2" went StartMember -> ConnectionCheck, with the Add/Drop screen (`dNumberOfPeopleChange_c`) running one selector for the extra player.
+  - StartMember's execute (0x80918B00) decides: it writes the join states `dInfo+0x384 = {3,0,0,0}`, and for an index > 0 sets the screen's count (`+1732`) and changes to ConnectionCheck.
+  - A 2-player run with player 2 choosing Yellow Toad showed the choice survives into the game (map: Mario and Yellow Toad).
+- Overrides (structural copies, `EDIT` lines, all only when `OnePlayerSelect`: scene 10, count 1, Mario in the selector):
+  - 0x80918B00: "1 player" takes the multiplayer branch (count 1); player 1 starts not joined.
+  - 0x807A0DB0: the slot -> remote table's entry for player 1 stays -1 instead of remote 0.
+  - 0x807A11A0, 0x807A14D0, 0x807A1510: the loops that wire, start (`+665`), wait for (`+666`) and finish selectors run over `count` selectors instead of `count - 1`.
+  Selector 1 is the card in the middle; it claims the first free connected remote at the start of its select state (0x8076FAE0), which is now player 1's.
+
+What broke / what I didn't expect:
+- First attempt (only StartMember): the screen opened with no selector, because it only ever starts selectors for *extra* players. I removed that override until the rest existed rather than leave a worse 1-player start.
+- Then I started selector 0 (slot 0). It worked logically: logged card values showed position 0 -> Mario, then Blue after a scroll. But the card on screen stayed blank and didn't follow the scroll: selector 0's card is never placed, and the middle card belongs to selector 1. Switching the loops to selector 1 fixed it.
+- Two flags I misread before checking: `+662` is "animating", not "chosen" (`+666` is chosen); 0x807A0D20 is "player 1 pressed back" in game setup (that branch is the cancel path that resets the table), not "done".
+- Two more `
+`-in-a-heredoc build breaks while adding log lines (C++ strings written through a shell heredoc lose their escapes); fixed with the editor.
+
+What I learned:
+- Verified (portable copy, scripted player 1; shots `build_nsmbw/shots/one8_*`, `one9_*`):
+  - "1 Players" with player 1's card on Mario (x05, left arrow only);
+  - left x3 -> Blue, Yellow (both arrows), Luigi (one arrow);
+  - confirm (logged at position 3); Luigi jumps in; Start Game; the map HUD shows Luigi x05.
+- USA: all 13 new overridden functions and tables are byte-identical at the same addresses in the USA REL; the USA DLL builds and links. Not run.
+- Not verified: Back from the "1 Players" screen; a real controller; the title says "1 Players" (the game's own plural text, never meant for 1).
+
+What's next:
+- The developer tries it with a controller (F10 option, Add/Drop with two players, "1 player" select).
+- The "1 Players" title; the Mario portrait image; committing.

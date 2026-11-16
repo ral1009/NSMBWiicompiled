@@ -51,7 +51,7 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 - **Graphics:** windowed, borderless or fullscreen; resolution from native (528p) up to 6K; aspect ratio (16:9, an experimental 21:9, or the game's own letterboxed 4:3); frame interpolation; HD textures; bloom
 - **Audio:** separate volumes for music, sound effects and menu sounds
 - **Controls:** pick which controller each player uses, and rebind any button, including to combinations such as L + R
-- **Advanced:** FPS counter and a few performance switches
+- **Advanced:** FPS counter, a few performance switches, and player 1's character: play as Mario, Luigi, Blue Toad or Yellow Toad (change it on the world map; it is kept in your save file)
 
 ### High resolution and widescreen
 Render at up to 6K (3456 rows, 6.5 times the Wii's native 528), in 16:9. Pick a preset by height: 528p (native), 720p, 1080p, 1440p, 4K, 5K, 6K, or Auto to match the window. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120 or 180 fps on high-refresh monitors.

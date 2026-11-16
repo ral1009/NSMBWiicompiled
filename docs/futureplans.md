@@ -14,7 +14,7 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 | 2 | Linux/Proton: default to Vulkan, automatic `nand_root` | High (cause of bug 1 not yet proven) | Small | **0.2.3** |
 | 3 | Rotating backups of the save file | Very high | Small | **0.2.3** |
 | 4 | 4:3 mode as an F10 option | High: the game and our code already support it | Small to medium | **0.3.0** |
-| 5 | Swappable player 1 character | High: switch already works on the map | Medium (saves, results screen) | **0.3.0** |
+| 5 | Swappable player 1 character | Built 2026-11-15: F10 option, Mario in the Add/Drop selector, character select after "1 player" (section 7a) | Small now: test with real controllers, the "1 Players" title, pick the portrait | **0.3.0** |
 | 6 | Riivolution file mods | Medium-high: loader already in the shared runtime | Medium (wire into NSMBW, test with a real pack) | **0.3.0** |
 | 7 | No-AVX2 build | Built 2026-11-14; packaged 2026-11-15 as compat DLLs for PAL and USA, chosen by the launcher; not yet run on a pre-AVX2 CPU | Small now: test | **0.3.0** |
 | 8 | 16:10 and ultrawide (wider view) | Medium: the MKW code in this repo is a worked example; NSMBW's HUD and culling are the unknowns | Large | **0.3.0** for 16:10; ultrawide in 0.3.0 only if the spike below works, otherwise 0.4.0 |
@@ -167,11 +167,33 @@ After those, a native Linux build is a separate project: check how much of the r
 
 ## 7. Smaller features
 
-- **Swappable player 1 character.** `NSMBW_DEBUG_P1_CHARACTER=<0..3>` already forces it on the world map, so the game accepts the change. Make it an F10 option and check that it survives level loads, saves and the results screen. Decide whether it is saved per game file or is just a setting.
-- **Confirm/cancel swap preset.** Rebinding already covers it; a one-click preset is only convenience.
-- **Gamepad extras.** Gamepads work and are rebindable. Rumble and gyro-as-tilt are not done.
-- **Regression tests.** Script the self-test and compare state-change logs and screenshots per build, to catch the "SDK function overridden at Mario Kart Wii's address" bug class early.
-- **Installer, auto-update, crash reporter** that saves the log.
+- **Swappable player 1 character, Mario in the Add/Drop selector, and a character select for 1 player.** Built 2026-11-15 (F10 > Advanced > "Player 1 character"; MASTER_PLAN log, same date). Section 7a.
+
+### 7a. Player 1 character and a four-character selector: how it works, and what is left
+
+All addresses are PAL rev 1; the USA REL has the same selector tables and functions at the same addresses with identical bytes (checked 2026-11-15 for the first set; re-check the later overrides), and the DOL's player tables move by -0x300 through the address layer. Code: `projects/nsmbw/native/nsmbw_p1_character.cpp`, layout: `runtime/src/product/nsmbw_layout_patch.cpp` (`PatchCharaContents`).
+
+**Character numbers.** `daPyMng_c::mPlayerType[4]` (0x80355160, u32 per player slot) holds 0 Mario, 1 Luigi, **2 Blue Toad, 3 Yellow Toad**. NSMBW-Decomp's `PLAYER_TYPE_e` names the two Toads the other way round; the game draws Blue Toad for 2, its own map HUD table maps 2 to `P_BkinoFace`, and the selector card that shows lives of 2 makes `P_kinoB` visible. Lives (`mRest`, 0x80355190), power-up and stored items are indexed by character. The save keeps the table (0x800E1780 / 0x800E1930), so the choice is per game file.
+
+**Player 1's option** (F10 > Advanced, world map only): writes `mPlayerType[0]` and swaps with whichever slot had that character; a character another player in the game has is skipped. The map player's model is built once, in its constructor (0x809027C0, which hardcoded Mario's model type 0 - overridden to use player 1's character), so after a change the map reloads itself (`0x809218B0`, the game-over screen's "back to the map", same world and node) once F10 has been closed for 30 frames. `NSMBW_DEBUG_P1_CHARACTER=<0..3>` sets it 300 frames into the first map through the same setter; `NSMBW_LOG_P1_CHARACTER=1` logs.
+
+**The Add/Drop selector offers all four characters** (built and tested 2026-11-15). The selector (`dCharacterChangeSelectBase_c`) is a carousel of positions 0 Mario, 1 Blue, 2 Yellow, 3 Luigi (tables 0x80933D00 / 0x80933D10, unchanged); the original only visited 1-3 and had pictures for those three.
+- Layout: `Im_plofileMario_00.tpl`, two materials cloned from Luigi's, and `P_mario_00` / `_01` cloned from `P_lui_00` / `_01` (no animation names a portrait pane). The picture: `nsmbw_data/portraits/Im_plofileMario_00.tpl` if present (`projects/nsmbw/tools/make_portrait_tpl.py <png> <nsmbw_data>`; `--hd-pack <dir>` also installs the PNG under its HD-pack name), else the disc's score-screen Mario head (`pointResult.arc` `im_mario_00`) centred on the card.
+- `0x8076FD70` (native): position -> card picture value, 0 Blue, 1 Yellow, 2 Luigi, +3 greyed (taken), 6 none; position 0 is now Mario, 7 / 10.
+- `0x807708E0` (copy): confirming position 0 checks whether Mario is taken (the original mapped 3/2/1 to Luigi/Yellow/Blue by hand and let anything else through); scrolling stops at 0 instead of 1. Screen-right (`0x4`) goes *down* a position, screen-left (`0x8`) up.
+- `0x807736B0` (copy): for Mario's values the card is set as Luigi's, then Luigi's pane is swapped for `P_mario_0<card>` and the lives redrawn from `+676` (the card's lives cache already holds Mario's there).
+- `0x8076E600` and `0x8076EA00` (copies): the arrows' first end is position 0, not 1.
+- The three "which character does a slot start on" tables (file-start reset 0x809352A0, slot start 0x80933CC0, slot -> start position 0x80933D20) are rewritten each frame with Mario and player 1's character swapped, so player 1 keeps its character at file start and no other slot starts on it.
+Everything selector-side only applies when the layout really got its Mario panes (`NsmbwSelectorHasMario`).
+
+Tested (portable copy, scripted with `NSMBW_TEST_INPUT`, which now takes `p<N>:` entries for players 2-4 and counts them as connected): player 2 scrolls Luigi -> Yellow -> Blue -> Mario; with player 1 as Mario, Mario's card is greyed and confirming is refused; with player 1 as Luigi, player 2 starts on Mario, can scroll away and back, confirms Mario, and the map HUD then shows Luigi and Mario. A scripted remote is connected from the start, so its selector opens without a join press; its first `2` press is the confirm.
+
+**Still open:**
+- **Player 1's own selector after "1 player"**: built 2026-11-15. Game setup's StartMember (0x80918B00) sends "1 player" to the Add/Drop screen with a count of 1 and player 1 not joined; the screen (0x807A0DB0 setup, 0x807A11A0 wiring, 0x807A14D0 / 0x807A1510 recruiting) leaves remote 0 free and runs one more selector than the count, from selector 1 (the middle card), which claims player 1's remote. Tested with scripted input: "1 Players" screen, player 1 scrolls Mario -> Blue -> Yellow -> Luigi, confirms, Start Game, and the map shows Luigi. Not checked: Back from that screen, the title text ("1 Players"), a real controller.
+- Seen nowhere yet: the F10 row on screen; a file saved with a non-Mario player 1 started from the title; the other players' map models (0x808EB7D0 picks them from 0x8093CDF0 by its actor parameter; in the test, player 2 as Mario showed on the HUD, the map model was not checked).
+- Free Mode / Coin Battle still reset to Mario at their start (0x800BB180 inlined into 0x807A0DB0 and `dInfo_c`'s constructor).
+- Mario portrait (2026-11-15, developer's local data only - neither file is in the repo or a package): default = the developer's Mario Kart Wii mugshot, upscaled and framed, as `build_nsmbw/nsmbw_data/portraits/Im_plofileMario_00.tpl`; HD = a head-and-shoulders crop of the official NSMBW Mario render (MarioWiki, `NSMBW_Mario_Solo_Artwork.png`) as `texture_replacements/SMN/UI/Menu/tex1_150x150_a463e000432f72d7_5.png`, named from that default's pixels. Seen in game with the HD pack on. A shipped build still falls back to the disc's score-screen head. The level-entry wipe stays Mario-shaped (`wipeMario`).
+- USA: every overridden function and table is byte-identical at the same address in the USA REL; the USA DLL builds and links with all of it (2026-11-15). Not run.
 
 ## 8. Performance and known issues to investigate
 

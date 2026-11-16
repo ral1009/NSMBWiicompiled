@@ -879,6 +879,25 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Fix: `nsmbw_launcher.cpp` clears the variable after reading it. Verified: both compat DLLs from the zip reach the opening movie with the switch set.
 - Scope: General.
 
+### World-map player always drawn as Mario
+- Symptom: with player 1 set to another character (`NSMBW_DEBUG_P1_CHARACTER=1`), the map HUD and the level showed Luigi, but the map walked Mario, even in a map scene built afterwards (`build_nsmbw/shots/p1luigi_level_0.png`).
+- Root cause: the world-map player's constructor (d_basesNP 0x809027C0) builds its model manager (`dPyMdlMng_c`, 0x800D6DB0) with model type 0, i.e. Mario, whoever player 1 is; the original never lets player 1 be anyone else.
+- Fix: structural-copy override in `projects/nsmbw/native/nsmbw_p1_character.cpp` passing player 1's character number as the model type. A first version took it from the REL table 0x8093CDF0 and drew Yellow Toad for Blue Toad: that table is slot -> default character. Verified on PAL for Luigi, Blue and Yellow (`p1luigi3_map2_0.png`, `p1c2_map2_0.png`, `p1c3_map2_0.png`).
+- Follow-up (developer report): changing the character in F10 still left the running map's player as it was, because the model is only built when a map scene is created. The map now reloads itself after a change (`nsmbw_p1_character.cpp`, `ReloadMapIfModelIsStale`); verified with `p1reload_after_0.png`.
+- Scope: NSMBW-specific (game behaviour exposed by the new option).
+
+### Toad numbers taken from NSMBW-Decomp's enum were swapped
+- Symptom: choosing "Yellow Toad" (2) gave Blue Toad in the level and on the HUD (`p1kinoy_level_0.png`).
+- Root cause: NSMBW-Decomp's `PLAYER_TYPE_e` names 2 Yellow Toad and 3 Blue Toad; the game has 2 = Blue, 3 = Yellow. The decomp's own code agrees with the game (its map HUD table maps 2 to `P_BkinoFace`; the selector card showing lives of 2 makes `P_kinoB` visible).
+- Fix: option labels (`nsmbw_options_menu.cpp`) and the character -> portrait mapping (`nsmbw_mario_portrait.cpp`, since retired: Mario has his own card) use 2 = Blue, 3 = Yellow; the MASTER_PLAN entries using the old names are corrected.
+- Scope: NSMBW-specific (reference-material error; the class - trusting a decomp's names over its code - is general).
+
+### Both selector arrows showed on Mario's card
+- Symptom: in the four-character Add/Drop selector, Mario's card (position 0, the end of the carousel) showed both arrows, at first and after scrolling back to him (`build_nsmbw/shots/sel10_11.png`, `sel12_11.png`).
+- Root cause: the arrow code hard-codes position 1 as the first end: 0x8076E600 (initial arrows) and 0x8076EA00 (on arriving at a position) hide that arrow only for position 1.
+- Fix: structural copies of both in `projects/nsmbw/native/nsmbw_p1_character.cpp` use position 0 when Mario is offered. Verified: Mario's card shows only the left arrow at first and after returning from Blue Toad (`sel13_*.png`).
+- Scope: NSMBW-specific (follows from adding a fourth carousel position).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
@@ -921,3 +940,4 @@ Not fixed, or fixed by a guess. Listed so the scope split later does not miss th
 - USA (E1) build: plays title, map and levels (2026-11-15). Not yet checked there: French/Spanish text, F10 menu fonts, the extra pause/map buttons, full save, HD pack, BCA disc check, later worlds, 180 FPS.
 - DLL split and launcher setup (2026-11-14): compat DLL, the CPU-too-old message boxes, a release build of the launcher, `package_nsmbw.ps1` and the setup window at other DPI settings not yet run.
 - Options menu (2026-10-29): the map window's final position, the lighter outlines, the prompts inside the window and the X / Z key migration are built but not yet seen on screen.
+- Player 1 character (2026-11-15): not yet seen - the F10 row, a file saved with a non-Mario player 1 started from the title, the other players' map models in multiplayer (0x808EB7D0), the custom-TPL Mario portrait in the selector, and USA with the selector overrides. Player 1's own selector after "1 player" is not built (docs/futureplans.md 7a).
