@@ -117,7 +117,7 @@ std::vector<Row> BuildRows(int tab) {
         aspect.set = [](int v) { settings::SetAspectIndex(v); };
         aspect.note = "Applies after a restart";
         rows.push_back(std::move(aspect));
-        rows.push_back({"Frame interpolation", Kind::Picker, {"Off", "120 fps", "180 fps"}, settings::FrameInterpolation(),
+        rows.push_back({"Frame interpolation", Kind::Picker, {"Off", "120 fps", "180 fps", "240 fps", "Match display"}, settings::FrameInterpolation(),
                         [](int v) { settings::SetFrameInterpolation(v); }});
         rows.push_back({"HD texture pack", Kind::Toggle, {}, settings::HdTextures() ? 1 : 0,
                         [](int v) { settings::SetHdTextures(v != 0); }, {},

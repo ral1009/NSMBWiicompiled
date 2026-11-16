@@ -17,6 +17,9 @@ void VI_HLE_WaitForNextRetracePoll();
 // for the GXCopyDisp producer path and false for retrace-context presents.
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace);
 bool VI_HLE_IsAdvancingRetrace();
+// Frame interpolation "Match display": interpolation slots and the 60 Hz game frame interval follow
+// the display's refresh rate (aurora_get_display_refresh_hz). Off restores 16666 us.
+void VI_HLE_SetMatchDisplayRate(bool enabled);
 void VI_HLE_SetXfbReady(uint32_t xfbAddr); // Called by GXCopyDisp to signal EFB→XFB copy
 void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros);
 void Audio_HLE_Poll(CpuContext* ctx);

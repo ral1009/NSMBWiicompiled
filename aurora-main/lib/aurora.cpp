@@ -1599,6 +1599,14 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
 
   // A group that finished encoding past its anchor slides forward by whole display periods, never
   // per slot. The cursor keeps two groups off one anchor, which bursts then holds for a period.
+  // The cursor must also let a slide be undone: it used to force every later group to
+  // `last + interval`, so one slide put the whole schedule a period ahead for the rest of the
+  // session, and two slides (32 ms of lead) left 8 jobs waiting when each group of 3 arrived, over
+  // the presenter queue's 9, so every arrival cleared the queue and 180 FPS locked at 40
+  // (2026-11-15: schedule wait 24.6 ms avg, acquire 0.02 ms, Present 0.27 ms). Now a group whose
+  // own anchor is earlier may start up to kLeadDecayDivisor-th of a period early, so a lead of one
+  // period is gone in ~24 groups (0.4 s) and each catch-up step shortens one slot gap by ~0.7 ms.
+  constexpr uint64_t kLeadDecayDivisor = 24;
   static PresentClock::time_point s_lastGroupAnchor{};
   if (ctx.interpolationActive && ctx.scheduleIntervalNanos != 0 && !presentationJobs.empty() &&
       presentationJobs.front().presentAt != PresentClock::time_point{}) {
@@ -1611,8 +1619,13 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
           static_cast<uint64_t>(behind.count()) / ctx.scheduleIntervalNanos + 1u;
       anchor += std::chrono::nanoseconds{static_cast<int64_t>(periods * ctx.scheduleIntervalNanos)};
     }
-    if (s_lastGroupAnchor != PresentClock::time_point{} && anchor <= s_lastGroupAnchor) {
-      anchor = s_lastGroupAnchor + interval;
+    if (s_lastGroupAnchor != PresentClock::time_point{}) {
+      const auto earliest =
+          s_lastGroupAnchor + interval -
+          std::chrono::nanoseconds{static_cast<int64_t>(ctx.scheduleIntervalNanos / kLeadDecayDivisor)};
+      if (anchor < earliest) {
+        anchor = earliest;
+      }
     }
     const auto shift =
         std::chrono::duration_cast<std::chrono::nanoseconds>(anchor - presentationJobs.front().presentAt);
@@ -2155,3 +2168,4 @@ void aurora_set_background_input(bool value) {
 }
 void aurora_set_display_mode(AuroraDisplayMode mode) { aurora::window::set_display_mode(mode); }
 AuroraDisplayMode aurora_get_display_mode() { return aurora::window::get_display_mode(); }
+double aurora_get_display_refresh_hz() { return aurora::window::display_refresh_hz(); }

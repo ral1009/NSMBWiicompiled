@@ -40,6 +40,8 @@
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
 
+void VI_HLE_SetMatchDisplayRate(bool enabled); // hle/vi.cpp
+
 extern "C" int g_gxFrameCount;
 
 // Defined in runtime/src/hle/audio/ax_mix.cpp. That header is private to the HLE
@@ -94,6 +96,10 @@ int g_frameInterpolationMode = [] {
         return 1;
     case 180:
         return 2;
+    case 240:
+        return 3;
+    case 1: // kMatchDisplayConfigValue
+        return 4;
     default:
         return 0;
     }
@@ -255,7 +261,11 @@ constexpr std::array<ResolutionItem, 8> kResolutions = {{
     {"5K (2880p)", ScaleForHeight(2880)}, {"6K (3456p)", ScaleForHeight(3456)},
 }};
 
-constexpr std::array<uint32_t, 3> kFrameInterpolationTargetFps{0, 120, 180};
+// Config.toml frame_interpolation_fps value for "Match display" (mode 4): not a frame rate, the VI
+// picks the rate from the display's refresh (VI_HLE_SetMatchDisplayRate in hle/vi.cpp).
+constexpr uint32_t kMatchDisplayConfigValue = 1;
+constexpr int kMatchDisplayMode = 4;
+constexpr std::array<uint32_t, 5> kFrameInterpolationTargetFps{0, 120, 180, 240, kMatchDisplayConfigValue};
 
 // Scales above 4K (5K and 6K, and the old 6x / 8x values that may still be saved) are refused while
 // frame interpolation is on: greyed out in the menus, and a saved value that high is lowered to 4K
@@ -267,7 +277,18 @@ bool IsHighResolutionScale(float scale) {
 }
 
 bool IsHighFrameRateMode() {
-    return kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)] > 60;
+    return g_frameInterpolationMode == kMatchDisplayMode ||
+           kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)] > 60;
+}
+
+// Applies the saved interpolation mode: a fixed target, or hands the choice to the VI's
+// match-display logic (which sets aurora's target itself on the next paced frame).
+void ApplyFrameInterpolationMode() {
+    const bool match = g_frameInterpolationMode == kMatchDisplayMode;
+    VI_HLE_SetMatchDisplayRate(match);
+    if (!match) {
+        aurora_set_frame_interpolation_fps(kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)]);
+    }
 }
 
 void SetResolutionScale(float scale) {
@@ -743,8 +764,8 @@ void DrawGraphicsSettings() {
             "Requests the closest native-resolution display mode to the output frame "
             "rate (60 Hz, or the frame interpolation target).");
     }
-    constexpr std::array<const char*, 3> kFrameInterpolationModes{
-        "Off", "120 FPS", "180 FPS",
+    constexpr std::array<const char*, 5> kFrameInterpolationModes{
+        "Off", "120 FPS", "180 FPS", "240 FPS", "Match display",
     };
     const char* currentFrameInterpolationMode =
         kFrameInterpolationModes[static_cast<size_t>(g_frameInterpolationMode)];
@@ -1068,9 +1089,9 @@ void SetDisplayMode(int mode) noexcept {
 int FrameInterpolation() noexcept { return g_frameInterpolationMode; }
 void SetFrameInterpolation(int mode) noexcept {
     g_frameInterpolationMode = std::clamp(mode, 0, static_cast<int>(kFrameInterpolationTargetFps.size()) - 1);
-    const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
-    aurora_set_frame_interpolation_fps(targetFps);
-    RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
+    ApplyFrameInterpolationMode();
+    RuntimeConfigFile::SetFrameInterpolationFps(
+        kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)]);
     LimitResolutionForFrameRate();
     if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) {
         // Re-apply exclusive mode so the display refresh tracks the new target.
@@ -1170,9 +1191,8 @@ void InitializeRuntimeSettings() noexcept {
     MusicAttenuation::SetVoicesVolume(static_cast<float>(g_voicesVolumePercent) / 100.0f);
     MusicAttenuation::SetEnabled(g_attenuateMusicWhenMediaPlays);
     RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
-    const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
     LimitResolutionForFrameRate();
-    aurora_set_frame_interpolation_fps(targetFps);
+    ApplyFrameInterpolationMode();
     aurora_set_display_mode(static_cast<AuroraDisplayMode>(g_displayMode));
     g_displayMode = static_cast<int>(aurora_get_display_mode());
     aurora_set_disable_copy_filter(g_disableCopyFilter);

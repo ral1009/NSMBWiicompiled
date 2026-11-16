@@ -157,10 +157,10 @@ inline bool IsSupportedDisplayMode(std::string_view value) {
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-// 240 was offered by an early build and is no longer supported; a saved 240 is
-// migrated to 180 at the parse site.
 inline bool IsSupportedFrameInterpolationFps(uint32_t value) {
-    return value == 0 || value == 120 || value == 180;
+    // 1 = "Match display" (settings_overlay.cpp kMatchDisplayConfigValue): the rate follows the
+    // display's refresh. 240 was migrated to 180 by upstream; offered again since 2026-11-15.
+    return value == 0 || value == 1 || value == 120 || value == 180 || value == 240;
 }
 
 inline std::optional<std::filesystem::path> ExecutableDirectory() {
@@ -273,6 +273,7 @@ inline void EnsureConfigFile() {
               "[video]\n"
               "widescreen = true\n"
               "resolution_multiplier = 1.0\n"
+              "# 0 off, 120, 180, 240, or 1 = match the display's refresh rate.\n"
               "frame_interpolation_fps = 0\n"
               "display_mode = \"windowed\"\n"
               "graphics_api = \"auto\"\n"
@@ -417,9 +418,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         config.displayMode = *value;
     }
     if (auto value = FindConfigUint(document, "video", "frame_interpolation_fps")) {
-        const uint32_t migrated = *value == 240u ? 180u : *value;
-        if (IsSupportedFrameInterpolationFps(migrated)) {
-            config.frameInterpolationFps = migrated;
+        if (IsSupportedFrameInterpolationFps(*value)) {
+            config.frameInterpolationFps = *value;
         }
     }
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");

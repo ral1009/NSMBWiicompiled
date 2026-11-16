@@ -34,6 +34,7 @@ extern "C" void Android_UnlockActivityMutex(void);
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 #include "dolphin/vi/vi_internal.hpp"
@@ -61,6 +62,80 @@ std::atomic_bool g_surfaceReady = true;
 #endif
 bool g_lastPaused = false;
 bool g_gotFocus = false;
+// Refresh rate of the display the window is on, in Hz (0 = unknown). Written on the event thread,
+// read by the game's VI pacing (frame interpolation "match display").
+std::atomic<double> g_displayRefreshHz{0.0};
+
+#if defined(_WIN32)
+// DWM's composition rate as an exact ratio (e.g. 10000000/55570 = 179.953 Hz). Windows display
+// modes only report whole hertz ("179"), which is 0.5 % off for a 179.95 Hz panel: enough to
+// back up the presenter once every couple of seconds. Loaded at run time so aurora needs no
+// dwmapi link.
+double dwm_refresh_hz() noexcept {
+  struct UnsignedRatio {
+    UINT32 numerator;
+    UINT32 denominator;
+  };
+  // Leading fields of DWM_TIMING_INFO (packed); the call only needs cbSize to be the full size.
+#pragma pack(push, 1)
+  struct TimingInfo {
+    UINT32 cbSize;
+    UnsignedRatio rateRefresh;
+    unsigned char rest[512];
+  };
+#pragma pack(pop)
+  using Fn = HRESULT(WINAPI*)(HWND, void*);
+  static Fn fn = [] {
+    HMODULE module = LoadLibraryW(L"dwmapi.dll");
+    return module ? reinterpret_cast<Fn>(GetProcAddress(module, "DwmGetCompositionTimingInfo")) : nullptr;
+  }();
+  if (fn == nullptr) {
+    return 0.0;
+  }
+  TimingInfo info{};
+  // sizeof(DWM_TIMING_INFO) with 1-byte packing on x64; DWM rejects any other size.
+  info.cbSize = 292;
+  if (FAILED(fn(nullptr, &info)) || info.rateRefresh.denominator == 0) {
+    return 0.0;
+  }
+  return static_cast<double>(info.rateRefresh.numerator) / info.rateRefresh.denominator;
+}
+#endif
+
+void update_display_refresh() noexcept {
+  if (g_window == nullptr) {
+    return;
+  }
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(g_window);
+  const SDL_DisplayMode* mode = display != 0 ? SDL_GetCurrentDisplayMode(display) : nullptr;
+  double hz = 0.0;
+  if (mode != nullptr) {
+    hz = mode->refresh_rate_denominator != 0
+             ? static_cast<double>(mode->refresh_rate_numerator) / mode->refresh_rate_denominator
+             : static_cast<double>(mode->refresh_rate);
+  }
+#if defined(_WIN32)
+  // DWM composes at one rate; trust it only when it agrees with this display to within a hertz,
+  // so a window on a second monitor with another rate keeps that monitor's own figure.
+  const double dwmHz = dwm_refresh_hz();
+  if (dwmHz > 0.0 && (hz <= 0.0 || std::abs(dwmHz - hz) < 1.0)) {
+    hz = dwmHz;
+  }
+#endif
+  const double previous = g_displayRefreshHz.exchange(hz, std::memory_order_acq_rel);
+  if (std::abs(previous - hz) > 0.0005) {
+#if defined(_WIN32)
+    Log.info("Display refresh rate {:.3f} Hz (DWM {:.3f}, display mode {:.3f})", hz, dwmHz,
+             mode != nullptr ? (mode->refresh_rate_denominator != 0
+                                    ? static_cast<double>(mode->refresh_rate_numerator) / mode->refresh_rate_denominator
+                                    : static_cast<double>(mode->refresh_rate))
+                             : 0.0);
+#else
+    Log.info("Display refresh rate {:.3f} Hz", hz);
+#endif
+  }
+}
+
 #if defined(_WIN32)
 WNDPROC g_prevWindowProc = nullptr;
 // Native window handle captured once when the hook is installed. The presenter checks the native
@@ -264,6 +339,10 @@ void process_event(SDL_Event& event) {
       g_nativeResizePending.store(true, std::memory_order_release);
     }
     break;
+  case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+  case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED:
+    update_display_refresh();
+    break;
   case SDL_EVENT_WINDOW_MOVED: {
     g_events.push_back(AuroraEvent{
         .type = AURORA_WINDOW_MOVED,
@@ -436,6 +515,7 @@ bool create_window(AuroraBackend backend) {
   install_window_proc_hook();
 #endif
   set_window_icon();
+  update_display_refresh();
   return true;
 }
 
@@ -704,6 +784,8 @@ void set_display_mode(AuroraDisplayMode mode) {
 }
 
 AuroraDisplayMode get_display_mode() { return g_displayMode.load(std::memory_order_acquire); }
+
+double display_refresh_hz() noexcept { return g_displayRefreshHz.load(std::memory_order_acquire); }
 
 void set_window_size(uint32_t width, uint32_t height) {
   TRY_WARN(SDL_RestoreWindow(g_window), "Failed to un-maximize window: {}", SDL_GetError());

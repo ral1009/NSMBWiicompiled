@@ -161,6 +161,8 @@ void aurora_set_pause_on_focus_lost(bool value);
 void aurora_set_background_input(bool value);
 void aurora_set_display_mode(AuroraDisplayMode mode);
 AuroraDisplayMode aurora_get_display_mode();
+// Refresh rate of the display the game window is on, in Hz (fractional, e.g. 179.953); 0 if unknown.
+double aurora_get_display_refresh_hz();
 
 AuroraBackend aurora_get_backend();
 const AuroraBackend* aurora_get_available_backends(size_t* count);

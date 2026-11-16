@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -23,6 +24,7 @@
 #include <thread>
 
 #include <aurora/aurora.h>
+#include <aurora/gfx.h>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -105,7 +107,7 @@ struct ViState {
     uint32_t xfbHeight = 480;
     bool fieldOdd = false;
     Clock::time_point lastRetrace = Clock::now();
-    std::chrono::microseconds retraceInterval{16666us}; // ~60 Hz
+    std::chrono::nanoseconds retraceInterval{16666us}; // ~60 Hz
     bool hasValidXfb = false; // True once we've received at least one GXCopyDisp
     uint32_t readyXfb = 0;    // XFB address from the most recent GXCopyDisp
 
@@ -126,7 +128,7 @@ struct ViState {
     uint32_t pendingViYOrigin = 0;
     uint32_t pendingXfbWidth = 640;
     uint32_t pendingXfbHeight = 480;
-    std::chrono::microseconds pendingRetraceInterval{16666us};
+    std::chrono::nanoseconds pendingRetraceInterval{16666us};
     
     // Set by VIFlush(); cleared after commit in AdvanceRetrace
     bool flushArmed = false;
@@ -186,9 +188,23 @@ constexpr uint32_t kViRetraceQueueAddr      = NSMBW_VA(0x80386bc0);
 // EGG::BaseSystem::sSystem pointer - must be non-null before post-retrace callback is valid
 constexpr uint32_t kEggSSystemAddr = NSMBW_VA(0x80386F60);
 
-std::chrono::microseconds IntervalForFormat(uint32_t tvFormat) {
+// Frame interpolation "Match display" (VI_HLE_SetMatchDisplayRate): the 60 Hz retrace interval is
+// stretched to (slots per game frame) / (display refresh), so the slots land exactly on the
+// display's refresh. At 180 FPS the default 16666 us gives 180.007 presents/s against a 179.953 Hz
+// panel; the extra 0.05/s backed the presenter up every ~20 s and once locked it at 40 fps
+// (2026-11-15). 0 = no override. Nanoseconds: 16671 us would itself drift a frame every ~3 min.
+std::atomic<int64_t> g_hostRetraceOverrideNanos{0};
+std::atomic_bool g_matchDisplayRate{false};
+// Refresh rate the match logic last acted on; reset to -1 to make it re-evaluate.
+std::atomic<double> g_matchAppliedHz{-1.0};
+
+std::chrono::nanoseconds IntervalForFormat(uint32_t tvFormat) {
     // NTSC-ish defaults to 60 Hz; PAL uses 50 Hz.
-    return tvFormat == 1 ? 20000us : 16666us;
+    if (tvFormat == 1) {
+        return 20000us;
+    }
+    const int64_t overrideNanos = g_hostRetraceOverrideNanos.load(std::memory_order_acquire);
+    return overrideNanos > 0 ? std::chrono::nanoseconds{overrideNanos} : std::chrono::nanoseconds{16666us};
 }
 
 // Shared busy-wait budget for deadline-precise sleeps (matches Aurora's
@@ -628,10 +644,67 @@ std::atomic<uint64_t> g_viAnchorBumps{0};
 std::atomic<uint64_t> g_viAnchorLeadSumNanos{0};
 std::atomic<uint64_t> g_viAnchorLeadMaxNanos{0};
 
+namespace {
+void ApplyRetraceOverride(int64_t overrideNanos) {
+    if (g_hostRetraceOverrideNanos.exchange(overrideNanos, std::memory_order_acq_rel) == overrideNanos) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_viMutex);
+    g_vi.retraceInterval = IntervalForFormat(g_vi.tvFormat);
+    g_vi.pendingRetraceInterval = IntervalForFormat(g_vi.pendingTvFormat);
+}
+
+// Runs once per paced frame on the game thread; does real work only when the display's refresh
+// rate changed (window moved to another monitor, mode change) or the option was just turned on.
+void MatchDisplayRateTick() {
+    if (!g_matchDisplayRate.load(std::memory_order_acquire)) {
+        return;
+    }
+    const double hz = aurora_get_display_refresh_hz();
+    if (hz == g_matchAppliedHz.load(std::memory_order_acquire)) {
+        return;
+    }
+    g_matchAppliedHz.store(hz, std::memory_order_release);
+    // Slots per 60 Hz game frame (1 = no interpolation, up to 4 = 240). Within 0.5 % of a multiple
+    // of 60 the game's own frame interval follows the display (at most 0.5 % slower or faster, which
+    // nobody can see); otherwise the multiple below the refresh is used and the clock stays at 60, so
+    // presents never outrun the display (144 Hz -> 120 fps).
+    uint32_t slots = 1;
+    int64_t overrideNanos = 0;
+    if (hz >= 50.0) {
+        const double ratio = hz / 60.0;
+        const auto nearest = static_cast<uint32_t>(std::clamp<long>(std::lround(ratio), 1, 4));
+        if (std::abs(hz - 60.0 * nearest) <= 60.0 * nearest * 0.005) {
+            slots = nearest;
+            overrideNanos = std::llround(static_cast<double>(nearest) * 1.0e9 / hz);
+        } else {
+            slots = static_cast<uint32_t>(std::clamp(std::floor(ratio), 1.0, 4.0));
+        }
+    }
+    const uint32_t targetFps = slots >= 2 ? 60u * slots : 0u;
+    if (aurora_get_frame_interpolation_fps() != targetFps) {
+        aurora_set_frame_interpolation_fps(targetFps);
+    }
+    ApplyRetraceOverride(overrideNanos);
+    std::fprintf(stderr, "[vi] match display: %.3f Hz -> %u fps interpolation, game frame %.3f us%s\n", hz,
+                 targetFps, overrideNanos != 0 ? overrideNanos / 1000.0 : 16666.0,
+                 overrideNanos != 0 ? " (follows the display)" : " (unchanged)");
+}
+} // namespace
+
+void VI_HLE_SetMatchDisplayRate(bool enabled) {
+    g_matchDisplayRate.store(enabled, std::memory_order_release);
+    g_matchAppliedHz.store(-1.0, std::memory_order_release);
+    if (!enabled) {
+        ApplyRetraceOverride(0);
+    }
+}
+
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+    if (paceToRetrace) MatchDisplayRateTick();
     if (presentedXfb) g_viPresentedXfbFrames.fetch_add(1, std::memory_order_relaxed);
     struct SequenceGuard {
         ~SequenceGuard() { s_presentSequenceActive.store(false, std::memory_order_release); }
@@ -1108,7 +1181,7 @@ PPC_NATIVE_OVERRIDE_VOID(801BABAC, VIGetNextField_HLE_801babac, (CpuContext* ctx
 extern "C" void VIGetCurrentLine_HLE_801bac48(CpuContext* ctx)
 {
     uint32_t height = 480;
-    std::chrono::microseconds interval{16666us};
+    std::chrono::nanoseconds interval{16666us};
     Clock::time_point last;
     {
         std::lock_guard<std::mutex> lock(g_viMutex);
@@ -1118,7 +1191,7 @@ extern "C" void VIGetCurrentLine_HLE_801bac48(CpuContext* ctx)
         last = g_vi.lastRetrace;
     }
     const auto now = Clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last);
     uint32_t line = 0;
     if (interval.count() > 0 && height > 0) {
         const uint64_t scaled = static_cast<uint64_t>(elapsed.count()) * height;
@@ -1156,7 +1229,7 @@ extern "C" void VIWaitForRetrace_HLE_801b99ec(CpuContext* ctx)
 
         OS__RestoreInterrupts_801a65d4(irqState);
     } else {
-        std::chrono::microseconds interval{16666us};
+        std::chrono::nanoseconds interval{16666us};
         Clock::time_point target;
         {
             std::lock_guard<std::mutex> lock(g_viMutex);
