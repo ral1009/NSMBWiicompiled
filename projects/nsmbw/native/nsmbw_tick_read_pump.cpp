@@ -34,6 +34,8 @@ extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 extern "C" uint32_t g_nsmbwSelfTestPressBits;
 // Published for aurora-side diagnostics (see aurora-main/lib/internal.hpp).
 extern "C" uint32_t g_nsmbwCurrentViTick;
+extern "C" int NsmbwP1CharacterGet();         // nsmbw_p1_character.cpp
+extern "C" bool NsmbwP1CharacterSet(int ch);  // nsmbw_p1_character.cpp
 uint32_t g_nsmbwCurrentViTick = 0;
 
 namespace {
@@ -331,31 +333,36 @@ void NsmbwLogBgParam() {
                  Memory::ReadFloat32(p + 0x48));
 }
 
-// NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Yellow Toad, 3 Blue Toad): experiment for
-// "let player 1 pick any character". Writes daPyMng_c::mPlayerType[0] (0x80355160, a u32 enum per
-// player; syms.txt) while the world map is up, and nowhere else, so whatever the level shows was
-// carried in by the game's own scene change - not re-forced each frame.
+// NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad): sets player 1's
+// character 300 frames (5 s) into the first world map, through the same setter as the F10 option
+// (nsmbw_p1_character.cpp: swaps with the slot that had it), so a scripted run tests the real path
+// without keyboard focus - including the map reload, which only happens when the map player was
+// already built (on the map's first frame it isn't yet). Only once, so a later change is not undone.
 void NsmbwDebugP1Character() {
     static const long want = [] {
         const char* v = AURORA_ENV("NSMBW_DEBUG_P1_CHARACTER");
         return v ? std::strtol(v, nullptr, 10) : -1L;
     }();
-    if (want < 0 || want > 3 || g_nsmbwCurrentSceneProfile != 3u) return;
-    constexpr uint32_t kPlayerTypeAddr = NSMBW_VA(0x80355160u);
-    uint32_t cur = 0;
-    if (!Memory::TryRead32(kPlayerTypeAddr, cur) || cur == static_cast<uint32_t>(want)) return;
-    Memory::Write32(kPlayerTypeAddr, static_cast<uint32_t>(want));
-    std::fprintf(stderr, "[nsmbw][diag] P1 character %u -> %ld (on the world map)\n", cur, want);
+    static bool done = false;
+    static int mapFrames = 0;
+    if (done || want < 0 || want > 3 || g_nsmbwCurrentSceneProfile != 3u) return;
+    if (++mapFrames < 300) return;
+    done = true;
+    const int before = NsmbwP1CharacterGet();
+    const bool ok = NsmbwP1CharacterSet(static_cast<int>(want));
+    std::fprintf(stderr, "[nsmbw][diag] P1 character %d -> %ld on the world map: %s\n", before, want, ok ? "set" : "refused");
 }
 } // namespace
 
 extern "C" void NsmbwDumpScnObjs();
+extern "C" void NsmbwP1CharacterTick();      // nsmbw_p1_character.cpp
 
 extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
 {
     VI_HLE_PollRetrace(ctx);
     NsmbwDiagWatch();
     NsmbwDebugP1Character();
+    NsmbwP1CharacterTick();
     NsmbwWatchWrite();
     NsmbwLogBgParam();
     NsmbwDumpScnObjs();

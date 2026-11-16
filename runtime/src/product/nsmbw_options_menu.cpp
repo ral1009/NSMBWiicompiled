@@ -34,6 +34,10 @@
 #include <vector>
 
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+// projects/nsmbw/native/nsmbw_p1_character.cpp
+extern "C" int NsmbwP1CharacterGet();
+extern "C" bool NsmbwP1CharacterCanSet(int ch);
+extern "C" bool NsmbwP1CharacterSet(int ch);
 
 namespace nsmbw_options_menu {
 namespace {
@@ -175,6 +179,15 @@ std::vector<Row> BuildRows(int tab) {
                         [](int v) { settings::SetCopyFilterDisabled(v == 0); }});
         rows.push_back({"Audio mixing thread", Kind::Toggle, {}, settings::AudioMixWorker() ? 1 : 0,
                         [](int v) { settings::SetAudioMixWorker(v != 0); }});
+        // Player 1's character is the game's own per-slot table, so it is kept in the save file,
+        // not in Config.toml (projects/nsmbw/native/nsmbw_p1_character.cpp). Changeable only on the
+        // world map; a character another player in the game has is skipped.
+        // Option index = the game's character number: 2 is Blue Toad, 3 Yellow Toad (nsmbw_p1_character.cpp).
+        Row p1{"Player 1 character", Kind::Picker, {"Mario", "Luigi", "Blue Toad", "Yellow Toad"}, NsmbwP1CharacterGet()};
+        p1.set = [](int v) { NsmbwP1CharacterSet(v); };
+        p1.allowed = [](int v) { return NsmbwP1CharacterCanSet(v); };
+        p1.note = g_nsmbwCurrentSceneProfile == 3u ? "Kept in your save file when you save" : "Can be changed on the world map";
+        rows.push_back(std::move(p1));
         // No "Mute music for other media": its Windows media-session monitor is not built for
         // NSMBW (nsmbw_runtime_shims.cpp), so the switch would do nothing.
         break;
@@ -976,3 +989,5 @@ extern "C" int32_t NsmbwOptionsMenuTakeSound() { return nsmbw_options_menu::Take
 extern "C" int64_t NsmbwOptionsMenuTakeSoundPauseWord() { return nsmbw_options_menu::g_soundPauseWord.exchange(-1); }
 extern "C" void NsmbwOptionsMenuRequestOpen() { nsmbw_options_menu::g_openFromPause = true; }
 extern "C" bool NsmbwOptionsMenuTakeReturnToPause() { return nsmbw_options_menu::g_returnToPause.exchange(false); }
+// Open, closing, or its close key still held (the game stays stopped until all three are over).
+extern "C" bool NsmbwOptionsMenuIsOpen() { return nsmbw_options_menu::IsOpen(); }
