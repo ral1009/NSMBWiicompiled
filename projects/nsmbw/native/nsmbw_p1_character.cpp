@@ -171,6 +171,10 @@ int g_mapPick = -1;
 // writes player 1's character as soon as its card is confirmed, so without this the map reloaded
 // under the open screen (2026-11-15 test).
 uint32_t g_addDropSeenTick = 0;
+// Set by the map Add/Drop OK (0x807A1510 copy): reload the map on the next frame instead of waiting for
+// the screen to close, so the scene change's fade starts right away and covers the screen's own exit
+// animation (developer request 2026-11-16: waiting for the close felt too slow).
+bool g_reloadNow = false;
 extern "C" bool NsmbwP1CharacterSet(int ch);
 
 extern "C" bool NsmbwOptionsMenuIsOpen(); // runtime/src/product/nsmbw_options_menu.cpp
@@ -186,6 +190,43 @@ namespace {
 // game functions: on the game thread, with the live context saved and put back.
 constexpr uint32_t kNextSceneAddr = NSMBW_VA(0x80428A40u); // dScene_c::m_nextScene (u16), 0x2EE = none pending
 constexpr uint32_t kReloadMap = NSMBW_VA(0x809218B0u);
+constexpr uint32_t kStartFadeOut = NSMBW_VA(0x800B0A90u); // dFader_c::startFadeOut(u16 duration)
+// Fade-out length on the map Add/Drop OK: 1 = cut to black on the OK frame (developer chose it over a
+// 20-frame fade, 2026-11-16); NSMBW_P1_OK_FADE_FRAMES=<n> overrides it for A/B.
+uint32_t OkFadeFrames() {
+    static const uint32_t frames = [] {
+        const char* v = std::getenv("NSMBW_P1_OK_FADE_FRAMES");
+        const long n = v ? std::strtol(v, nullptr, 10) : 1; // nsmbw-va: not an address
+        return uint32_t(n < 1 ? 1 : n);
+    }();
+    return frames;
+}
+constexpr uint32_t kFaderCalc = NSMBW_VA(0x800B0B00u); // dFader_c::calc()
+constexpr uint32_t kFaderPtr = NSMBW_VA(0x8042A720u);  // mFader_c::mFader (r13 - 21088)
+// Set while our OK fade-out runs. The game does not run the fader's calc while the map's menus are
+// up: in a 2026-11-16 log the fade-out started on the OK frame stayed in FADE_OUT (status 3) for 63
+// frames, until the map's menu was back, so nothing was seen until then. While set, the tick runs
+// dFader_c::calc itself on any frame the game did not (the fader's current frame, +12, unchanged).
+bool g_okFadeActive = false;
+uint32_t g_okFadeLastFrame = 0xFFFFFFFFu;
+void KeepOkFadeRunning() {
+    if (!g_okFadeActive) return;
+    uint32_t fader = 0, status = 0, word = 0;
+    if (!Memory::TryRead32(kFaderPtr, fader) || fader == 0 || !Memory::TryRead32(fader + 4, status) || status != 3) {
+        g_okFadeActive = false; // done (OPAQUE) or taken over by the scene change
+        return;
+    }
+    Memory::TryRead32(fader + 12, word);
+    const uint32_t frame = word >> 16; // mCurrFrame (u16 at +12)
+    if (frame == g_okFadeLastFrame) {
+        CpuContext* ctx = CurrentCpuContext();
+        const CpuContext saved = *ctx;
+        InvokeDirectCpu<kFaderCalc>(ctx);
+        *ctx = saved;
+        Memory::TryRead32(fader + 12, word);
+    }
+    g_okFadeLastFrame = word >> 16;
+}
 constexpr uint32_t kGameStopWord = NSMBW_VA(0x8042A228u); // dGameCom game-stop flags (nsmbw_options_menu.cpp)
 
 void ReloadMapIfModelIsStale(uint32_t c) {
@@ -208,17 +249,27 @@ void ReloadMapIfModelIsStale(uint32_t c) {
         std::fprintf(stderr, "[nsmbw][p1chara] map check: model %d, player 1 %u, menu closed %d frames, requested %d, next scene 0x%X\n",
                      g_mapModelType, c, g_menuClosedFrames, int(g_reloadRequested), w >> 16);
     }
-    if (g_nsmbwCurrentSceneProfile != 3u || g_reloadRequested || g_mapModelType < 0 || uint32_t(g_mapModelType) == c ||
-        g_menuClosedFrames < 30 || g_nsmbwCurrentViTick - g_addDropSeenTick < 30u) {
-        return;
-    }
+    const bool now = g_reloadNow;
+    g_reloadNow = false;
+    if (g_nsmbwCurrentSceneProfile != 3u || g_reloadRequested || g_mapModelType < 0 || uint32_t(g_mapModelType) == c) return;
+    if (!now && (g_menuClosedFrames < 2 || g_nsmbwCurrentViTick - g_addDropSeenTick < 2u)) return;
     uint32_t word = 0; // m_nextScene is the high half of this big-endian word
     if (!Memory::TryRead32(kNextSceneAddr, word) || (word >> 16) != 0x2EEu) return; // a scene change is already on its way
     g_reloadRequested = true;
-    if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] map player was built as %d, player 1 is %u: reloading the map\n", g_mapModelType, c);
+    if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] map player was built as %d, player 1 is %u: reloading the map (tick %u)\n", g_mapModelType, c, g_nsmbwCurrentViTick);
     CpuContext* ctx = CurrentCpuContext();
     const CpuContext saved = *ctx;
     InvokeDirectCpu<kReloadMap>(ctx);
+    if (now) {
+        // The world map holds a requested scene change until its own menu is back (~0.6 s after the
+        // Add/Drop screen closes, with the old model and the HUD sliding in; 2026-11-16 shots
+        // reloadt3_5..7), so start the fade-out here, on the OK frame. dFader_c::startFadeOut(u16).
+        ctx->gpr[3] = OkFadeFrames();
+        InvokeDirectCpu<kStartFadeOut>(ctx);
+        g_okFadeActive = ctx->gpr[3] != 0;
+        g_okFadeLastFrame = 0xFFFFFFFFu;
+        if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] startFadeOut(%u) -> %u\n", OkFadeFrames(), ctx->gpr[3]);
+    }
     *ctx = saved;
 }
 } // namespace
@@ -229,13 +280,14 @@ extern "C" void NsmbwP1CharacterTick() {
     if (g_mapPick >= 0) {
         uint32_t stop = 0;
         Memory::TryRead32(kGameStopWord, stop);
-        if (stop == 0 && g_nsmbwCurrentViTick - g_addDropSeenTick >= 30u) { // the Add/Drop screen is closed
+        if (g_reloadNow || (stop == 0 && g_nsmbwCurrentViTick - g_addDropSeenTick >= 2u)) { // OK pressed / screen closed
             const int pick = g_mapPick;
             g_mapPick = -1;
             if (ReadType(0) != uint32_t(pick) && !NsmbwP1CharacterSet(pick) && LogEnabled())
                 std::fprintf(stderr, "[nsmbw][p1chara] map pick %d refused\n", pick);
         }
     }
+    KeepOkFadeRunning();
     const uint32_t c = ReadType(0);
     if (c > 3) return;
     ApplyTables(c);
@@ -3077,7 +3129,8 @@ loc_807A1564:
             r3 = 0;
         } else {
             g_mapPick = int(MemoryInline::FlatRead32(sel + 724) & 3u);
-            if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] map Add/Drop OK: player 1 picked %d\n", g_mapPick);
+            g_reloadNow = true;
+            if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] map Add/Drop OK: player 1 picked %d (tick %u)\n", g_mapPick, g_nsmbwCurrentViTick);
         }
     }
     if ((static_cast<int32_t>(r3) == static_cast<int32_t>(0))) {
