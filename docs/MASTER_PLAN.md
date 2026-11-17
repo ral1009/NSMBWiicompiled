@@ -1688,3 +1688,20 @@ What's next:
 
 **What's next**
 - Developer play test of the map pick.
+
+## 2026-11-16 — Map reload after the Add/Drop pick: the fade starts on OK
+
+**What I did** (developer: "it waits way too long", then "make the black fade start immediately" and "shouldn't even see the old model")
+- Measured with VI ticks in the log: OK at tick 2282, reload requested at 2333 (51 frames), because the reload waited 30 frames after the game-stop word cleared and 30 after the Add/Drop screen stopped drawing. Cut both to 2 frames: 23 frames, the screen's exit animation.
+- Screenshots 0.2 s apart then showed the old map (Mario's model, HUD sliding in) for ~0.6 s after the screen closed, then the wipe. My earlier "about one frame" was wrong: those screenshots were 1 s apart.
+- Now the OK itself (0x807A1510 copy) requests the reload on that frame and starts the fade-out with `dFader_c::startFadeOut` (0x800B0A90). First with 20 frames; the developer then asked to try it without the fade, and a 1-frame fade-out (a cut to black on the OK frame; `nofade_*.png`: the screen mid-exit, then black, then the wipe in) is what they kept. `NSMBW_P1_OK_FADE_FRAMES=<n>` sets another length for A/B. Result (`build_nsmbw/shots/reloadt9_*.png`, 0.2 s apart): the screen's exit animation, at most one shot of the map, then black, then the wipe in with Blue Toad. The developer watched it and said it was good.
+
+**What broke**
+- `startFadeOut` returned 1 but nothing changed on screen. Logging the fader (`mFader_c::mFader`, 0x8042A720; status at +4) every 3 frames: it stayed in FADE_OUT (3) for 63 frames, then OPAQUE (0), then the new scene's FADE_IN (2). The game does not run the fader's calc while the map's menu is up.
+
+**What I learned**
+- The fix runs `dFader_c::calc` (0x800B0B00) from our per-frame tick on any frame the game did not (the fader's current frame, u16 at +12, unchanged since the last tick), only while our OK fade is running. Once the fader is OPAQUE, the scene change proceeds with it as it is (its own fade-out is not repeated).
+- A *fader* is the game's full-screen transition object (fade, circle wipe, Mario wipe); one is current at a time, and a scene change fades it out, swaps scenes, and fades it back in.
+
+**What's next**
+- Developer play test.

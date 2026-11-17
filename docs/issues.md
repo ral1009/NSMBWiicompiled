@@ -937,7 +937,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 ### Map reloaded under the open Add/Drop screen
 - Symptom: first version of the world-map character pick: confirming player 1's card reloaded the map at once, under the still-open Add/Drop screen (2026-11-15 test, log `map player was built as 0, player 1 is 2` while the selector was still in PlayerOnStageWait).
 - Root cause: the selector writes `mPlayerType[0]` on confirm, and the reload waited only for the game-stop word (0x8042A228), which the map's Add/Drop screen does not set.
-- Fix: the reload (and the pick fallback) also waits until 0x807A0170, which places the screen's cards every frame while it is open, has not run for 30 frames (`g_addDropSeenTick`, `nsmbw_p1_character.cpp`). Verified: confirm, OK, screen exit, then the reload; the map shows Blue Toad's model and HUD (`build_nsmbw/shots/mapadd4_4.png`; with player 2 as Luigi, `map2p3_*.png`).
+- Fix: the reload (and the pick fallback) also waits until 0x807A0170, which places the screen's cards every frame while it is open, has not run for 2 frames (30 at first; lowered 2026-11-16 because the developer found the wait too long) (`g_addDropSeenTick`, `nsmbw_p1_character.cpp`). Verified: confirm, OK, screen exit, then the reload; the map shows Blue Toad's model and HUD (`build_nsmbw/shots/mapadd4_4.png`; with player 2 as Luigi, `map2p3_*.png`).
+- Scope: NSMBW-specific.
+
+### Old map showed for ~0.6 s after picking a character on the map
+- Symptom: after OK in the map's Add/Drop Players, the screen closed, the map with the old model and the HUD sliding in stayed up for ~0.6 s, then the wipe (developer report, 2026-11-16; shots `reloadt3_*`, 0.2 s apart).
+- Root cause: two parts. Our reload waited for the screen to close (+2 frames), and the world map holds a requested scene change until its own menu is back. A fade-out started on OK did not advance either: the game does not run the fader's calc while the map's menu is up (fader status stayed FADE_OUT for 63 frames).
+- Fix: on OK, request the reload and `dFader_c::startFadeOut` (0x800B0A90) that frame (1 frame, a cut to black, by the developer's choice; `NSMBW_P1_OK_FADE_FRAMES` for A/B); our tick runs `dFader_c::calc` (0x800B0B00) on frames the game skipped until the fader is opaque (`nsmbw_p1_character.cpp`, `KeepOkFadeRunning`). Verified: at most one 0.2 s screenshot of the map after the screen closes, then black (`reloadt9_19..22`); developer confirmed.
 - Scope: NSMBW-specific.
 
 ### With 2-4 players, player 1 had no selector and its card overlapped player 2's
