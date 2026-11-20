@@ -513,6 +513,9 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
             // The world map's perspective camera keeps a 16:9 aspect (832/456, measured at 21:9),
             // so widen perspective projections by the same ratio (aurora command_processor.cpp).
             AuroraSetPerspectiveXScale(static_cast<float>((16.0 / 9.0) / (static_cast<double>(aspect.num) / aspect.den)));
+            // Menu 3D models (character select, items, Select World) use a 16:9 orthographic camera;
+            // narrow each model around its own origin by the same ratio (command_processor.cpp).
+            AuroraSetModelOrthoXScale(static_cast<float>((16.0 / 9.0) / (static_cast<double>(aspect.num) / aspect.den)));
         }
     }
     return outInfo.window != nullptr;

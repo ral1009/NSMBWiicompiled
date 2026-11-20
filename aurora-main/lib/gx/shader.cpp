@@ -1598,7 +1598,20 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "var tex{0}_samp: sampler;",
         i, i * 2, i * 2 + 1);
   }
+  if (config.edgeFade) {
+    uniBufAttrs += "\n    edge_fade: vec4f,";
+  }
   fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
+  if (config.edgeFade) {
+    // Level pillarbox: fade out past the zone edges (render pixels: x = zone left, y = zone right,
+    // z = fade width). The pipeline blends these draws (populate_pipeline_config).
+    fragmentFn +=
+        "\n    let edgeFadeL = clamp((in.pos.x - (ubuf.edge_fade.x - ubuf.edge_fade.z)) / ubuf.edge_fade.z, 0.0, 1.0);"
+        "\n    let edgeFadeR = clamp(((ubuf.edge_fade.y + ubuf.edge_fade.z) - in.pos.x) / ubuf.edge_fade.z, 0.0, 1.0);"
+        "";
+    fragmentFn += config.edgeFadeOpaque ? "\n    prev.a = min(edgeFadeL, edgeFadeR);"
+                                        : "\n    prev.a = prev.a * min(edgeFadeL, edgeFadeR);";
+  }
   if (config.alphaCompare) {
     const auto comp0 = alpha_compare(config.alphaCompare.comp0, config.alphaCompare.ref0);
     const auto comp1 = alpha_compare(config.alphaCompare.comp1, config.alphaCompare.ref1);

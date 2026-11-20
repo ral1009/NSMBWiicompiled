@@ -776,7 +776,57 @@ bool g_pauseMenuPatched = false;
 bool g_mapMenuPatched = false;
 bool g_selectorHasMario = false;
 
+// Test only: NSMBW_DEBUG_SWAP_AREAS=<stage, e.g. 03-02>[:<area, default 2>] serves that course with
+// area 1 and that area swapped (the archive's "course1*" and "course2*" names exchanged; same length, so nothing moves),
+// so a scripted run that enters the course starts in area 2. Added 2026-11-19 to reach World 3-2's
+// underground pipe area for the ultrawide zone-edge checks.
+char g_swapAreaB = '2'; // NSMBW_DEBUG_SWAP_AREAS=<stage>[:<area>[:<entrance>]] - the area swapped with area 1
+int g_swapStartEntrance = -1; // and, optionally, that area's start entrance
+Bytes SwapAreas12(const Bytes& in) {
+    Bytes out = in;
+    // Start entrance: byte 13 of the area's options block (course<N>.bin block 2; layout as in Reggie:
+    // events u32 x2, wrap u16, time s16, credits u8, start entrance u8). Found through the U8 node
+    // table before the names change.
+    if (g_swapStartEntrance >= 0 && out.size() > 0x20) {
+        const auto be32 = [&](size_t o) { return (uint32_t(out[o]) << 24) | (uint32_t(out[o + 1]) << 16) | (uint32_t(out[o + 2]) << 8) | out[o + 3]; };
+        const uint32_t root = be32(4);
+        const uint32_t count = be32(root + 8);
+        const size_t strings = root + count * 12;
+        const std::string want = std::string("course") + g_swapAreaB + ".bin";
+        for (uint32_t i = 1; i < count; ++i) {
+            const size_t node = root + i * 12;
+            if (out[node] != 0) continue; // a directory
+            const uint32_t nameOff = be32(node) & 0xFFFFFFu;
+            if (want != reinterpret_cast<const char*>(&out[strings + nameOff])) continue;
+            const uint32_t data = be32(node + 4);
+            const uint32_t block2 = be32(data + 8);
+            out[data + block2 + 13] = static_cast<uint8_t>(g_swapStartEntrance);
+            std::fprintf(stderr, "[nsmbw][layout] test: %s start entrance -> %d%c", want.c_str(), g_swapStartEntrance, 10);
+        }
+    }
+    static const char a[] = "course1";
+    const size_t n = sizeof(a) - 1;
+    for (size_t i = 0; i + n <= out.size(); ++i) {
+        if (std::memcmp(&out[i], a, n - 1) != 0) continue;
+        if (out[i + n - 1] == '1') { out[i + n - 1] = static_cast<uint8_t>(g_swapAreaB); i += n - 1; }
+        else if (out[i + n - 1] == static_cast<uint8_t>(g_swapAreaB)) { out[i + n - 1] = '1'; i += n - 1; }
+    }
+    return out;
+}
+
 void GenerateFiles() {
+    if (const char* stage = std::getenv("NSMBW_DEBUG_SWAP_AREAS"); stage != nullptr && *stage != 0) {
+        std::string name = stage;
+        if (const auto colon = name.find(':'); colon != std::string::npos) {
+            g_swapAreaB = name.size() > colon + 1 ? name[colon + 1] : '2';
+            if (const auto c2 = name.find(':', colon + 1); c2 != std::string::npos) g_swapStartEntrance = std::atoi(name.c_str() + c2 + 1);
+            name.resize(colon);
+        }
+        const std::string dvd = std::string("/Stage/") + name + ".arc";
+        const std::string out = std::string("areaswap_") + name + ".arc";
+        std::fprintf(stderr, "[nsmbw][layout] test: %s areas 1/2 swapped: %s\n", dvd.c_str(),
+                     Generate(dvd.c_str(), out.c_str(), &SwapAreas12) ? "served" : "failed");
+    }
     g_pauseMenuPatched = Generate("/Layout/pauseMenu/pauseMenu.arc", "pauseMenu.arc", &PatchPauseMenu);
     g_mapMenuPatched =
         Generate("/Layout/corseSelectMenu/corseSelectMenu.arc", "corseSelectMenu.arc", &PatchCourseSelectMenu);

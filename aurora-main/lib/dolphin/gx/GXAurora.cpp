@@ -41,10 +41,15 @@ void GXInsertDebugMarker(const char* label) {
 namespace aurora::gx::fifo {
 void set_wide_viewport_limit(float limit);
 void set_perspective_x_scale(float scale);
+void set_model_ortho_x_scale(float scale);
 }
 
 // See command_processor.cpp: perspective projections' x row is scaled by `scale` (1 = off).
 void AuroraSetPerspectiveXScale(float scale) { aurora::gx::fifo::set_perspective_x_scale(scale); }
+void AuroraSetModelOrthoXScale(float scale) { aurora::gx::fifo::set_model_ortho_x_scale(scale); }
+namespace aurora::gx { void set_level_clip_x(float x0, float x1) noexcept; void set_level_fade_width(float w) noexcept; }
+void AuroraSetLevelClipX(float x0, float x1) { aurora::gx::set_level_clip_x(x0, x1); }
+void AuroraSetLevelFadeWidth(float w) { aurora::gx::set_level_fade_width(w); }
 
 // See command_processor.cpp: viewports wider than `logicalWidth` are squeezed to it (0 = off).
 void AuroraSetWideViewportLimit(float logicalWidth) {

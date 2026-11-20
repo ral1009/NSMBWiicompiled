@@ -19,6 +19,7 @@
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
@@ -1091,9 +1092,32 @@ MappedRenderState map_logical_render_state() noexcept {
   };
 }
 
+float g_levelClipX0 = 0.0f, g_levelClipX1 = 0.0f; // logical x range; empty = off
+float g_levelFadeWidth = 0.0f;                      // logical units faded out past each edge
+bool g_levelDrawCurrent = false;
+bool g_levelProjCurrent = false;                   // set per projection by command_processor.cpp
+void set_level_clip_x(float x0, float x1) noexcept {
+  g_levelClipX0 = x0;
+  g_levelClipX1 = x1;
+}
+void set_level_fade_width(float w) noexcept { g_levelFadeWidth = w; }
+void refresh_render_state() noexcept;
+
 namespace {
 void apply_logical_render_state() noexcept {
+  // Level pillarbox (NSMBW at wide ratios, 2026-11-19): while a level draw is current, clip the
+  // scissor to the zone's x range, so a zone narrower than the view shows bars at its sides.
+  const gfx::ClipRect saved = g_gxState.logicalScissor;
+  const bool clip = g_levelClipX1 > g_levelClipX0 && g_levelDrawCurrent;
+  if (clip) {
+    auto& sc = g_gxState.logicalScissor;
+    const int x0 = std::max(sc.x, static_cast<int>(std::floor(g_levelClipX0 - g_levelFadeWidth)));
+    const int x1 = std::min(sc.x + sc.width, static_cast<int>(std::ceil(g_levelClipX1 + g_levelFadeWidth)));
+    sc.width = std::max(0, x1 - x0);
+    sc.x = x0;
+  }
   const auto mapped = map_logical_render_state();
+  g_gxState.logicalScissor = saved;
   set_render_viewport(mapped.viewport);
   set_render_scissor(mapped.scissor);
 }
@@ -1150,6 +1174,33 @@ void set_render_viewport(const gfx::Viewport& viewport) noexcept {
   g_gxState.renderViewport = viewport;
   g_gxState.stateDirty = true;
   gfx::set_viewport(viewport);
+}
+
+Vec4<float> level_edge_fade_uniform() noexcept {
+  const int lx0 = static_cast<int>(std::floor(g_levelClipX0)), lx1 = static_cast<int>(std::ceil(g_levelClipX1));
+  const gfx::ClipRect r = scale_logical_scissor_rect({lx0, 0, std::max(1, lx1 - lx0), 1});
+  const float scale = static_cast<float>(r.width) / static_cast<float>(std::max(1, lx1 - lx0));
+  return {static_cast<float>(r.x), static_cast<float>(r.x + r.width), std::max(1.0f, g_levelFadeWidth * scale), 0.0f};
+}
+
+void refresh_render_state() noexcept { apply_logical_render_state(); }
+
+// Level pillarbox: is this draw one of the level's tile draws (a 1024x1024 tileset under the
+// full-width level camera)? Called before every draw's pipeline lookup (command_processor.cpp),
+// because the pipeline config is cached across draws and a texture change alone doesn't rebuild it.
+// When the answer flips, the scissor is re-applied and the cached pipeline dropped (edgeFade).
+void update_level_draw_class() noexcept {
+  bool want = false;
+  if (g_levelClipX1 > g_levelClipX0 && g_levelProjCurrent) {
+    const auto& t = g_gxState.textures[0].texObj;
+    want = t.width() == 1024 && t.height() == 1024;
+  }
+  if (want != g_levelDrawCurrent) {
+    g_levelDrawCurrent = want;
+    apply_logical_render_state();
+    g_gxState.pipelineStateGeneration = next_gx_state_epoch();
+    g_gxState.stateDirty = true;
+  }
 }
 
 void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
@@ -2250,6 +2301,14 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   config.blendFacSrc = g_gxState.blendFacSrc;
   config.blendFacDst = g_gxState.blendFacDst;
   config.blendOp = g_gxState.blendOp;
+  // Level pillarbox fade: tile draws are faded by alpha past the zone edges, so they must blend.
+  config.shaderConfig.edgeFade = g_levelDrawCurrent && g_levelFadeWidth > 0.0f;
+  config.shaderConfig.edgeFadeOpaque = config.shaderConfig.edgeFade && config.blendMode == GX_BM_NONE;
+  if (config.shaderConfig.edgeFade) {
+    config.blendMode = GX_BM_BLEND;
+    config.blendFacSrc = GX_BL_SRCALPHA;
+    config.blendFacDst = GX_BL_INVSRCALPHA;
+  }
   config.pixelFmt = g_gxState.pixelFmt;
   config.dstAlpha = effective_dst_alpha(g_gxState.pixelFmt, g_gxState.alphaUpdate, g_gxState.dstAlpha);
   config.depthCompare = g_gxState.depthCompare;

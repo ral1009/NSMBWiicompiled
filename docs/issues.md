@@ -959,12 +959,63 @@ The recurring classes, for reference (details in CLAUDE.md):
 - Also explains the second report, "HD pack not applied to ? blocks, bricks and coins in levels": those are animated tiles, copied into the tileset atlas at the render scale, so at 528p the HD art is squeezed to 32x32. Slot dumps: ? block 32x32 with square rivets at 1x, 128x128 with the pack's round rivets at 4x. Animated bricks have no pack entry for their format (pack limitation, not ours).
 - Scope: General (config reader; the cap is NSMBW product code).
 
+## 2026-11-18 — Options menu audit
+
+### "Bloom" option did nothing, and was not shown
+- Symptom: F10 Graphics had a Bloom toggle (and the Shift+F10 bar a "Disable bloom" box); the developer saw no difference. Since 2026-11-07 the row was not even drawn: adding "Aspect ratio" made the Graphics tab 6 rows and the menu draws 5 (`kRowY`), so Bloom, the last, was cut (screenshot of the tab, 2026-11-18).
+- Root cause: inherited from Mario Kart Wii. The switch rewrote the post-processing path mask in r4 when the game called MKW's `ScnRenderer::createPath` at 0x8023BD38 (`ApplyRuntimeCallOptions`, `abi_bridge.h`). No NSMBW function starts at that address (it falls between nw4r `ResMdl` functions; no `func_8023BD38` in the translation), so the check never matched. NSMBW also has no bloom at all: its DOL and disc have only depth-of-field / heat-shimmer resources (`dof/*.bdof`, `dof/shimmer.bti`).
+- Fix: removed the row, `settings::Bloom` / `SetBloom`, the Shift+F10 checkbox, `[video] disabled_post_processing_paths`, `game_graphics_options.h`, and `ApplyRuntimeCallOptions` with its call in `InvokeDirectCpu`, `InvokeIndirectCpu` and the shard emitter's `MKW_STATIC_TRANSLATED_CALL` (which ran the address compare on every static call). Shards re-emitted for PAL and USA; the emitter test updated.
+- Scope: General class (an option bound at Mario Kart's address, silently dead for NSMBW: the recurring bug class in CLAUDE.md), NSMBW-specific in that NSMBW has nothing to bind it to.
+
+## 2026-11-18 - Power-up freeze option did not cover deaths
+
+- **Symptom:** with F10 > Advanced > "Power-up freeze" off, the level still froze for the death jingle when a player died (developer report).
+- **Root cause:** a non-last player's death runs `dAcPy_c::stopOtherDownDemo` (0x8013DA30), which calls `daPlBase_c::stopOther` (0x8004E050), the same freeze request as the power change, but the option only overrode the power-change functions. The last player's death (`m_7c`) sets `mExecStopReq` itself and ends the level; left alone.
+- **Fix:** `projects/nsmbw/native/nsmbw_death_freeze.cpp`, a structural copy of 0x8013DA30 that skips the `stopOther` call when the option is off. Compiles; **not yet run** (the game was running, so the DLL could not be relinked).
+- **Scope:** NSMBW-specific.
+- **Menu showing "On" after reopening:** reported, then the developer said it was fixed (2026-11-18) without a cause found; nothing changed in code for it.
+
+## 2026-11-19 - Map Add/Drop pick sent the player back to World 1
+
+- **Symptom:** after changing player 1's character in the world map's Add/Drop Players on World 3, the map reloaded in World 1 (developer report).
+- **Root cause:** the reload (`nsmbw_p1_character.cpp`, through the game-over "back to map" state 0x809218B0) builds its scene parameter in 0x80102B50 from `dInfo_c`+0x3C (world) and +0x40 (sub-map). Those hold the world the file was loaded in or a course was entered from, not the map's current world: after Select World to World 5 they were 0/0 while `dScWMap_c::m_WorldNo` (0x8042A52D) was 4 (log, 2026-11-19).
+- **Fix:** before the reload, copy `dScWMap_c::m_WorldNo` / `m_SceneNo` (0x8042A52D / 0x8042A52E) into `dInfo_c`+0x3C / +0x40. Verified (scripted: Select World to World 5, then a Luigi pick 40 s in; `NSMBW_DEBUG_P1_CHARACTER` now takes `@<map frames>`): the map reloads in World 5 with Luigi on the node Mario stood on; before the fix the same script landed in World 1.
+- **Scope:** NSMBW-specific (our own reload).
+- **Not checked:** a node other than the world's start node (the test file has World 5 locked, so the player could not walk); sub-maps (World 4/7 style `m_SceneNo` != 0).
+
+## 2026-11-19 - Coins and ? blocks low-res at the 4K (2160p) render scale
+
+- **Symptom:** spinning coins in levels looked soft and stair-stepped at 4K, worse than before (developer report; a 1440p crop showed ~2 px steps on the coin edges).
+- **Root cause:** the 2160p preset is a non-whole scale (2160/528 = 4.09x), so each 32x32 animated-tile copy is 131x131. `note_tile_copy` (`aurora-main/lib/gx/scaled_tile_cache.cpp`) only accepts copies that are a whole multiple of the tile; since e9039fb (2026-11-06) a non-whole copy drops the atlas and the tiles are drawn from the game's 32x32 RAM write-back. The developer only reached this scale after 56f51e4 (2026-11-16) made the saved render scale stick, which is why it showed up now. Log: 0 `build atlas` lines at 4.09x before the fix.
+- **Fix:** a non-whole copy is resampled on the GPU (the same linear blit the atlas build uses) into a texture at the nearest whole scale (131 -> 128), kept per tile, and the atlas takes that. Verified at 4.09x in 1-1: `build atlas ... x4 -> 4096x4096, 6 tiles pasted`; `AURORA_DUMP_TILE_ATLAS` slot dumps show 128x128 coins rendered at the render scale, and the HD-pack ? block and brick. On-screen comparison at full window size not done (the test window was 656x519).
+- **Scope:** General (aurora: any title whose tile copies land in this cache at a non-whole scale).
+
+## 2026-11-19 - 21:9: menu 3D models stretched; camera jumping in narrow zones
+
+- **Symptom (models):** at 21:9 the Select World islands and the 3D characters on the player-count and items screens were stretched wide (developer's screenshots).
+- **Root cause:** those models are drawn with an orthographic camera 853.3 x 456 units (16:9), not a perspective one, so the world-map perspective fix did not reach them (`NSMBW_LOG_PERSP=1`, new: the only perspective camera in scenes 3/10 is the map's; the 853x456 orthographic one appears in both).
+- **Fix:** `AuroraSetModelOrthoXScale` (aurora `command_processor.cpp`): while that 16:9 orthographic camera is current, each position matrix loaded has its x row's rotation/scale part scaled by (16:9)/(21:9), so a model narrows around its own origin and keeps its place. Set from `nsmbw_product.cpp` with the perspective scale. Verified: Select World at 21:9, same frame before/after, islands narrower and in place. Not checked: the items screen and the 2-player character select (could not open them by script), normals (lighting uses the unscaled normal matrix).
+- **Symptom (camera):** in World 4's Big Bertha arena at 21:9 the camera jumped between far left and far right with the player's position.
+- **Root cause (from the translated code, not reproduced):** 0x8007A6C0 clamps the camera x to [left limit, right limit - view width]; when the zone is narrower than the 21:9 view that range is empty and the result flips between its ends.
+- **Fix:** `projects/nsmbw/native/nsmbw_wide_camera.cpp`, a structural copy that centres the camera between the two limits when they cross. `NSMBW_LOG_WIDE_CAMERA=1` logs when it does. Checked: title and 1-1 at 21:9 unchanged (centring never triggered). The arena itself is untested.
+- **Scope:** models: General class (aurora), the 853x456 match is NSMBW's camera. Camera: NSMBW-specific. **Unconfirmed** until the arena is played.
+
+## 2026-11-19 - 21:9: the level ends inside the view in narrow zones
+
+- **Symptom:** in World 3-3's pipe room (area 3, zone 2: 576 units wide, narrower than the 21:9 view) the camera sat at the room's right limit; the room's wall continued to the right edge (the tile drawer wraps past the zone's end) but stopped on the left with bare background beyond (developer report, first named as 3-2; reproduced 2026-11-19 with 2 players, `NSMBW_DEBUG_WARP=3-3:1:0` + `NSMBW_DEBUG_GOTO=3:4@240`).
+- **Root cause:** the level has no art past a zone's edges. The tile drawer (0x80082740 -> 0x80082BE0) starts at the zone's first column and wraps columns past its last; the camera's clamp range [left, right - view width] is empty in such a zone and each camera mode resolves it its own way (this room's camera does not go through 0x8007A6C0).
+- **Tried and dropped (developer's call):** repeating the edge column (stripes), mirroring it (copied the room's pipe), filling with the wall's own tiles at random (seams), black bars (wanted the background).
+- **Fix:** (1) `nsmbw_wide_camera_limits.cpp` wraps `dBg_c::getLeftLimit` / `getRightLimit` (0x80078A70 / 0x80078C10): when the zone is narrower than the view, the limits become one view width centred on the zone, so every camera mode centres. (2) `nsmbw_zone_pillarbox.cpp` gives aurora the zone's x range each tick (`AuroraSetLevelClipX`); aurora classifies each draw before its pipeline lookup (`update_level_draw_class`, gx.cpp: a 1024x1024 tileset under the full-width level camera - the pipeline config is cached across draws, so a check inside `populate_pipeline_config` or `handle_draw` missed most tile draws) and scissors those to the zone, so the room's tiles stop at its edges and the background layers, drawn wider, fill the sides; the HUD is not clipped. Verified in 3-3's pipe room at 21:9, 2 players: room centred, background on both sides, clean wall edge; 1-1 at 21:9 unchanged. Not checked: the Bertha arena, levels whose background is also tile-drawn. `NSMBW_ZONE_PILLARBOX=0` / `NSMBW_WIDE_CAMERA_CENTRE=0` turn them off; `NSMBW_LOG_ZONE_PILLARBOX=1` logs the range.
+- **Also built, kept off:** a fade of tile draws past the zone edges (`ShaderConfig::edgeFade` / `edgeFadeOpaque` in former padding bits, uniform `edge_fade`, blending forced on; `AuroraSetLevelFadeWidth`, `NSMBW_ZONE_FADE=<units>`). It worked with a drawer that extended the wall past the edge, but the developer preferred the clean edge, so the drawer copies were removed and the width defaults to 0 (no draw takes the fade path).
+- **Scope:** NSMBW-specific (the clip mechanism is general aurora).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
 
-- Compat exe (2026-11-14): never run on a pre-AVX2 CPU. The ~700 above-v2 instructions in the prebuilt Dawn/DXC DLLs are assumed to be CPU-dispatched, not proven (Intel SDE `-snb` would settle it). Speed on old hardware is unmeasured. The release package has not been built with it yet.
+- Compat exe (2026-11-14): never run on a pre-AVX2 CPU. The ~700 above-v2 instructions in the prebuilt Dawn/DXC DLLs are assumed to be CPU-dispatched, not proven (Intel SDE `-snb` would settle it). Speed on old hardware is unmeasured. Packaged since 2026-11-15 as compat DLLs for PAL and USA, chosen by the launcher.
 
+- `crorc` computed as `~a | b` instead of `a | ~b` in `runtime/include/isa/ppc_isa_cr.h` (`PpcCrLogicalResident` case 6); fixed upstream in WiiCompiled #420, not ported. NSMBW's translated code does not call it (2026-11-18 grep), so nothing is known to be affected. docs/futureplans.md 7c.
 - Render-scale cap at 4x in `ResetPersistentStateForCleanRun` may read config before it is loaded (2026-09-26 entry); untested with 8x saved.
 - Blurred background pipes on the title screen show visible texel blocks at 4x (2026-09-26); not investigated.
 

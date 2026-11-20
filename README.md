@@ -52,10 +52,10 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 
 **Save** in that world-map menu always does a full save and lets you keep playing, at any point in the game. The original only offers Quick Save, which quits to the title screen, until you beat the final boss.
 
-- **Graphics:** windowed, borderless or fullscreen; resolution from native (528p) up to 6K; aspect ratio (16:9, an experimental 21:9, or the game's own letterboxed 4:3); frame interpolation; HD textures; bloom
+- **Graphics:** windowed, borderless or fullscreen; resolution from native (528p) up to 6K; aspect ratio (16:9, an experimental 21:9, or the game's own letterboxed 4:3); frame interpolation; HD textures
 - **Audio:** separate volumes for music, sound effects and menu sounds
 - **Controls:** pick which controller each player uses, and rebind any button, including to combinations such as L + R
-- **Advanced:** FPS counter and a few performance switches
+- **Advanced:** turn off the power-up freeze, FPS counter, and the Wii's CRT anti-flicker blur (copy filter, off by default)
 
 ### High resolution and widescreen
 Render at up to 6K (3456 rows, 6.5 times the Wii's native 528), in 16:9. Pick a preset by height: 528p (native), 720p, 1080p, 1440p, 4K, 5K, 6K, or Auto to match the window. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120 or 180 fps on high-refresh monitors.
@@ -79,6 +79,7 @@ Dolphin texture packs for NSMBW work without changes. Install one during setup, 
 - The Wii Remote strap and "hold the remote sideways" screens are skipped.
 - The opening cutscene and hint movies can be skipped: press **-** once to show the prompt, then again to skip.
 - The options menu pauses the whole game, sound and hint-movie replays included.
+- **Optional: no power-up freeze.** In single player the game stops everything for about a second while Mario grows or shrinks. Turn off **Power-up freeze** in the options menu (Advanced) and the level keeps moving, as it does in multiplayer. On by default.
 - **Player 1 can be any character.** After choosing the number of players, every player, player 1 included, picks Mario, Luigi, Blue Toad or Yellow Toad. To switch later, open **Add/Drop Players** in the world-map menu, pick on player 1's card, then press OK. The choice is kept in your save file.
 
 ### Screenshots
@@ -105,8 +106,8 @@ Defaults; change them in **Options → Controls**.
 | Switch options tab | LB / RB | Q / E |
 
 ## Future Plans
-- Support for all game versions beyond the PAL rev 1 disc
-- Lower the system requirements, specifically AVX2
+- Support for the other game versions (Japan, Korea, PAL and USA revision 2)
+- Full-screen 4:3 and 16:10
 - Android, Linux, Mac Support
 
 ## Known issues

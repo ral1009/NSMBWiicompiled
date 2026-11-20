@@ -499,6 +499,10 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
   }
   info.uniformSize += info.sampledTexCoords.count() * sizeof(Vec4<float>);
   info.uniformSize += info.sampledTextures.count() * sizeof(Vec4<float>);
+  if (config.edgeFade) {
+    info.usesEdgeFade = true;
+    info.uniformSize += sizeof(Vec4<float>);
+  }
   info.uniformSize = gfx::align_uniform(info.uniformSize);
   if (info.uniformSize > MaxUniformSize) {
     Log.fatal("Uniform size exceeds maximum: {} > {}", info.uniformSize, MaxUniformSize);
@@ -761,6 +765,9 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
     const auto& tex = get_texture(static_cast<GXTexMapID>(i));
     // CHECK(tex, "unbound texture {}", i);
     buf.append(texture_size_bias(tex));
+  }
+  if (info.usesEdgeFade) {
+    buf.append(level_edge_fade_uniform());
   }
 
   if (!perspective || frame_interpolation_fps() == 0) {

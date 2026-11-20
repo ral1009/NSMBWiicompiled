@@ -23,7 +23,7 @@
 # it out of an official Dolphin x64 release together with Dolphin's license), which the launcher's
 # setup screen (nsmbw_launcher_setup.cpp) uses to extract the player's disc image.
 param(
-    [string]$Version = "0.2.2",
+    [string]$Version = "0.3.0",
     [string]$OutDir = "",
     [switch]$Private,
     [string]$DiscDir = "",        # -Private: extracted disc (sys\ + files\); default NSMBW-Files

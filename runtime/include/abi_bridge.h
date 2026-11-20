@@ -3,7 +3,6 @@
 #include "nsmbw_va.h"
 #include "ppc_runtime.h"
 #include "system_bridge.h"
-#include "game_graphics_options.h"
 #include "runtime_log.h"
 
 #include <array>
@@ -58,18 +57,6 @@ inline void Push(uint32_t addr, uint32_t lr, uint32_t r3 = 0, uint32_t r4 = 0) {
     if (g_watchCallsAddr != 0) WatchCallsCheck(addr, lr);
 }
 } // namespace DiagRecentCalls
-
-// Some game-facing runtime options alter arguments at well-defined ABI
-// boundaries. Keep this independent of the dispatch mechanism: generated
-// static calls deliberately bypass InvokeDirectCpu for performance.
-// (used for the path mask filtering in ScnRenderer::createPath: depth of
-// field is always removed, bloom when the user disabled it)
-inline void ApplyRuntimeCallOptions(uint32_t target, CpuContext* ctx) {
-    if (target == NSMBW_VA(0x8023BD38u)) {
-        // ScnRenderer::createPath receives the post-processing path mask in r4.
-        ctx->gpr[4] = RuntimeGameGraphicsOptions::FilterScnRendererPathMask(ctx->gpr[4]);
-    }
-}
 
 // Persistent per-thread CPU context used across translated function calls.
 CpuContext& GetPersistentCpuContext();
@@ -586,7 +573,6 @@ template <uint32_t Target>
 inline void InvokeDirectCpu(CpuContext* ctx) {
     static_assert(Target != 0, "InvokeDirectCpu cannot target address 0");
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
-    ApplyRuntimeCallOptions(Target, cpu);
     if constexpr (KnownNativeCpuCall<Target>::kAvailable) {
         const auto invokeKnownNative = [&]() {
             PpcNonvolatileGprGuard gprGuard(cpu);
@@ -683,7 +669,6 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
     if (target == 0) {
         ReportMissingCpuTarget(target, cpu);
     }
-    ApplyRuntimeCallOptions(target, cpu);
     if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target), cpu)) {
         return;
     }

@@ -550,7 +550,9 @@ struct ShaderConfig {
   u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
   u8 dualTexEnabled : 1 = 0;
   u8 fogRangeAdjust : 1 = 0;
-  u8 pad1 : 4 = 0;
+  u8 edgeFade : 1 = 0; // level pillarbox: fade alpha out past the zone edges (uniform edge_fade)
+  u8 edgeFadeOpaque : 1 = 0; // the draw was not blended: its TEV alpha is meaningless, use the fade alone
+  u8 pad1 : 2 = 0;
   u8 numTexGens = 0;
   u32 zTexture = 0; // bias[0:23], format[24:25], op[26:27]; 0 disables shader depth output.
   std::array<AttrConfig, MaxVtxAttr> attrs;
@@ -731,6 +733,12 @@ struct UniformMatrixLayout {
   bool absolutePosRegion = false;
 };
 // Output info from shader generation
+Vec4<float> level_edge_fade_uniform() noexcept;
+extern float g_levelClipX0, g_levelClipX1, g_levelFadeWidth;
+extern bool g_levelDrawCurrent;
+extern bool g_levelProjCurrent; // set per projection load (command_processor.cpp)
+void refresh_render_state() noexcept;
+void update_level_draw_class() noexcept;
 struct ShaderInfo {
   std::bitset<MaxTexCoord> sampledTexCoords;
   std::bitset<MaxTextures> sampledTextures;
@@ -749,6 +757,7 @@ struct ShaderInfo {
   UniformMatrixLayout matrixLayout;
   u32 uniformSize = 0;
   bool usesFog : 1 = false;
+  bool usesEdgeFade : 1 = false;
   bool lightingEnabled : 1 = false;
   u8 lineMode : 2 = 0;
 };

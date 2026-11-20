@@ -4,7 +4,6 @@
 #endif
 #include "audio_backend.h"
 #include "controller_mapping_wizard.h"
-#include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
@@ -117,8 +116,10 @@ int g_displayMode = [] {
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
+// Read by the game thread every power change (nsmbw_power_up_freeze.cpp); written by the F10
+// menu, which also runs on the game thread (inside the VI retrace), so a plain bool is enough.
+bool g_powerUpFreeze = RuntimeConfigFile::PowerUpFreeze(true);
 bool g_textureReplacements = RuntimeConfigFile::TextureReplacements(false);
-uint32_t g_disabledPostProcessingPaths = RuntimeConfigFile::DisabledPostProcessingPaths(0);
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
     indices.fill(std::numeric_limits<int32_t>::min());
@@ -302,19 +303,6 @@ void LimitResolutionForFrameRate() {
         SetResolutionScale(ScaleForHeight(2160));
     }
 }
-
-void SetPostProcessingPathDisabled(uint32_t flag, bool disabled) {
-    if (disabled) {
-        g_disabledPostProcessingPaths |= flag;
-    } else {
-        g_disabledPostProcessingPaths &= ~flag;
-    }
-    RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
-    RuntimeConfigFile::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
-}
-
-// Disables bloom in the game's post-processing (the F10 bar's "Disable bloom").
-constexpr uint32_t kBloomPathFlag = 0x10u;
 
 ProductMenu g_productMenu{};
 bool ProductMenuOpen() { return g_productMenu.isOpen != nullptr && g_productMenu.isOpen(); }
@@ -734,22 +722,6 @@ void DrawAudioSettings() {
 
 void DrawGraphicsSettings() {
     g_displayMode = static_cast<int>(aurora_get_display_mode());
-    struct EffectFlag {
-        const char* label;
-        uint32_t flag;
-    };
-    static constexpr std::array<EffectFlag, 1> kEffectFlags = {{
-        {"Disable bloom", 0x10u},
-    }};
-
-    for (const auto& effect : kEffectFlags) {
-        bool disabled = (g_disabledPostProcessingPaths & effect.flag) != 0;
-        if (ImGui::Checkbox(effect.label, &disabled)) {
-            SetPostProcessingPathDisabled(effect.flag, disabled);
-        }
-    }
-    ImGui::TextDisabled("Applied when the next scene renderer is created.");
-    ImGui::Separator();
     static constexpr const char* kDisplayModes[] = {
         "Windowed",
         "Borderless fullscreen",
@@ -1117,8 +1089,12 @@ void SetResolutionIndex(int index) noexcept {
     if (ResolutionAllowed(index)) SetResolutionScale(kResolutions[static_cast<size_t>(index)].scale);
 }
 
-bool Bloom() noexcept { return (g_disabledPostProcessingPaths & kBloomPathFlag) == 0; }
-void SetBloom(bool enabled) noexcept { SetPostProcessingPathDisabled(kBloomPathFlag, !enabled); }
+
+bool PowerUpFreeze() noexcept { return g_powerUpFreeze; }
+void SetPowerUpFreeze(bool enabled) noexcept {
+    g_powerUpFreeze = enabled;
+    RuntimeConfigFile::SetPowerUpFreeze(enabled);
+}
 
 bool ShowFps() noexcept { return g_showFps; }
 void SetShowFps(bool show) noexcept {
@@ -1190,7 +1166,6 @@ void InitializeRuntimeSettings() noexcept {
     MusicAttenuation::SetUiVolume(static_cast<float>(g_uiVolumePercent) / 100.0f);
     MusicAttenuation::SetVoicesVolume(static_cast<float>(g_voicesVolumePercent) / 100.0f);
     MusicAttenuation::SetEnabled(g_attenuateMusicWhenMediaPlays);
-    RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
     LimitResolutionForFrameRate();
     ApplyFrameInterpolationMode();
     aurora_set_display_mode(static_cast<AuroraDisplayMode>(g_displayMode));

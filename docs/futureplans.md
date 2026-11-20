@@ -1,6 +1,6 @@
 # Future plans
 
-What we intend to build next and how. Nothing here is done yet. `docs/MASTER_PLAN.md` stays the record of phases and progress; this file is the to-do list for after the current release.
+What we intend to build next and how. Written before any of it was built; the triage table's Plausibility column now says what has been built since (status as of 2026-11-18). `docs/MASTER_PLAN.md` stays the record of phases and progress; this file is the to-do list for after the current release.
 
 Written 2026-11-07. Items are in rough priority order. "Check first" lists what must be found out before the work can be sized.
 
@@ -10,21 +10,27 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 
 | # | Item | Plausibility | Work | Release |
 |---|---|---|---|---|
-| 1 | Resolution labels show pixel height | Very high | Tiny: edit the label list | **0.2.3** |
-| 2 | Linux/Proton: default to Vulkan, automatic `nand_root` | High (cause of bug 1 not yet proven) | Small | **0.2.3** |
-| 3 | Rotating backups of the save file | Very high | Small | **0.2.3** |
-| 4 | 4:3 mode as an F10 option | High: the game and our code already support it | Small to medium | **0.3.0** |
+| 1 | Resolution labels show pixel height | Done 2026-11-07 (`31d39f4`): presets named by render height (528p native ... 6K) | - | **0.3.0** |
+| 2 | Linux/Proton: default to Vulkan, automatic `nand_root` | Half done 2026-11-07: `graphics_api` is honoured and `auto` means Vulkan under Wine/Proton (not tested under Proton); `nand_root` only got clearer error messages, its cause is unconfirmed | Small: needs the reporter to retest | **0.3.0** |
+| 3 | Rotating backups of the save file | Done 2026-11-07: one copy per launch to `SaveBackups/`, 10 kept (the rotation itself is untested) | - | **0.3.0** |
+| 4 | 4:3 mode as an F10 option | Built 2026-11-07: the game's own letterboxed 4:3, applied after a restart (section 1a); full-screen 4:3 not done | Full-screen 4:3: medium (Vert+) | **0.3.0** (letterboxed) |
 | 5 | Swappable player 1 character | Built 2026-11-15: Mario in the Add/Drop selector (game setup and the world map; the F10 option was removed the same day), character select after "1 player" (section 7a) | Small now: test with real controllers, the "1 Players" title, pick the portrait | **0.3.0** |
 | 6 | Riivolution file mods | Medium-high: loader already in the shared runtime | Medium (wire into NSMBW, test with a real pack) | **0.3.0** |
 | 7 | No-AVX2 build | Built 2026-11-14; packaged 2026-11-15 as compat DLLs for PAL and USA, chosen by the launcher; not yet run on a pre-AVX2 CPU | Small now: test | **0.3.0** |
-| 8 | 16:10 and ultrawide (wider view) | Medium: the MKW code in this repo is a worked example; NSMBW's HUD and culling are the unknowns | Large | **0.3.0** for 16:10; ultrawide in 0.3.0 only if the spike below works, otherwise 0.4.0 |
-| 9 | 180 fps drop to ~40 fps on a fast PC | Unknown: needs the reporter's details | Unknown | **0.2.3** if the cause turns out small; otherwise 0.3.0 |
+| 8 | 16:10 and ultrawide (wider view) | 21:9 built as experimental 2026-11-07, edge tiles and menu backgrounds fixed 2026-11-14; wipe and title-ground problems open (section 1b). 16:10 not done (falls back to 16:9) | 16:10: medium (needs a taller view) | **0.3.0** for 21:9 (experimental); 16:10 later |
+| 9 | 180 fps drop to ~40 fps on a fast PC | Fixed 2026-11-15 (`a49a5e6`, progress log): a 40 fps lock found and fixed on this PC; whether it is the reporter's case is unconfirmed | - | **0.3.0** |
 | 10 | Rumble and gyro tilt | Medium-low: rumble goes through the Wii Remote motor calls, which are not bound | Medium | later (0.4.0) |
-| 11 | Other game versions (NTSC-U first) | Medium: an address map exists, but each version needs its own disc to test | Very large | later (0.4.0 or after) |
+| 11 | Other game versions (NTSC-U first) | USA rev 1 built 2026-11-14/15 (a DLL per version behind the launcher); tested through World 1. Other versions not started | USA: test past World 1 | **0.3.0** for USA rev 1; others later |
 | 12 | Save carry-over between regions | Unverified: save format not yet read | Small once item 11 exists | later, with item 11 |
 | 13 | Newer SMBW (code mods) | Low-medium | Very large | later |
 | 14 | Android, online play, native Linux build | Low | Very large | later |
 | 15 | Regression tests, installer, auto-update | Medium | Medium each | later |
+| 16 | Toggle for the power-up / damage freeze ("item pickup lag"; promised in the v0.2.2 release notes) | Built 2026-11-18: F10 > Advanced > Power-up freeze (section 7b); tested with a scripted power change on PAL and USA, not yet by playing | Play test: a real pickup, damage, mini mushroom | **0.3.0** |
+| 17 | Assist options, infinite lives first (section 7d) | High for lives: one static function, `daPyMng_c::decRest`; not checked whether it is inlined. Invincibility not checked | Small | later (0.4.0) |
+| 18 | Player-vs-player collision toggle for co-op (section 7d) | Medium-high: the game has `setCcPlayerRev`, `ccCheckStamp` and a per-pair `setNoHitPlayer` | Small to medium | later (0.4.0) |
+| 19 | Game speed and hold-to-fast-forward (section 7d) | Medium: we already control the VI retrace interval (Match display); audio must mute away from 100%, not tried | Small to medium | later (0.4.0) |
+| 20 | Practice tools: instant restart, game-frame level timer, death counter, input display (section 7d) | Medium: restart can reuse the map-reload trick and a cloned pause button | Medium | later (0.4.0) |
+| 21 | Camera zoom-out, experimental (section 7d) | Medium: the ultrawide view-width and tile-column constants exist; exposes level edges and pop-in | Medium | after 21:9 ships |
 
 ### What the repo investigation found
 
@@ -39,11 +45,11 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 
 ### Suggested order of work
 
-1. **0.2.3 (a day or two):** items 1-3, plus item 9 if the details arrive and the cause is simple. All are small and easy to check on this PC, apart from Linux, which needs the reporter to retest.
+1. **0.2.3:** never released. Items 1-3 and 9 were built after v0.2.2 and ship in 0.3.0 instead (2026-11-18).
 2. **0.3.0:** start with a time-boxed spike for item 8: apply the wider screen record, drive the window to 21:9 with the CRU trick, and record what breaks (HUD position, pop-in at the edges, fades). That result decides whether ultrawide ships in 0.3.0. Do items 4-7 alongside; the 4:3 option (item 4) also proves out the "aspect read at scene creation" question that item 8 depends on.
 3. **After 0.3.0:** item 11 first for NTSC-U, because it also unlocks item 12 and the largest audience. Needs a US disc to test (the developer has one since 2026-11-14). Packaging is decided: a launcher plus one DLL per version (section 3).
 
-## 1a. 4:3 progress (2026-11-07, uncommitted)
+## 1a. 4:3 progress (2026-11-07; committed in `31d39f4` and `98b406c`)
 
 - **Built:** an "Aspect ratio" row (16:9 / 4:3) in the F10 Display tab, a `SetWidescreen` config setter, and `SCGetAspectRatio_HLE` (`runtime/src/hle/sc.cpp`) now fixes its answer at first call, because the game asks for the ratio at boot and again as it builds objects (`m2d::Simple_c`, the faders), so a mid-session change would mix the two. The row says "Applies after a restart" when the saved choice differs from the running one. A 4:3 `VILockAspectRatio` was added in `nsmbw_product.cpp` to match the 16:9 one.
 - **Seen (portable copy, `widescreen = false`, title screen):** the game switches to its 4:3 layout (the logo and "Press Z to Start" are laid out differently), so the game side works.
@@ -72,6 +78,11 @@ Each constant is checked against its 16:9 value before it is written, and a log 
   3. **The Bowser-face wipe** leaves the sides uncovered late in the animation (early frames covered the full width after the fader patch).
   4. **Title screen:** the ground ends before the right edge (fixed camera near the end of the title scene's level).
   5. **"The world looks flat":** measurement says the foreground is not stretched (? block 49x49 px, Mario 0.55 width/height as at 16:9), but the developer still sees it; needs a side-by-side at the same spot.
+  6. **Menu 3D models stretched - fixed 2026-11-19** (Select World verified; items screen and 2-player character select not yet seen). They use a 16:9 orthographic camera (853x456); `AuroraSetModelOrthoXScale` narrows each model around its own origin.
+  7. **Camera jumping in zones narrower than the view - fix built 2026-11-19, untested in the arena** (World 4 Big Bertha): `nsmbw_wide_camera.cpp` centres the camera when the clamp range is empty.
+  8. **Edges of the world shown (developer report 2026-11-19):** the World 3 map's left side and the 3-2 pipe area show geometry ending inside the wider view. That art does not exist past what 16:9 shows; options are a narrower view in those places (pillarbox) or accepting it. Not decided.
+     - **Tried 2026-11-19: repeat the edge tiles at the tile lookup.** World 3-2's underground zone (area 2, tiles 19-60) has wall tiles only 1-2 tiles past its edges (read from `Stage/03-02.arc`), so drawing further shows nothing. An override of the tile-address lookup 0x80077520 (all tile reads go through 0x80083B40, the only user of the block-index leaf 0x80083F90) returned the zone-edge column's tile past the zone's limits (dBg_c floats at `m_bg_p`+0x90030 / +0x90034). It ran (a log showed the substitutions) but the picture didn't change: with a debug inset of 200 units in 1-1, the ? block inside the inset still drew, so the level drawer (0x80082740 -> 0x80082BE0, which reads a tile ring buffer at r21 with a row width at +48) does not fetch through that lookup. Removed (it would only have changed collision).
+     - **Built 2026-11-19: clamp the drawer's column.** The drawer reads the zone's own tile buffer and wraps past its ends; `nsmbw_zone_edge_tiles.cpp` clamps the column instead, so the outermost column (3-2's walls) repeats to the screen edge. Verified with a test inset in 1-1; not yet seen in 3-2.
 - **Not checked:** later worlds, bosses, autoscroll, cutscenes, multiplayer zoom, 32:9 (only behind `NSMBW_EXPERIMENTAL_ASPECT=1`).
 - **16:10 and full-screen 4:3** need the opposite (a taller view) and are not done.
 - Diagnostics added: `NSMBW_LOG_BGPARAM=1` (the visible rectangle once a second), `NSMBW_ASPECT=<w>:<h>` (override for a run), full-precision projection in `NSMBW_LOG_DRAW_TEXGEN`.
@@ -195,6 +206,54 @@ Tested (portable copy, scripted with `NSMBW_TEST_INPUT`, which now takes `p<N>:`
 - Free Mode / Coin Battle still reset to Mario at their start (0x800BB180 inlined into 0x807A0DB0 and `dInfo_c`'s constructor).
 - Mario portrait (2026-11-15, developer's local data only - neither file is in the repo or a package): default = the developer's Mario Kart Wii mugshot (its 64x64 original, framed and resampled to 150x150 without upscaling; changed 2026-11-15 at the developer's request), as `build_nsmbw/nsmbw_data/portraits/Im_plofileMario_00.tpl`; HD = a head-and-shoulders crop of the official NSMBW Mario render (MarioWiki, `NSMBW_Mario_Solo_Artwork.png`) as `texture_replacements/SMN/UI/Menu/tex1_150x150_809770f85bf8b175_5.png`, named from that default's pixels. Seen in game with the HD pack on. A shipped build still falls back to the disc's score-screen head. The level-entry wipe stays Mario-shaped (`wipeMario`).
 - USA: every overridden function and table is byte-identical at the same address in the USA REL; the USA DLL builds and links with all of it (2026-11-15). Not run.
+
+### 7b. Toggle for the power-up / damage freeze (2026-11-18; built the same day, `nsmbw_power_up_freeze.cpp`)
+
+In single player the game freezes every other actor for about a second while Mario changes size (any power-up, and damage that shrinks him). The v0.2.2 notes promised a toggle for it in 0.3.0.
+
+- **What freezes it:** `dAcPy_c::executeChangeInit` (0x80141080, `d_a_player.cpp`) runs on the first frame of a power change. It calls `daPlBase_c::stopOther` (0x8004E050), which sets `dActor_c::mExecStopReq |= 0xF` (an *execute-stop request*: actors whose kind is in that mask skip their update; the changing player and Yoshi are taken out of it), and `dAudio::pauseMove` (0x8006A7D0) for the player's sound. `initChangeInit` undoes both when the change ends.
+- **The game's own switch:** `stopOther` does nothing unless `daPlBase_c::isPlayerGameStop` (0x8004E040) is true, i.e. bit 1 of `dInfo_c::mGameFlag` (0x8042A260). `executeChangeInit` then returns that same bit, which picks whether the player is frozen-and-redrawn (`updateChange` sets visibility and collision) or keeps moving. So the no-freeze path already exists in the game. That multiplayer is the case where bit 1 is clear is my reading of the code, not checked in a run: the only r13-relative write to `mGameFlag` is in `func_800BB450`, and who sets bit 1 was not found.
+- **Proposed change:** a structural copy of `func_80141080` with `EDIT` lines that, when the option is on, skip the `stopOther` call and the inlined `pauseMove`, and return 0 (the path taken when bit 1 is clear). `executeChangeInit` is called only through a member-function table (`l_changeActionProc`), so no caller can inline it and the override always runs.
+- **Why not the simpler places:** overriding `isPlayerGameStop` does not work, because the translator inlined it into 2 shards (the second recurring bug class in CLAUDE.md), and it would also remove the pipe, door, goal-pole and water-tank freezes, which use the same check. Clearing bit 1 of `mGameFlag` has the same problem, and its other readers (36 functions read the word) were not audited.
+- **Left alone:** pipe/door/goal/death freezes, and the flashing after damage (that is invincibility, not a freeze).
+- **Built (2026-11-18):** `projects/nsmbw/native/nsmbw_power_up_freeze.cpp` overrides both 0x80141080 and 0x80141460 (`executeChangeNormal` returns the same bit every frame of the flashing, and a true return is what keeps the player himself still, via `updateChange` -> `executeMain`). `[gameplay] power_up_freeze` (default true), F10 > Advanced > "Power-up freeze". Test hook `NSMBW_DEBUG_P1_POWERUP=<power-up>@<ticks>`. Results in the progress log.
+- **Work (as estimated):** one override file, a Config.toml key and an F10 row, then the usual steps (shard manifest, `va_codemod.py`, `gen_version_tables.py E1`). Roughly half a day including a play test of mushroom, fire flower, mini mushroom (`executeChangeInit` also caps the jump speed and drops a carried actor for it) and damage, on PAL and USA. Risks: enemies and moving platforms keep moving during the change; untested.
+
+### 7c. Upstream WiiCompiled #420 and #421 (reviewed 2026-11-18, not applied)
+
+`origin` has 172 commits since our merge base (`806f412`). The two newest, #420 "fix runtime and translator correctness" and #421 "improve runtime and translation performance" (17-18 Nov 2026), were read for this release:
+
+- **#420, translator/ISA:** `crorc` was computed wrong in `ppc_isa_cr.h` (case 6: `~a | b` instead of `a | ~b`); our copy has the same line, but NSMBW's translated code makes no `crorc` calls through it (grep of `build/nsmbw*/functions`). `stwcx.` was decoded from the wrong opcode: no `stwcx.` in NSMBW's output. The GQR dataflow fix (loops that change a GQR) and `nor.` lifting: our translator with those two patches applied re-translated the PAL DOL to the same 16,187 files with 0 differences; RELs not checked. `lfs` and paired loads now widen a float's bits without the host flush mode: this changes results only for single-precision denormals while the guest has FPSCR[NI] set (which this runtime mirrors as host FTZ/DAZ); NSMBW's code has ~220k such loads, impact unknown and probably nil.
+- **#420, runtime:** crash-safe save and config writes (`host_file.h`, used by NAND), fiber lifetime fixes, pad trigger state, audio ownership, networking, and 23 new test files.
+- **#421:** a GX display-list cache, texture-binding and worker changes, ARM audio kernels, and a lower-memory translator mode. It touches GX files we have changed heavily, so it would conflict; benefit for NSMBW unmeasured.
+- **Decision for 0.3.0:** not taken (each needs a re-translation or rebuild and a full re-test). After 0.3.0, port single pieces with a play test each: the `crorc` line, the `lfs` widening, and the save-write safety.
+
+### 7d. Options from the 2026-11-18 idea review (nothing built)
+
+The developer put an AI-generated list of "things a PC port could fix" through the repo on 2026-11-18. Effort sizes are estimates from reading code (decomp and this repo); nothing was built or run. Suggested order: 18 and 17 first, then 19, 20, 21.
+
+**Added (triage rows 17-21):**
+- **17. Assist options.** Infinite lives first: losing a life goes through `daPyMng_c::decRest` (a static function; lives are `daPyMng_c::mRest[4]`). *Check first:* the generated shards for an inlined copy (CLAUDE.md, second recurring class). Invincibility: not checked, damage probably has several entry points. The Super Guide stays as it is.
+- **18. Player-vs-player collision toggle.** Hooks in the game: `daPlBase_c::setCcPlayerRev` (push), `ccCheckStamp` (stomp), and `setNoHitPlayer` / `updateNoHitPlayer` / `mpNoHitPlayer` (an existing per-pair "cannot collide" slot). *Decide:* whether lifting and throwing another player stays on. Test with two real controllers (the developer has tested two before).
+- **19. Game speed and hold-to-fast-forward.** `vi.cpp` now owns the retrace interval (`g_hostRetraceOverrideNanos`, added for Match display), so 50%-400% is a change to it. Audio does not follow the game clock, so mute away from 100%. Game logic stays frame-exact, so replays (title demo, Super Guide, hint movies) stay valid. Also skips world-map animations and the flagpole tally. *Check first:* how interpolation and audio behave at 4x.
+- **20. Practice tools.** Instant restart (a pause-menu button cloned the way Options was, and a reload path like the player-1 map reload, 0x809218B0, or the `d_s_restart_crsin` scene), a level timer, a death counter and an input display. The timer counts game frames, not wall time, so it is right at any frame rate or interpolation setting.
+- **21. Camera zoom-out (experimental), after 21:9 ships.** Reuses the level view width (0x8042D058) and the tile-column constant (0x8042C1A4, section 1b). Risks: shows the level's edges, culling pop-in, levels designed around the fixed view. Ship as an opt-in with the same checks as ultrawide.
+
+**Parked (with the reason):**
+- Per-character physics (Luigi jumps higher, Toads run faster): the physics tables (`d_a_player_data.hpp`) are per power-up, not per character, and those traits come from SMB2. It would be a new mechanic and would desync the title demo, Super Guide and hint movies unless limited to live play.
+- Challenge modifiers (low gravity, mirror mode, coin rush): fun, not a fix. Same replay caveat. After item 17.
+- Off-screen player indicators for co-op: the game's answer is zooming out plus bubbles; changing it is a camera redesign.
+- A full-game speedrun split timer: needs level-complete hooks; wait until item 20's level timer works.
+- A toggle for the "bah" vocals: unknown whether they are a separate stream track. A stream dump would say; only then decide.
+
+**Rejected (with the reason):**
+- Uncompressed or spatial audio: only the disc's compressed audio exists, so there is no better source.
+- Dynamic shadows, ambient occlusion, new lighting: large renderer work that changes the look. The game's own bloom is already an F10 option.
+- Using a stored power-up mid-level: the game's inventory exists only on the world map (`dMj2dGame_c::mStockItemCount`), so this is a new mechanic needing HUD and input work.
+- Swapping characters mid-level: the world-map Add/Drop screen already does it (section 7a); mid-level it conflicts with per-slot lives and power-ups.
+- Vector UI: HD packs already replace the UI textures and fonts.
+
+**Already built, no entry needed:** controller and keyboard input, shake and tilt remapping, button prompts, 21:9 (experimental), high render scales, 120/180/240/Match display interpolation, full saves on the world map, the `-` movie skip. The power-up freeze toggle is item 16 (section 7b). Riivolution and the level loader are item 6, Newer SMBW is item 13, online play stays parked (section 9).
 
 ## 8. Performance and known issues to investigate
 

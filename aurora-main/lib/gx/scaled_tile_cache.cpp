@@ -291,7 +291,35 @@ bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
   }
   // Scale 1 included: even at native resolution, keeping the atlas on the GPU and pasting tile
   // copies into it is what lets lookup_unchanged skip the per-frame RAM re-decode.
-  const u32 scale = scaled->size.width / width;
+  // A render scale that isn't a whole number (the 2160p preset is 2160/528 = 4.09x) makes a 32x32
+  // tile copy 131x131, which no atlas cell (width * scale) can hold, so until 2026-11-19 those tiles
+  // fell back to the native RAM write-back: ? blocks and coins drawn from their 32x32 art at 4K
+  // (developer report: "coins look soft"; 131x131 copies in the log). Resample such a copy to the
+  // nearest whole scale on the GPU (the same linear blit the atlas build uses), one texture per tile.
+  gfx::TextureHandle copy = scaled;
+  u32 scale = scaled->size.width / width;
+  if (scale == 0 || scaled->size.width != width * scale || scaled->size.height != height * scale) {
+    const u32 rounded = std::max<u32>(1, (scaled->size.width + width / 2) / width);
+    if (scaled->size.height * width == scaled->size.width * height && width * rounded <= kMaxAtlasDimension) {
+      static std::map<uintptr_t, gfx::TextureHandle> s_resampled;
+      auto& tex = s_resampled[reinterpret_cast<uintptr_t>(dest)];
+      if (!tex || tex->size.width != width * rounded || tex->size.height != height * rounded) {
+        tex = gfx::new_render_texture(width * rounded, height * rounded, GX_TF_RGBA8, "Resampled tile copy");
+      }
+      static constexpr std::array kResampleBlit{
+          0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+      };
+      if (tex && gfx::add_post_resolve_op(gfx::PostResolveOp{
+                     .src = scaled,
+                     .dst = tex,
+                     .blit = true,
+                     .uniformRange = gfx::push_uniform(kResampleBlit),
+                 })) {
+        copy = tex;
+        scale = rounded;
+      }
+    }
+  }
   if (s_log) {
     static std::map<uintptr_t, u32> s_seen; // one line per destination and scale
     const auto k = reinterpret_cast<uintptr_t>(dest);
@@ -302,14 +330,14 @@ bool note_tile_copy(const void* dest, u32 width, u32 height, u32 strideWidth, GX
     }
   }
   const auto key = reinterpret_cast<uintptr_t>(dest);
-  if (scale == 0 || scaled->size.width != width * scale || scaled->size.height != height * scale) {
+  if (scale == 0 || copy->size.width != width * scale || copy->size.height != height * scale) {
     drop_entries_at_other_scale(key, 0);
     return false;
   }
   drop_entries_at_other_scale(key, scale);
   auto& slot = s_slots[key];
   slot = Slot{
-      .scaled = scaled,
+      .scaled = copy,
       .width = width,
       .height = height,
       .strideWidth = strideWidth,

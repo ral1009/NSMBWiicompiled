@@ -45,7 +45,6 @@ struct RuntimeUserConfig {
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
     std::optional<bool> showFps;
-    std::optional<uint32_t> disabledPostProcessingPaths;
     std::optional<float> audioVolume;
     std::optional<float> audioMusicVolume;
     std::optional<float> audioSoundEffectsVolume;
@@ -53,6 +52,9 @@ struct RuntimeUserConfig {
     std::optional<float> audioVoicesVolume;
     std::optional<bool> audioMuted;
     std::optional<bool> audioMixWorker;
+    // NSMBW: [gameplay] power_up_freeze - false skips the freeze while a player changes size
+    // (projects/nsmbw/native/nsmbw_power_up_freeze.cpp).
+    std::optional<bool> powerUpFreeze;
     std::optional<bool> attenuateMusicWhenMediaPlays;
     std::optional<bool> networkEnabled;
     std::optional<std::string> nandRoot;
@@ -431,10 +433,6 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.buttonIcons = FindConfigValue<std::string>(document, "controller", "button_icons");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
-    if (auto value = FindConfigUint(document, "video", "disabled_post_processing_paths");
-        value && (*value & ~0x10u) == 0) {
-        config.disabledPostProcessingPaths = *value & 0x10u;
-    }
 
     auto readVolume = [&](std::string_view key) -> std::optional<float> {
         auto value = FindConfigFloat(document, "audio", key);
@@ -447,6 +445,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.audioVoicesVolume = readVolume("voices_volume");
     config.audioMuted = FindConfigValue<bool>(document, "audio", "muted");
     config.audioMixWorker = FindConfigValue<bool>(document, "audio", "mix_worker");
+    config.powerUpFreeze = FindConfigValue<bool>(document, "gameplay", "power_up_freeze");
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
@@ -720,13 +719,6 @@ inline bool SetShowFps(bool value) {
     return WriteSetting("video", "show_fps", value ? "true" : "false");
 }
 
-inline bool SetDisabledPostProcessingPaths(uint32_t value) {
-    Mutable().disabledPostProcessingPaths = value;
-    std::ostringstream formatted;
-    formatted << "0x" << std::hex << std::uppercase << value;
-    return WriteSetting("video", "disabled_post_processing_paths", formatted.str());
-}
-
 inline bool SetButtonIcons(std::string value) {
     Mutable().buttonIcons = value;
     return WriteSetting("controller", "button_icons", FormatString(value));
@@ -805,6 +797,11 @@ inline bool SetAudioMixWorker(bool value) {
     return WriteSetting("audio", "mix_worker", value ? "true" : "false");
 }
 
+inline bool SetPowerUpFreeze(bool value) {
+    Mutable().powerUpFreeze = value;
+    return WriteSetting("gameplay", "power_up_freeze", value ? "true" : "false");
+}
+
 inline bool SetAttenuateMusicWhenMediaPlays(bool value) {
     Mutable().attenuateMusicWhenMediaPlays = value;
     return WriteSetting("audio", "attenuate_music_when_media_plays", value ? "true" : "false");
@@ -864,6 +861,11 @@ inline bool AudioMixWorkerEnabled(bool fallback = true) {
     return Get().audioMixWorker.value_or(fallback);
 }
 
+// Default on: the game's own behaviour.
+inline bool PowerUpFreeze(bool fallback = true) {
+    return Get().powerUpFreeze.value_or(fallback);
+}
+
 inline bool AttenuateMusicWhenMediaPlays(bool fallback = false) {
     return Get().attenuateMusicWhenMediaPlays.value_or(fallback);
 }
@@ -896,10 +898,6 @@ inline bool TextureReplacements(bool fallback = false) {
 // gates it on TextureReplacements() as well.
 inline bool TextureDumps(bool fallback = false) {
     return Get().textureDumps.value_or(fallback);
-}
-
-inline uint32_t DisabledPostProcessingPaths(uint32_t fallback = 0) {
-    return Get().disabledPostProcessingPaths.value_or(fallback) & 0x10u;
 }
 
 inline std::string GraphicsApi(std::string fallback = "auto") {

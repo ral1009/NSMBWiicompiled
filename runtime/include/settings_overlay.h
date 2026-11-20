@@ -53,8 +53,10 @@ const char* ResolutionLabel(int index) noexcept;
 bool ResolutionAllowed(int index) noexcept;
 int ResolutionIndex() noexcept; // -1 when the saved scale is not in the list
 void SetResolutionIndex(int index) noexcept;
-bool Bloom() noexcept; // applies when the next scene renderer is created
-void SetBloom(bool enabled) noexcept;
+// NSMBW: freeze the level while a player changes size (the game's behaviour; default on). Off
+// takes the game's own no-freeze path from the next power change (nsmbw_power_up_freeze.cpp).
+bool PowerUpFreeze() noexcept;
+void SetPowerUpFreeze(bool enabled) noexcept;
 bool ShowFps() noexcept;
 void SetShowFps(bool show) noexcept;
 // NSMBW aspect ratio presets (16:9, 21:9, 4:3 letterboxed). Saved as [video] aspect_ratio; applies

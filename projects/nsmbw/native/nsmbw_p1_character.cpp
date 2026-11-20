@@ -229,6 +229,15 @@ void KeepOkFadeRunning() {
 }
 constexpr uint32_t kGameStopWord = NSMBW_VA(0x8042A228u); // dGameCom game-stop flags (nsmbw_options_menu.cpp)
 
+// Diagnostic for the "Add/Drop returned me to World 1" report: dInfo's current course (what the
+// reload reads, +0x3C world / +0x40 node / +0x44) against the live map's dScWMap_c::m_WorldNo / m_SceneNo.
+void LogMapPosition(const char* tag) {
+    uint32_t info = 0, a = 0, b = 0, c2 = 0, wm = 0;
+    Memory::TryRead32(NSMBW_VA(0x8042A25Cu), info);
+    if (info) { Memory::TryRead32(info + 0x3C, a); Memory::TryRead32(info + 0x40, b); Memory::TryRead32(info + 0x44, c2); }
+    Memory::TryRead32(NSMBW_VA(0x8042A52Cu), wm); // bytes: ..., m_WorldNo (0x8042A52D), m_SceneNo (0x8042A52E)
+    std::fprintf(stderr, "[nsmbw][p1chara] %s: dInfo+3C/40/44 = %u/%u/%u, map world %u scene %u\n", tag, a, b, c2, (wm >> 16) & 0xFFu, (wm >> 8) & 0xFFu);
+}
 void ReloadMapIfModelIsStale(uint32_t c) {
     if (g_nsmbwCurrentSceneProfile != g_mapSceneSeen) { // a new scene: its map player is new
         g_mapSceneSeen = g_nsmbwCurrentSceneProfile;
@@ -248,6 +257,7 @@ void ReloadMapIfModelIsStale(uint32_t c) {
         Memory::TryRead32(kNextSceneAddr, w);
         std::fprintf(stderr, "[nsmbw][p1chara] map check: model %d, player 1 %u, menu closed %d frames, requested %d, next scene 0x%X\n",
                      g_mapModelType, c, g_menuClosedFrames, int(g_reloadRequested), w >> 16);
+        LogMapPosition("map check");
     }
     const bool now = g_reloadNow;
     g_reloadNow = false;
@@ -257,6 +267,18 @@ void ReloadMapIfModelIsStale(uint32_t c) {
     if (!Memory::TryRead32(kNextSceneAddr, word) || (word >> 16) != 0x2EEu) return; // a scene change is already on its way
     g_reloadRequested = true;
     if (LogEnabled()) std::fprintf(stderr, "[nsmbw][p1chara] map player was built as %d, player 1 is %u: reloading the map (tick %u)\n", g_mapModelType, c, g_nsmbwCurrentViTick);
+    // The reload's parameter comes from 0x80102B50: world = dInfo_c+0x3C, sub-map = dInfo_c+0x40
+    // (mode 5). Those are only the world the file was loaded or a course entered from, not where the
+    // map is now: after Select World to World 5 the reload went to World 1 (2026-11-19, logged 0/0
+    // against dScWMap_c::m_WorldNo 4). So copy the live map's world and sub-map in first.
+    {
+        uint32_t info = 0, wm = 0;
+        if (Memory::TryRead32(NSMBW_VA(0x8042A25Cu), info) && info != 0 && Memory::TryRead32(NSMBW_VA(0x8042A52Cu), wm)) {
+            Memory::Write32(info + 0x3C, (wm >> 16) & 0xFFu); // dScWMap_c::m_WorldNo (0x8042A52D)
+            Memory::Write32(info + 0x40, (wm >> 8) & 0xFFu);  // dScWMap_c::m_SceneNo (0x8042A52E)
+        }
+    }
+    if (LogEnabled()) LogMapPosition("before reload");
     CpuContext* ctx = CurrentCpuContext();
     const CpuContext saved = *ctx;
     InvokeDirectCpu<kReloadMap>(ctx);

@@ -1,4 +1,6 @@
 #include "command_processor.hpp"
+#include <set>
+#include <tuple>
 #include <aurora/env.hpp>
 
 #include "../gfx/common.hpp"
@@ -380,6 +382,22 @@ static inline void mark_pipeline_state_dirty() noexcept {
 extern "C" uint32_t g_nsmbwXfLoadSource = 0;
 extern "C" uint32_t g_nsmbwPnMtx0Source = 0;
 
+// Model x scale under a 16:9 orthographic camera (NSMBW at wide ratios, 2026-11-19): the character
+// select, the items screen and Select World draw their 3D models with an orthographic camera
+// 853.3 x 456 units wide (16:9; NSMBW_LOG_PERSP at 21:9), which the wider frame stretches by
+// (21:9)/(16:9). Scaling the projection would also pull every model toward the screen centre, away
+// from the layout panes it sits on, so instead each position matrix loaded while that camera is
+// current has its x row's rotation/scale part scaled by `scale`: the model narrows around its own
+// origin and keeps its place. 1 = off.
+static float g_modelOrthoXScale = 1.0f;
+void set_model_ortho_x_scale(float scale) { g_modelOrthoXScale = scale; }
+static bool is_16x9_model_ortho() {
+  const auto& raw = g_gxState.xfProjection;
+  if (g_gxState.projType != GX_ORTHOGRAPHIC || raw[0] <= 0.0f || raw[2] <= 0.0f) return false;
+  const float w = 2.0f / raw[0], h = 2.0f / raw[2];
+  return std::fabs(h - 456.0f) < 1.0f && std::fabs(w - 456.0f * 16.0f / 9.0f) < 2.0f;
+}
+
 static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
   if (addr < 0x78) {
     // Position matrices (0x0000 - 0x0077)
@@ -392,6 +410,11 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
     f32* flat = reinterpret_cast<f32*>(&mtx);
     for (u32 i = 0; i < len; i++) {
       flat[i] = read_f32(data + i * 4, bigEndian);
+    }
+    if (g_modelOrthoXScale != 1.0f && is_16x9_model_ortho()) {
+      flat[0] *= g_modelOrthoXScale;
+      flat[1] *= g_modelOrthoXScale;
+      flat[2] *= g_modelOrthoXScale;
     }
     if (mtxIdx == 0) g_nsmbwPnMtx0Source = g_nsmbwXfLoadSource;
     // DIAGNOSTIC (temporary): NSMBW_LOG_PNMTX0=<profile> - every load into PNMTX0 (any path:
@@ -547,6 +570,11 @@ void set_wide_viewport_limit(float limit) { g_wideViewportLimit = limit; }
 // width the game widens itself, and all 2D) are left alone. 1 = off.
 static float g_perspectiveXScale = 1.0f;
 void set_perspective_x_scale(float scale) { g_perspectiveXScale = scale; }
+} // namespace aurora::gx::fifo
+namespace aurora::gx {
+void refresh_render_state() noexcept;
+} // namespace aurora::gx
+namespace aurora::gx::fifo {
 
 static void apply_xf_viewport() {
   const auto& vp = g_gxState.xfViewport;
@@ -596,6 +624,8 @@ static void apply_xf_viewport() {
   set_logical_viewport(lv);
 }
 
+
+
 static void apply_xf_projection() {
   const auto& raw = g_gxState.xfProjection;
   auto& proj = g_gxState.proj;
@@ -609,6 +639,16 @@ static void apply_xf_projection() {
     proj.m0[3] = raw[1];
     proj.m1[3] = raw[3];
     proj.m3[3] = 1.0f;
+    static const bool logOrtho = AURORA_ENV("NSMBW_LOG_PERSP") != nullptr;
+    if (logOrtho && raw[0] != 0.0f && raw[2] != 0.0f) {
+      static std::set<std::tuple<int, int, int, int>> seenO;
+      const int w = static_cast<int>(2.0f / raw[0] + 0.5f), h = static_cast<int>(2.0f / raw[2] + 0.5f);
+      const int vpW = static_cast<int>(g_gxState.xfViewport[0] * 2.0f + 0.5f);
+      if (seenO.insert({w, h, vpW, static_cast<int>(g_nsmbwCurrentSceneProfile)}).second && seenO.size() < 200) {
+        std::fprintf(stderr, "[NSMBW_ORTHO] scene=%u w=%d h=%d vpW=%d raw=%.5f,%.4f,%.5f,%.4f,%.6f,%.4f" "%c", g_nsmbwCurrentSceneProfile,
+                     w, h, vpW, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], 10);
+      }
+    }
   } else {
     proj.m0[2] = raw[1];
     proj.m1[2] = raw[3];
@@ -617,8 +657,33 @@ static void apply_xf_projection() {
       proj.m0[0] *= g_perspectiveXScale;
       proj.m0[2] *= g_perspectiveXScale;
     }
+    // NSMBW_LOG_PERSP=1: one line per new perspective aspect (proj[1][1]/proj[0][0], before the x
+    // scale) with the XF viewport width and scene, to find which 3D views keep a 16:9 aspect at 21:9.
+    static const bool logPersp = AURORA_ENV("NSMBW_LOG_PERSP") != nullptr;
+    if (logPersp && raw[0] != 0.0f) {
+      static std::set<std::pair<int, int>> seen;
+      const int aspectKey = static_cast<int>(raw[2] / raw[0] * 1000.0f + 0.5f);
+      const int vpW = static_cast<int>(g_gxState.xfViewport[0] * 2.0f + 0.5f);
+      if (seen.insert({aspectKey, vpW}).second && seen.size() < 200) {
+        std::fprintf(stderr, "[NSMBW_PERSP] scene=%u aspect=%.4f vpW=%d raw0=%.4f raw2=%.4f\n", g_nsmbwCurrentSceneProfile,
+                     raw[2] / raw[0], vpW, raw[0], raw[2]);
+      }
+    }
   }
 
+  // Level pillarbox: a "level draw" is a full-width 3D or level-camera draw (orthographic, not the
+  // 456-high layout canvas, not a small render-to-texture). Layout (HUD) draws stay unclipped.
+  if (g_levelClipX1 > g_levelClipX0) {
+    const float vpW = g_gxState.xfViewport[0] * 2.0f;
+    bool level = vpW >= 600.0f;
+    if (level && g_gxState.projType == GX_ORTHOGRAPHIC && raw[2] != 0.0f) {
+      const float h = std::fabs(2.0f / raw[2]);
+      level = h > 100.0f && h < 400.0f;
+    }
+    g_levelProjCurrent = level;
+  } else {
+    g_levelProjCurrent = false;
+  }
   g_gxState.stateDirty = true;
   // NSMBW_LOG_PROJ_SCENE (temporary): the 40-load budget below is spent during boot; this
   // re-points it at the first 40 loads seen while a given scene profile is active (decimal
@@ -2346,6 +2411,7 @@ static const CachedPipelineState& resolve_pipeline_state(GXPrimitive prim, GXVtx
   };
   static Memo memo{};
 
+  update_level_draw_class(); // level pillarbox (gx.cpp); may bump the generation
   const u32 sampleCount = gfx::get_sample_count();
   const u32 generation = g_gxState.pipelineStateGeneration;
   if (memo.state != nullptr && memo.generation == generation && memo.sampleCount == sampleCount &&

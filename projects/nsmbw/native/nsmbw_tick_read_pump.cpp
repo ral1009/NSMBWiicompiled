@@ -333,6 +333,73 @@ void NsmbwLogBgParam() {
                  Memory::ReadFloat32(p + 0x48));
 }
 
+// NSMBW_DEBUG_WARP=<world>-<level>[:<area>[:<entrance>]] (1-based world/level/area as the game
+// shows them, entrance as in the course file): test only. While a course intro (CRSIN, scene 7)
+// runs, overwrite dInfo_c::m_startGameInfo (0x80315E90: +5 entrance, +6 area, +12/+14 world, +13/+15 level,
+// d_info.hpp) so the course that loads is that one - e.g. "3-2:2:1" for World 3-2's underground
+// area. Added 2026-11-19 to check the zone-edge tiles where the developer saw the cut.
+void NsmbwDebugWarp() {
+    static int world = -1, level = 0, area = 1, entrance = 0;
+    static bool parsed = false;
+    if (!parsed) {
+        parsed = true;
+        if (const char* v = AURORA_ENV("NSMBW_DEBUG_WARP")) {
+            if (std::sscanf(v, "%d-%d:%d:%d", &world, &level, &area, &entrance) < 2) world = -1;
+        }
+    }
+    if (world < 1) return;
+    // During the course intro, or as soon as one is requested (dScene_c::m_nextScene, the high half of
+    // the word at 0x80428A40, = 7): the hook does not always run while the intro loads.
+    uint32_t next = 0;
+    Memory::TryRead32(NSMBW_VA(0x80428A40u), next);
+    if (g_nsmbwCurrentSceneProfile != 7u && (next >> 16) != 7u) return;
+    for (const uint32_t info : {NSMBW_VA(0x80315E90u), NSMBW_VA(0x80374060u)}) { // dInfo_c / dScRestartCrsin_c::m_startGameInfo
+        Memory::Write8(info + 5, static_cast<uint8_t>(entrance));
+        Memory::Write8(info + 6, static_cast<uint8_t>(area - 1));
+        Memory::Write8(info + 12, static_cast<uint8_t>(world - 1));
+        Memory::Write8(info + 13, static_cast<uint8_t>(level - 1));
+        Memory::Write8(info + 14, static_cast<uint8_t>(world - 1)); // mWorld2 / mLevel2
+        Memory::Write8(info + 15, static_cast<uint8_t>(level - 1));
+    }
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        std::fprintf(stderr, "[nsmbw][diag] warp: course %d-%d area %d entrance %d%c", world, level, area, entrance, 10);
+    }
+}
+
+// NSMBW_DEBUG_GOTO=<area>:<entrance>@<frames> (area 1-based, entrance id as in the course file): test
+// only. That many frames into the first course after a world map, change scene the way a pipe does,
+// through dNext_c::simpleChangeScene(file, nextGoto, fader) (0x800D0120; dNext_c::m_instance at
+// 0x8042A2A0, from the call at 0x807D1AC4), so a scripted run reaches a sub-area. With
+// NSMBW_DEBUG_WARP this reaches e.g. World 3-3's pipe room (area 3, entrance 4). Added 2026-11-19.
+void NsmbwDebugGoto() {
+    static int area = -1, entrance = 0, frames = 300;
+    static bool parsed = false, done = false, sawMap = false;
+    static int levelFrames = 0;
+    if (!parsed) {
+        parsed = true;
+        if (const char* v = AURORA_ENV("NSMBW_DEBUG_GOTO")) {
+            if (std::sscanf(v, "%d:%d@%d", &area, &entrance, &frames) < 2) area = -1;
+        }
+    }
+    if (area < 1 || done) return;
+    if (g_nsmbwCurrentSceneProfile == 3u) { sawMap = true; levelFrames = 0; return; }
+    if (!sawMap || g_nsmbwCurrentSceneProfile != 5u) return;
+    if (++levelFrames < frames) return;
+    done = true;
+    CpuContext* ctx = CurrentCpuContext();
+    const CpuContext saved = *ctx;
+    ctx->gpr[3] = MemoryInline::FlatRead32(NSMBW_VA(0x8042A2A0u));
+    ctx->gpr[4] = static_cast<uint32_t>(area - 1);
+    ctx->gpr[5] = static_cast<uint32_t>(entrance);
+    ctx->gpr[6] = 0;
+    InvokeDirectCpu<NSMBW_VA(0x800D0120u)>(ctx);
+    *ctx = saved;
+    std::fprintf(stderr, "[nsmbw][diag] goto: area %d entrance %d at level frame %d%c", area, entrance, frames, 10);
+}
+
+
 // NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad): sets player 1's
 // character 300 frames (5 s) into the first world map, through the same setter as the F10 option
 // (nsmbw_p1_character.cpp: swaps with the slot that had it), so a scripted run tests the real path
@@ -343,25 +410,94 @@ void NsmbwDebugP1Character() {
         const char* v = AURORA_ENV("NSMBW_DEBUG_P1_CHARACTER");
         return v ? std::strtol(v, nullptr, 10) : -1L;
     }();
+    // Optional "@<frames>": map frames to wait (default 300), counted over all map visits, so a script
+    // can change world first (Add/Drop reload test, 2026-11-19).
+    static const int waitFrames = [] {
+        const char* v = AURORA_ENV("NSMBW_DEBUG_P1_CHARACTER");
+        const char* at = v ? std::strchr(v, '@') : nullptr;
+        return at ? static_cast<int>(std::strtol(at + 1, nullptr, 10)) : 300; // nsmbw-va: not an address
+    }();
     static bool done = false;
     static int mapFrames = 0;
     if (done || want < 0 || want > 3 || g_nsmbwCurrentSceneProfile != 3u) return;
-    if (++mapFrames < 300) return;
+    if (++mapFrames < waitFrames) return;
     done = true;
     const int before = NsmbwP1CharacterGet();
     const bool ok = NsmbwP1CharacterSet(static_cast<int>(want));
     std::fprintf(stderr, "[nsmbw][diag] P1 character %d -> %ld on the world map: %s\n", before, want, ok ? "set" : "refused");
 }
+// NSMBW_DEBUG_P1_POWERUP=<power-up>@<ticks>: <ticks> VI ticks into the first level after a world
+// map, give player 1 a pending power change, as a power-up pickup does (writes
+// dAcPy_c::mPowerupCopy2, +5344; executeChangeInit compares it with mPowerup, +4240, next frame).
+// <power-up> is PLAYER_POWERUP_e: 0 small, 1 mushroom, 2 fire, 3 mini, 4 propeller, 5 penguin, 6 ice.
+// For 90 ticks after that it logs dActor_c::mExecStopReq (r13 - 22952) and the word around it: with
+// the game's freeze the request has 0x0F set during the change, with F10 "Power-up freeze" off it
+// should stay clear (nsmbw_power_up_freeze.cpp). Test-only; does nothing when unset.
+void NsmbwDebugP1Powerup() {
+    static long powerup = -1;
+    static long atTicks = 0;
+    static bool parsed = false;
+    if (!parsed) {
+        parsed = true;
+        if (const char* v = AURORA_ENV("NSMBW_DEBUG_P1_POWERUP")) {
+            char* end = nullptr;
+            powerup = std::strtol(v, &end, 10);
+            atTicks = (end && *end == '@') ? std::strtol(end + 1, nullptr, 10) : 120;
+            if (powerup < 0 || powerup > 6) powerup = -1;
+        }
+    }
+    if (powerup < 0) return;
+    static bool seenMap = false;
+    static bool done = false;
+    static long levelTicks = 0;
+    static long logTicks = -1;
+    static uint32_t player = 0;
+    if (g_nsmbwCurrentSceneProfile == 3u) seenMap = true;
+    if (!seenMap || g_nsmbwCurrentSceneProfile != 5u) return;
+    ++levelTicks;
+    constexpr uint32_t kExecStopReq = NSMBW_VA(0x80429FD8u); // dActor_c::mExecStopReq (u8)
+    if (logTicks >= 0 && logTicks < 90) {
+        uint32_t word = 0;
+        Memory::TryRead32(kExecStopReq & ~3u, word);
+        const uint32_t req = (word >> (8u * (3u - (kExecStopReq & 3u)))) & 0xFFu; // big-endian byte
+        uint32_t powerNow = 0;
+        Memory::TryRead32(player + 4240, powerNow); // daPlBase_c::mPowerup
+        std::fprintf(stderr, "[nsmbw][diag] power change +%ld: mExecStopReq=0x%02X (word 0x%08X) mPowerup=%u\n", logTicks, req, word, powerNow);
+        ++logTicks;
+    }
+    if (done || levelTicks < atTicks) return;
+    done = true;
+    CpuContext* ctx = CurrentCpuContext();
+    const CpuContext saved = *ctx;
+    ctx->gpr[3] = 0;
+    InvokeDirectCpu<NSMBW_VA(0x8005F900u)>(ctx); // daPyMng_c::getPlayer(0)
+    player = ctx->gpr[3];
+    *ctx = saved;
+    uint32_t now = 0;
+    if (player == 0 || !Memory::TryRead32(player + 4240, now)) {
+        std::fprintf(stderr, "[nsmbw][diag] P1 power-up: no player 1 at tick %u\n", g_nsmbwCurrentViTick);
+        return;
+    }
+    Memory::Write32(player + 5344, static_cast<uint32_t>(powerup));
+    logTicks = 0;
+    std::fprintf(stderr, "[nsmbw][diag] P1 power-up %u -> %ld at tick %u (player 0x%08X)\n", now, powerup,
+                 g_nsmbwCurrentViTick, player);
+}
 } // namespace
 
 extern "C" void NsmbwDumpScnObjs();
 extern "C" void NsmbwP1CharacterTick();      // nsmbw_p1_character.cpp
+extern "C" void NsmbwZonePillarboxTick();    // nsmbw_zone_pillarbox.cpp
 
 extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
 {
     VI_HLE_PollRetrace(ctx);
     NsmbwDiagWatch();
     NsmbwDebugP1Character();
+    NsmbwDebugWarp();
+    NsmbwDebugGoto();
+    NsmbwZonePillarboxTick();
+    NsmbwDebugP1Powerup();
     NsmbwP1CharacterTick();
     NsmbwWatchWrite();
     NsmbwLogBgParam();

@@ -122,8 +122,6 @@ std::vector<Row> BuildRows(int tab) {
         rows.push_back({"HD texture pack", Kind::Toggle, {}, settings::HdTextures() ? 1 : 0,
                         [](int v) { settings::SetHdTextures(v != 0); }, {},
                         settings::HdTexturesNeedRestart() ? "Applies after a restart" : ""});
-        rows.push_back({"Bloom", Kind::Toggle, {}, settings::Bloom() ? 1 : 0, [](int v) { settings::SetBloom(v != 0); }, {},
-                        "Applies in the next level or map"});
         break;
     }
     case 1: {
@@ -168,13 +166,19 @@ std::vector<Row> BuildRows(int tab) {
         break;
     }
     default: {
+        // On = the game's own freeze while a player grows or shrinks; off = the level keeps moving,
+        // as the game itself does when its "player game stop" flag is clear (nsmbw_power_up_freeze.cpp).
+        rows.push_back({"Power-up freeze", Kind::Toggle, {}, settings::PowerUpFreeze() ? 1 : 0,
+                        [](int v) { settings::SetPowerUpFreeze(v != 0); }, {},
+                        "Off: the level keeps moving while Mario changes size"});
         rows.push_back({"Show FPS", Kind::Toggle, {}, settings::ShowFps() ? 1 : 0, [](int v) { settings::SetShowFps(v != 0); }});
-        rows.push_back({"Skip draws while compiling", Kind::Toggle, {}, settings::SkipUnreadyPipelines() ? 1 : 0,
-                        [](int v) { settings::SetSkipUnreadyPipelines(v != 0); }});
         rows.push_back({"Copy filter", Kind::Toggle, {}, settings::CopyFilterDisabled() ? 0 : 1,
                         [](int v) { settings::SetCopyFilterDisabled(v == 0); }});
-        rows.push_back({"Audio mixing thread", Kind::Toggle, {}, settings::AudioMixWorker() ? 1 : 0,
-                        [](int v) { settings::SetAudioMixWorker(v != 0); }});
+        // Not shown (2026-11-18 audit, docs/MASTER_PLAN.md): "Skip draws while compiling" and "Audio
+        // mixing thread". Neither made a measurable difference here (the shader cache is prewarmed at
+        // boot, so nothing is usually compiling; the mixing thread saved ~0.7% of the game thread,
+        // within run-to-run noise). Both keep their defaults (on) and their Config.toml keys
+        // ([video] skip_unready_pipelines, [audio] mix_worker), and stay in the Shift+F10 bar.
         // No "Mute music for other media": its Windows media-session monitor is not built for
         // NSMBW (nsmbw_runtime_shims.cpp), so the switch would do nothing.
         break;
