@@ -32,6 +32,7 @@
 #include "nsmbw_va.h"  // NSMBW_VA / NSMBW_FUNC: guest addresses are PAL rev 1, mapped per version
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include "hle_stubs.h"
@@ -299,6 +300,18 @@ void ReloadMapIfModelIsStale(uint32_t c) {
 // Every frame, from the VI pump (nsmbw_tick_read_pump.cpp): keep the tables matching player 1, and
 // rebuild the map if its player model is someone else.
 extern "C" void NsmbwP1CharacterTick() {
+    if (LogEnabled()) { // join states dInfo_c+0x384 (4 words) and player types, logged on change
+        static uint32_t last[8] = {};
+        uint32_t info = 0, cur[8] = {};
+        Memory::TryRead32(NSMBW_VA(0x8042A25Cu), info);
+        for (uint32_t k = 0; k < 4 && info; ++k) Memory::TryRead32(info + 0x384 + 4 * k, cur[k]);
+        for (uint32_t k = 0; k < 4; ++k) Memory::TryRead32(kPlayerTypeAddr + 4 * k, cur[4 + k]);
+        if (std::memcmp(cur, last, sizeof(cur)) != 0) {
+            std::memcpy(last, cur, sizeof(cur));
+            std::fprintf(stderr, "[nsmbw][p1chara] join %u %u %u %u type %u %u %u %u (scene %u tick %u)\n", cur[0], cur[1], cur[2], cur[3],
+                         cur[4], cur[5], cur[6], cur[7], g_nsmbwCurrentSceneProfile, g_nsmbwCurrentViTick);
+        }
+    }
     if (g_mapPick >= 0) {
         uint32_t stop = 0;
         Memory::TryRead32(kGameStopWord, stop);
@@ -3571,6 +3584,25 @@ bool PlacesPlayer1Card(uint32_t screen) {
 extern "C" void NsmbwPeopleChangePlaceCards_807A0170(CpuContext* MKW_RESTRICT ctx)
 {
     g_addDropSeenTick = g_nsmbwCurrentViTick;
+    if (LogEnabled()) { // screen slot state (+1680), figure spot (+1700), card spot (+1716), +1776, count (+1732)
+        static uint32_t last[17] = {};
+        uint32_t cur[17] = {};
+        const uint32_t scr = ctx->gpr[3];
+        for (uint32_t k = 0; k < 4; ++k) {
+            Memory::TryRead32(scr + 1680 + 4 * k, cur[k]);
+            Memory::TryRead32(scr + 1700 + 4 * k, cur[4 + k]);
+            Memory::TryRead32(scr + 1716 + 4 * k, cur[8 + k]);
+            Memory::TryRead32(scr + 1776 + 4 * k, cur[12 + k]);
+        }
+        Memory::TryRead32(scr + 1732, cur[16]);
+        if (std::memcmp(cur, last, sizeof(cur)) != 0) {
+            std::memcpy(last, cur, sizeof(cur));
+            std::fprintf(stderr, "[nsmbw][p1chara] screen state %d %d %d %d fig %d %d %d %d card %d %d %d %d m %d %d %d %d count %d (tick %u)%c",
+                         int(cur[0]), int(cur[1]), int(cur[2]), int(cur[3]), int(cur[4]), int(cur[5]), int(cur[6]), int(cur[7]),
+                         int(cur[8]), int(cur[9]), int(cur[10]), int(cur[11]), int(cur[12]), int(cur[13]), int(cur[14]), int(cur[15]),
+                         int(cur[16]), g_nsmbwCurrentViTick, 10);
+        }
+    }
     uint32_t cr0_0 = 0;
     uint32_t r0_rot_0 = 0;
     uint32_t r0_rot_1 = 0;

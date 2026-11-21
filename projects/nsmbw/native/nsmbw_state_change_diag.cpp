@@ -35,6 +35,11 @@
 
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 extern "C" void NsmbwSkipBootScreensApply(); // nsmbw_skip_boot_screens.cpp
+// True while the world map's Select World screen is open (dWorldSelect_c in any state but its idle
+// OnStageWait). Read by aurora's 21:9 menu-model narrowing (shader_info.cpp): only there are the
+// models' positions narrowed too; doing it on the whole map pulled the Add/Drop figures off their
+// cards and their walk-off spot onto the screen (2026-11-20).
+extern "C" bool g_nsmbwWorldSelectOpen = false;
 
 namespace {
 constexpr uint32_t kIsNullSlot = 0x0Cu;
@@ -87,6 +92,12 @@ extern "C" void StateChangeDiag_8015FD50(uint32_t thisPtr, uint32_t newIdPtr)
 {
     const bool isNull = (CallVirtual(newIdPtr, kIsNullSlot, 0) & 0xFFu) != 0;
     if (isNull) return;
+    {
+        char name[96];
+        ReadStateName(newIdPtr, name, sizeof(name));
+        if (std::strncmp(name, "dWorldSelect_c::", 16) == 0)
+            g_nsmbwWorldSelectOpen = std::strcmp(name, "dWorldSelect_c::StateID_OnStageWait") != 0;
+    }
 
     if (LogMode() != 0) {
         static uint32_t seq = 0;

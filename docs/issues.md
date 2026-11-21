@@ -1016,6 +1016,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** match 853.3 x 456, and narrow at draw time when the matrices are staged (`aurora-main/lib/gx/shader_info.cpp`; `model_ortho_x_scale_now` in `command_processor.cpp`). Player-select models narrow around their own origin (stay on their cards); on the world map (Select World, one 3D scene) positions narrow around the screen centre too. Verified with PrintWindow captures at 21:9: "1 Players" Mario round-headed next to the developer's stretched shot; Select World islands round and centred; 1-1 unchanged. Not checked: items screen, 2-player selectors. `NSMBW_DEBUG_MODEL_X=<scale>` overrides the factor for tests.
 - **Scope:** General class (aurora); the 853x456 camera is NSMBW's.
 
+## 2026-11-20 - 21:9: map Add/Drop figures off their cards; dropped player 1 waits at the left
+
+- **Symptom:** on the world map's Add/Drop Players at 21:9, a player's figure stopped short of its card, and a dropped player 1 walked to the left edge and stood there (developer's screenshot: the old Mario figure at the far left).
+- **Root cause:** my 6235bb8 Select World fix narrowed 3D model *positions* toward the screen centre for every model drawn under the 853x456 menu camera on the world map, not only Select World's. That pulled the Add/Drop figures toward the centre (off their cards) and pulled their walk-off spot, just past the 16:9 edge and off-screen, back onto the screen.
+- **Fix:** positions narrow only while Select World is open: `g_nsmbwWorldSelectOpen` is set from `dWorldSelect_c`'s state changes (any state but `StateID_OnStageWait`) in `nsmbw_state_change_diag.cpp`, and read in `aurora-main/lib/gx/shader_info.cpp`. Verified by script (2 players, player 1 set to Blue Toad, Add/Drop, drop and re-pick): figures centred over their cards, the dropped figure leaves the screen, Select World still centred. `NSMBW_LOG_P1_CHARACTER=1` now also logs the join states and the screen's slot/spot words.
+- **Scope:** NSMBW-specific (a regression of my own fix).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
