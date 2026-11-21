@@ -1,3 +1,5 @@
+#include <set>
+#include <tuple>
 #include "shader_info.hpp"
 #include <aurora/env.hpp>
 
@@ -20,6 +22,8 @@
 
 #include <tracy/Tracy.hpp>
 
+extern "C" uint32_t g_nsmbwCurrentSceneProfile;
+namespace aurora::gx::fifo { float model_ortho_x_scale_now(bool lit); }
 namespace aurora::gx {
 // TODO: remove, just for testing
 bool enableLodBias = true;
@@ -647,6 +651,14 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
   }
 
   const size_t positionOffset = stagedSize;
+  if (AURORA_ENV("NSMBW_LOG_MODEL_CAM") != nullptr) {
+    static std::set<std::tuple<int, int, int, int>> seen;
+    const auto& r = g_gxState.xfProjection;
+    const int w = r[0] != 0.0f ? static_cast<int>(2.0f / r[0]) : 0, h = r[2] != 0.0f ? static_cast<int>(2.0f / r[2]) : 0;
+    const int key = static_cast<int>(fifo::model_ortho_x_scale_now(info.lightingEnabled || layout.nrmCount > 0) * 1000.0f);
+    if (seen.insert({static_cast<int>(g_gxState.projType) * 10 + int(info.lightingEnabled) * 2 + int(layout.nrmCount > 0), w, h, key}).second && seen.size() < 80)
+      std::fprintf(stderr, "[modelcam] lit=%d nrm=%d proj=%d w=%d h=%d raw0=%.5f raw2=%.5f xs=%.3f\n", int(info.lightingEnabled), int(layout.nrmCount), static_cast<int>(g_gxState.projType), w, h, r[0], r[2], key / 1000.0f);
+  }
   for (u32 i = 0; i < layout.postexCount; ++i) {
     const u32 slot =
         layout.postexSlots[i] == UniformMatrixLayout::kCurrentPnMtx ? currentPostexSlot
@@ -677,8 +689,23 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
         std::fflush(stderr);
       }
     }
-    stage(slot < MaxPnMtx ? &g_gxState.pnMtx[slot].pos : &g_gxState.texMtxs[slot - MaxPnMtx],
-          sizeof(Mat3x4<float>));
+    // 21:9 menu models under a 16:9 orthographic camera: narrow the model around its own origin
+    // (command_processor.cpp, model_ortho_x_scale_now).
+    if (const float xs = fifo::model_ortho_x_scale_now(info.lightingEnabled || layout.nrmCount > 0); xs != 1.0f && slot < MaxPnMtx) {
+      Mat3x4<float> scaled = g_gxState.pnMtx[slot].pos;
+      scaled.m0[0] *= xs;
+      scaled.m0[1] *= xs;
+      scaled.m0[2] *= xs;
+      // On the world map (Select World's island carousel, one 3D scene) the positions narrow too,
+      // so the whole scene keeps its shape; on the player-select screens each model stays on its
+      // layout card (2026-11-20).
+      // The camera's x runs 0..853.3 from the screen's left edge, so narrow around its middle.
+      if (g_nsmbwCurrentSceneProfile == 3u) scaled.m0[3] = 426.667f + (scaled.m0[3] - 426.667f) * xs;
+      stage(&scaled, sizeof(Mat3x4<float>));
+    } else {
+      stage(slot < MaxPnMtx ? &g_gxState.pnMtx[slot].pos : &g_gxState.texMtxs[slot - MaxPnMtx],
+            sizeof(Mat3x4<float>));
+    }
   }
 
   const size_t normalOffset = stagedSize;

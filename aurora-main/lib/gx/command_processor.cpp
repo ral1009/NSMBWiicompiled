@@ -391,11 +391,24 @@ extern "C" uint32_t g_nsmbwPnMtx0Source = 0;
 // origin and keeps its place. 1 = off.
 static float g_modelOrthoXScale = 1.0f;
 void set_model_ortho_x_scale(float scale) { g_modelOrthoXScale = scale; }
+float model_ortho_x_scale_now(bool lit);
 static bool is_16x9_model_ortho() {
   const auto& raw = g_gxState.xfProjection;
   if (g_gxState.projType != GX_ORTHOGRAPHIC || raw[0] <= 0.0f || raw[2] <= 0.0f) return false;
   const float w = 2.0f / raw[0], h = 2.0f / raw[2];
-  return std::fabs(h - 456.0f) < 1.0f && std::fabs(w - 456.0f * 16.0f / 9.0f) < 2.0f;
+  // 853.3 x 456 (logged on "1 Players" and Select World, 2026-11-20). Until then this compared
+  // against 456 * 16/9 = 810.7 and never matched, so the menu models were never narrowed.
+  return std::fabs(h - 456.0f) < 1.0f && std::fabs(w - 853.333f) < 2.0f;
+}
+// Applied when a draw's matrices are staged (shader_info.cpp build_uniform), not when they are
+// loaded: the menu screens load a model's matrices before switching to that camera (2026-11-20, the
+// "1 Players" Mario stayed stretched with the load-time version).
+// The argument is unused: every draw reports a normal matrix and no draw on the menu screens is lit,
+// so "is this a 3D model" can't be told from the shader (2026-11-20); the camera alone decides.
+float model_ortho_x_scale_now(bool /*lit*/) {
+  static const float test = [] { const char* v = std::getenv("NSMBW_DEBUG_MODEL_X"); return v ? static_cast<float>(std::atof(v)) : 0.0f; }();
+  if (g_modelOrthoXScale == 1.0f || !is_16x9_model_ortho()) return 1.0f;
+  return test > 0.0f ? test : g_modelOrthoXScale;
 }
 
 static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
@@ -410,11 +423,6 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
     f32* flat = reinterpret_cast<f32*>(&mtx);
     for (u32 i = 0; i < len; i++) {
       flat[i] = read_f32(data + i * 4, bigEndian);
-    }
-    if (g_modelOrthoXScale != 1.0f && is_16x9_model_ortho()) {
-      flat[0] *= g_modelOrthoXScale;
-      flat[1] *= g_modelOrthoXScale;
-      flat[2] *= g_modelOrthoXScale;
     }
     if (mtxIdx == 0) g_nsmbwPnMtx0Source = g_nsmbwXfLoadSource;
     // DIAGNOSTIC (temporary): NSMBW_LOG_PNMTX0=<profile> - every load into PNMTX0 (any path:

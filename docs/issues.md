@@ -1009,6 +1009,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Also built, kept off:** a fade of tile draws past the zone edges (`ShaderConfig::edgeFade` / `edgeFadeOpaque` in former padding bits, uniform `edge_fade`, blending forced on; `AuroraSetLevelFadeWidth`, `NSMBW_ZONE_FADE=<units>`). It worked with a drawer that extended the wall past the edge, but the developer preferred the clean edge, so the drawer copies were removed and the width defaults to 0 (no draw takes the fade path).
 - **Scope:** NSMBW-specific (the clip mechanism is general aurora).
 
+## 2026-11-20 - 21:9 menu models still stretched (the 2026-11-19 fix never applied)
+
+- **Symptom:** at 21:9 Mario on "1 Players" and the Select World islands were still stretched after e766732 (developer's screenshot).
+- **Root cause:** the check for the menus' 16:9 orthographic camera compared its width with 456 x 16/9 = 810.7, but the camera is 853.3 x 456 (logged with `NSMBW_LOG_MODEL_CAM=1`, new). It never matched, so nothing was narrowed; the 2026-11-19 Select World "verification" was not a real difference.
+- **Fix:** match 853.3 x 456, and narrow at draw time when the matrices are staged (`aurora-main/lib/gx/shader_info.cpp`; `model_ortho_x_scale_now` in `command_processor.cpp`). Player-select models narrow around their own origin (stay on their cards); on the world map (Select World, one 3D scene) positions narrow around the screen centre too. Verified with PrintWindow captures at 21:9: "1 Players" Mario round-headed next to the developer's stretched shot; Select World islands round and centred; 1-1 unchanged. Not checked: items screen, 2-player selectors. `NSMBW_DEBUG_MODEL_X=<scale>` overrides the factor for tests.
+- **Scope:** General class (aurora); the 853x456 camera is NSMBW's.
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.
