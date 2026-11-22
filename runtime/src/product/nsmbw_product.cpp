@@ -66,6 +66,8 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 extern std::atomic<uint64_t> g_viPresentedXfbFrames; // runtime/src/hle/vi.cpp
 extern std::atomic<uint64_t> g_viRetracesPerFrame[4]; // runtime/src/hle/vi.cpp
 extern std::atomic<uint64_t> g_viFrameTiming[2][5];   // runtime/src/hle/vi.cpp
+// View width relative to 16:9 (1.3125 at 21:9; 1 otherwise). Read by nsmbw_wm_camera_limits.cpp.
+extern "C" float g_nsmbwAspectWidthFactor = 1.0f;
 extern "C" uint32_t g_nsmbwCurrentSceneProfile;
 
 
@@ -516,6 +518,7 @@ bool InitializeAuroraWindow(AuroraInfo& outInfo) {
             // Menu 3D models (character select, items, Select World) use a 16:9 orthographic camera;
             // narrow each model around its own origin by the same ratio (command_processor.cpp).
             AuroraSetModelOrthoXScale(static_cast<float>((16.0 / 9.0) / (static_cast<double>(aspect.num) / aspect.den)));
+            g_nsmbwAspectWidthFactor = static_cast<float>((static_cast<double>(aspect.num) / aspect.den) / (16.0 / 9.0));
         }
     }
     return outInfo.window != nullptr;

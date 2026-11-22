@@ -333,6 +333,82 @@ void NsmbwLogBgParam() {
                  Memory::ReadFloat32(p + 0x48));
 }
 
+// NSMBW_DUMP_WMCAM=1 (diagnostic, 2026-11-20): on the world map, once a second, every float field of
+// dWCamera_c (m_instance 0x8042A564; class not decompiled, 0x4f8+ bytes) that changed since the last
+// dump - to find the camera position and its limits for the 21:9 clamp.
+void NsmbwDumpWmCam() {
+    static const bool on = AURORA_ENV("NSMBW_DUMP_WMCAM") != nullptr;
+    // Free-look limits: when free-look starts (0x8092D620) the camera stores its allowed offset range
+    // at +0x658 (min x) / +0x664 (max x), relative to the focus x (+0x4BC) minus the current offset
+    // (+0x6A4). Logged once per change as absolute camera x limits, with the world (dScWMap_c::m_WorldNo)
+    // and sub-map (m_SceneNo) - the table for the 21:9 map clamp.
+    if (on && g_nsmbwCurrentSceneProfile == 3u) {
+        uint32_t cam = 0, wm = 0;
+        if (Memory::TryRead32(NSMBW_VA(0x8042A564u), cam) && cam != 0) {
+            const float mn = Memory::ReadFloat32(cam + 1624), mx = Memory::ReadFloat32(cam + 1636);
+            static float lastMn = 0, lastMx = 0;
+            if ((mn != lastMn || mx != lastMx) && (mn != 0.0f || mx != 0.0f)) {
+                lastMn = mn; lastMx = mx;
+                const float base = Memory::ReadFloat32(cam + 1212) - Memory::ReadFloat32(cam + 1700);
+                Memory::TryRead32(NSMBW_VA(0x8042A52Cu), wm);
+                const float baseZ = Memory::ReadFloat32(cam + 1220) - Memory::ReadFloat32(cam + 1708);
+                const float mnz = Memory::ReadFloat32(cam + 1632), mxz = Memory::ReadFloat32(cam + 1644);
+                std::fprintf(stderr, "[nsmbw][wmlimits] world %u scene %u: camera x %.1f .. %.1f z %.1f .. %.1f (focus %.1f, box %.1f %.1f)%c",
+                             (wm >> 16) & 0xFFu, (wm >> 8) & 0xFFu, base + mn, base + mx, baseZ + std::fmin(mnz, mxz),
+                             baseZ + std::fmax(mnz, mxz), base, mn, mx, 10);
+            }
+        }
+    }
+    if (!on || g_nsmbwCurrentSceneProfile != 3u || (g_nsmbwCurrentViTick % 60u) != 0) return;
+    uint32_t cam = 0;
+    if (!Memory::TryRead32(NSMBW_VA(0x8042A564u), cam) || cam == 0) return;
+    static uint32_t last[0x140] = {};
+    std::string line;
+    char buf[64];
+    for (uint32_t i = 0; i < 0x140; ++i) {
+        uint32_t w = 0;
+        Memory::TryRead32(cam + 4 * i, w);
+        if (w != last[i]) {
+            last[i] = w;
+            float f;
+            std::memcpy(&f, &w, 4);
+            if (std::isfinite(f) && std::fabs(f) < 1e7f && std::fabs(f) > 1e-4f) {
+                std::snprintf(buf, sizeof(buf), " +%03X=%.2f", 4 * i, f);
+                line += buf;
+            }
+        }
+    }
+    uint32_t mode = 0, actor = 0;
+    Memory::TryRead32(cam + 1540, mode);
+    Memory::TryRead32(cam + 1520, actor);
+    float bb[12];
+    for (int k = 0; k < 12; ++k) { uint32_t w = 0; Memory::TryRead32(cam + 1624 + 4 * k, w); std::memcpy(&bb[k], &w, 4); }
+    std::fprintf(stderr, "[nsmbw][wmcam] cam=%08X tick %u mode %u box +658: %.1f %.1f %.1f %.1f %.1f %.1f | %.1f %.1f %.1f %.1f %.1f %.1f:%s%c", cam,
+                 g_nsmbwCurrentViTick, mode, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5], bb[6], bb[7], bb[8], bb[9], bb[10], bb[11], line.c_str(), 10);
+}
+
+// NSMBW_DEBUG_MAP_WORLD=<1..9> (test only, 2026-11-21): 200 frames into the first world map, reload
+// the map in that world the way the Add/Drop reload does (dInfo_c +0x3C world / +0x40 sub-map, then
+// the game-over "back to map" state 0x809218B0), since Select World presses skip worlds in scripts.
+void NsmbwDebugMapWorld() {
+    static int world = 0, sub = 0; // "<world>[.<sub-map>]", sub-map 0-based (dScWMap_c::m_SceneNo)
+    static const bool parsed = [] { const char* v = AURORA_ENV("NSMBW_DEBUG_MAP_WORLD"); if (v) std::sscanf(v, "%d.%d", &world, &sub); return true; }();
+    (void)parsed;
+    static bool done = false;
+    static int frames = 0;
+    if (done || world < 1 || world > 9 || g_nsmbwCurrentSceneProfile != 3u || ++frames < 200) return;
+    done = true;
+    uint32_t info = 0;
+    if (!Memory::TryRead32(NSMBW_VA(0x8042A25Cu), info) || info == 0) return;
+    Memory::Write32(info + 0x3C, static_cast<uint32_t>(world - 1));
+    Memory::Write32(info + 0x40, static_cast<uint32_t>(sub));
+    CpuContext* ctx = CurrentCpuContext();
+    const CpuContext saved = *ctx;
+    InvokeDirectCpu<NSMBW_VA(0x809218B0u)>(ctx);
+    *ctx = saved;
+    std::fprintf(stderr, "[nsmbw][diag] map world -> %d.%d%c", world, sub, 10);
+}
+
 // NSMBW_DEBUG_WARP=<world>-<level>[:<area>[:<entrance>]] (1-based world/level/area as the game
 // shows them, entrance as in the course file): test only. While a course intro (CRSIN, scene 7)
 // runs, overwrite dInfo_c::m_startGameInfo (0x80315E90: +5 entrance, +6 area, +12/+14 world, +13/+15 level,
@@ -488,6 +564,8 @@ void NsmbwDebugP1Powerup() {
 extern "C" void NsmbwDumpScnObjs();
 extern "C" void NsmbwP1CharacterTick();      // nsmbw_p1_character.cpp
 extern "C" void NsmbwZonePillarboxTick();    // nsmbw_zone_pillarbox.cpp
+extern "C" void NsmbwWmShrinkFreeLook();     // nsmbw_wm_camera_limits.cpp
+extern "C" void NsmbwWmZoomTick(bool onMap);  // nsmbw_wm_camera_limits.cpp
 
 extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
 {
@@ -496,7 +574,11 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
     NsmbwDebugP1Character();
     NsmbwDebugWarp();
     NsmbwDebugGoto();
+    NsmbwDebugMapWorld();
     NsmbwZonePillarboxTick();
+    NsmbwDumpWmCam();
+    if (g_nsmbwCurrentSceneProfile == 3u) NsmbwWmShrinkFreeLook();
+    NsmbwWmZoomTick(g_nsmbwCurrentSceneProfile == 3u);
     NsmbwDebugP1Powerup();
     NsmbwP1CharacterTick();
     NsmbwWatchWrite();

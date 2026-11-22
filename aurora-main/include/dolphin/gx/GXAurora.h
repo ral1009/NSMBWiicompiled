@@ -101,6 +101,8 @@ void AuroraSetWideViewportLimit(float logicalWidth);
 // Scale the x row of every perspective projection (1 = off), to widen a 3D view at a wider aspect.
 void AuroraSetPerspectiveXScale(float scale);
 void AuroraSetModelOrthoXScale(float scale);
+// Scales x and y of perspective projections (narrower field of view); 1 = off. Applies from the next projection load.
+void AuroraSetPerspectiveZoom(float zoom);
 // Level pillarbox: clip level draws (not layouts) to logical x [x0, x1) of the 640-wide frame; x1 <= x0 = off.
 void AuroraSetLevelClipX(float x0, float x1);
 // With the clip on, level tile draws continue this many logical units past each edge, fading out.

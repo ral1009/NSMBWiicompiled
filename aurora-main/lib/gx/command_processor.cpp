@@ -578,6 +578,16 @@ void set_wide_viewport_limit(float limit) { g_wideViewportLimit = limit; }
 // width the game widens itself, and all 2D) are left alone. 1 = off.
 static float g_perspectiveXScale = 1.0f;
 void set_perspective_x_scale(float scale) { g_perspectiveXScale = scale; }
+// Perspective zoom (NSMBW world maps that do not scroll sideways, e.g. World 3's castle half at 21:9,
+// 2026-11-21): scales both x and y of every perspective projection, narrowing the field of view so a
+// map built for 16:9 fills the wider screen. 1 = off.
+static float g_perspectiveZoom = 1.0f;
+void set_perspective_zoom(float zoom) {
+  if (zoom != g_perspectiveZoom) {
+    g_perspectiveZoom = zoom;
+    g_gxState.stateDirty = true;
+  }
+}
 } // namespace aurora::gx::fifo
 namespace aurora::gx {
 void refresh_render_state() noexcept;
@@ -664,6 +674,12 @@ static void apply_xf_projection() {
     if (g_perspectiveXScale != 1.0f) {
       proj.m0[0] *= g_perspectiveXScale;
       proj.m0[2] *= g_perspectiveXScale;
+    }
+    if (g_perspectiveZoom != 1.0f) {
+      proj.m0[0] *= g_perspectiveZoom;
+      proj.m0[2] *= g_perspectiveZoom;
+      proj.m1[1] *= g_perspectiveZoom;
+      proj.m1[2] *= g_perspectiveZoom;
     }
     // NSMBW_LOG_PERSP=1: one line per new perspective aspect (proj[1][1]/proj[0][0], before the x
     // scale) with the XF viewport width and scene, to find which 3D views keep a 16:9 aspect at 21:9.
