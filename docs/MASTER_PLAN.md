@@ -1891,3 +1891,24 @@ These were committed without a progress-log entry; the details are in the commit
 **What's next**
 - Developer: judge the look in a few rooms (1-1 bonus room, 3-3 pipe room, a tall shaft such as 3-5), and decide between full zoom and a capped zoom with background at the sides (`NSMBW_NARROW_ZONE_ZOOM=1.1`).
 - Still untested: walking between two zones without a pipe (3-5's two shafts), multiplayer, and the Big Bertha arena.
+
+## 2026-11-22 — 0.3.0 release candidate: four DLLs rebuilt, shader seed expanded, package tested
+
+**What I did**
+- Merged the pipeline caches from the developer's play sessions (`build_nsmbw\nsmbw_data` and its portable copies, `build_nsmbw-E1`, `build_compat`) into `projects/nsmbw/assets/pipeline/initial_pipeline_cache.db`: 1532 -> 1957 recipes (all config version 19, none dropped). `build_nsmbw\nsmbw_data`'s cache already held every row of the others.
+- Checked VA wrapping (`va_codemod.py --check`, `--shared --check`: 0 files), re-ran `gen_version_tables.py E1`, regenerated both shard manifests, and rebuilt `build_release`, `build_release-E1`, `build_release_compat`, `build_release_compat-E1` (all within 4 minutes of each other).
+- `package_nsmbw.ps1`: 32 files, 255 MB, no warnings.
+- Tested the zip extracted to `C:\Users\ryanl\nsmbw_reltest\` (outside the repo, so the `runtime/assets` fallback could not hide a missing file), each copy portable, with the setup scripted from the developer's `.rvz` images (`NSMBW_SETUP_IMAGE`):
+  - PAL: DolphinTool extraction, `[launcher] disc: Europe (PAL), revision 1`, seed merged (1957 rows, 0 skipped, prewarm 20.3 s), fresh save -> opening movie -> W1 map -> 1-1 on screen.
+  - USA: same, to 1-1 (screenshot).
+  - PAL and USA with `MKW_FORCE_UNSUPPORTED_CPU=1`: the process's loaded modules show `NSMBWCompiled-P1-compat.dll` / `NSMBWCompiled-E1-compat.dll`; both reached 1-1.
+
+**What broke**
+- The USA run sat on the World 1 map of its fresh save for about 5 minutes until the developer pressed confirm by hand. Not a game fault: the self-test presses 2 only twice on the map (ticks 3780 and 3900) and then stops. The compat runs added `NSMBW_TEST_INPUT=3.1@200+3000=100/60:8` and needed no help.
+
+**What I learned**
+- In `NSMBW_TEST_INPUT` the bits are Wii Remote buttons as held sideways: 2 (jump / confirm) is 0x100, and 0x1 is d-pad left, not a confirm.
+- The launcher does not log which game DLL it loaded; the process's module list is the evidence.
+
+**What's next**
+- Still from the release checklist: README Known issues line for the narrow-room zoom; the open `PLAYING.txt` Config.toml items; release notes; play-tests of the power-up freeze, character select and backup rotation; the zoom on USA and in 3-5 / multiplayer / Big Bertha. The seed still comes only from the worlds played so far.
