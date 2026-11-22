@@ -1866,3 +1866,28 @@ These were committed without a progress-log entry; the details are in the commit
 **What's next**
 - World 4 clouds: done. The developer chose to drop that pack file for everyone: aurora's replacement index now skips it by name (`kIgnoredReplacements`), verified with the pack on. A repaired HD version could replace it later.
 - Other `GXInitTlutObj` callers re-translated on 2026-11-05 (0x801826E0, 0x80245C80, 0x8029C960, 0x802B4D80) also get real bytes now; nothing else seen to change, not checked beyond the W2 map.
+
+## 2026-11-22 — 21:9: camera zoom for zones narrower than the view (prototype)
+
+**What I did**
+- Surveyed the narrow zones again (2026-11-21, docs/futureplans.md 1 item 9): 152 zones, 114 distinct tile layouts. Widening them by hand is about 50-100 h; the developer chose to zoom the camera in for now and widen rooms later.
+- Built `projects/nsmbw/native/nsmbw_narrow_zone_zoom.cpp`, an override of 0x80078EB0. That function returns the camera's zoom factor Z (from the zone's zoom type and ID); every user of it sets the visible size to base size × Z. After the original body, if base width × Z is wider than the current zone, Z becomes zone width / base width, so the view exactly fills the zone. It has 7 callers and is not a leaf, so the translator never inlines it and this one override sees every use. It applies only when the base width is above 16:9's 408.7.
+- The zone width comes from the course data: `dScStage_c::mCurrFile` / `mCurrAreaNo` (+0x120E / +0x120F) → `dCd_c` file → `sAreaData` with that ID. dBg_c's zone limits (+0x90030 / +0x90034) can't be used, because they still read 0.0 when the zone-entry code (0x801549E0) asks for the zoom.
+- Settings: `NSMBW_NARROW_ZONE_ZOOM=0` turns it off, `=<factor>` caps the zoom-in (default: no cap). `NSMBW_LOG_NARROW_ZONE_ZOOM=1` logs each change with both widths and the caller.
+- Tested in a new portable copy (`build_nsmbw/portable_zoom`, `NSMBW_ASPECT=21:9`, `NSMBW_DEBUG_WARP` + `NSMBW_DEBUG_GOTO`):
+  - **1-1 bonus room** (area 2 zone 1, 512 × 272): zoom 1.2143 → 0.9545 (×1.272). Visible area x 992-1504, exactly the room. The room fills the screen with its walls at both sides. Lost: the rock ceiling above the brick rows (visible y 266-480 of the room's 208-480, 58 units ≈ 3.6 tiles). The floor, Mario, all coins and the bricks stay visible.
+  - **3-3 pipe room** (area 3 zone 2, 576 × 304): zoom 1.3571 → 1.0738 (×1.264). Fills the width. Lost: the row of icicles along the ceiling, and the top coin rows now sit at the frame edge under the HUD score.
+  - **16:9**, same bonus room: no zoom log lines. View 496.3 × 272, unchanged (the room's full height).
+  - Screenshots: `build_nsmbw/shots/zoom11_*.png`, `zoom11off_0.png`, `zoom33_1.png`, `zoom33off_0.png`, `zoom169_0.png`.
+
+**What broke**
+- The camera scrolls up in a fixed room when Mario climbs: confirmed by the developer playing it (2026-11-22), so the lost ceiling can still be seen by jumping. My scripted jumps had not shown it: the visible y stayed at 266 for 286 samples with Mario on the floor in every screenshot.
+- My first two jump scripts never ran: `NSMBW_TEST_INPUT` counts a new visit only when the scene *profile* changes. A pipe-style `NSMBW_DEBUG_GOTO` is stage → stage, so the room after it is still the same visit, with frames counted from the course start.
+
+**What I learned**
+- The 16:9 view at zoom setting 4 is 496.3 units wide (Z = 1.2143), not the survey's estimate of 480. The narrow-zone survey's per-zoom widths are therefore a few percent low, and the zoom these rooms need is about 1.27×, not 1.23×.
+- A "zoom factor" here multiplies the visible size: bigger Z shows more. Zooming in means making Z smaller.
+
+**What's next**
+- Developer: judge the look in a few rooms (1-1 bonus room, 3-3 pipe room, a tall shaft such as 3-5), and decide between full zoom and a capped zoom with background at the sides (`NSMBW_NARROW_ZONE_ZOOM=1.1`).
+- Still untested: walking between two zones without a pipe (3-5's two shafts), multiplayer, and the Big Bertha arena.
