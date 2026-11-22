@@ -830,6 +830,16 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
     const u32 dataSize = GXGetTexBufferSize(static_cast<u16>(obj.width()), static_cast<u16>(obj.height()),
                                             obj.format(), obj.has_mips(),
                                             obj.has_mips() ? static_cast<u8>(obj.mip_count() - 1) : 0);
+    // NSMBW_LOG_TLUT: which palette each palette texture is converted with (World 2 sandfall, 2026-11-21).
+    if (static const bool logTlut = AURORA_ENV("NSMBW_LOG_TLUT") != nullptr; logTlut) {
+      static int logged = 0;
+      if (logged++ < 40) {
+        std::fprintf(stderr, "[NSMBW_TLUT] convert %ux%u fmt=%u tex=%p mips=%u tlut=%p fmt=%u n=%u objId=%u ver=%u first=%04X\n",
+                     obj.width(), obj.height(), static_cast<u32>(obj.format()), obj.data, obj.mip_count(), tlut.data,
+                     static_cast<u32>(tlut.format), tlut.numEntries, tlut.tlutObjId, tlut.tlutDataVersion,
+                     tlut.data ? (static_cast<const u8*>(tlut.data)[0] << 8 | static_cast<const u8*>(tlut.data)[1]) : 0);
+      }
+    }
     auto converted = gfx::convert_texture_palette(
         obj.format(), obj.width(), obj.height(), obj.mip_count(), {static_cast<const u8*>(obj.data), dataSize},
         tlut.format, tlut.numEntries, {static_cast<const u8*>(tlut.data), static_cast<size_t>(tlut.numEntries) * 2});
@@ -1692,6 +1702,14 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
       const auto tlutIdx = static_cast<size_t>(obj.tlut);
       if (tlutIdx < g_gxState.loadedTluts.size()) {
         const auto& tlut = g_gxState.loadedTluts[tlutIdx];
+        if (static const bool logTlut = AURORA_ENV("NSMBW_LOG_TLUT") != nullptr; logTlut) {
+          static int logged = 0;
+          if (logged++ < (std::getenv("NSMBW_LOG_TLUT_ALL") ? 400 : 60)) {
+            std::fprintf(stderr, "[NSMBW_TLUT] resolve frame=%u map=%u %ux%u tlutSlot=%u -> objId=%u n=%u\n",
+                         gfx::current_frame(), i, obj.width(), obj.height(), static_cast<u32>(tlutIdx), tlut.tlutObjId,
+                         tlut.numEntries);
+          }
+        }
         if (tlut.data != nullptr) {
           if (copyRef != nullptr) {
             handle = resolve_dynamic_palette_texture(obj, *copyRef, tlut);

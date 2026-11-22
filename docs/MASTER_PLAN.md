@@ -1845,3 +1845,24 @@ These were committed without a progress-log entry; the details are in the commit
 
 **What's next**
 - Developer: play the Bertha arena at 21:9, a 2-player death with "Power-up freeze" off, and a few other rooms narrower than 21:9.
+
+## 2026-11-21 — World 2 sandfall black (palette objects); World 4 clouds investigated
+
+**What I did**
+- Reproduced both reports in the portable test copy (`build_nsmbw/portable_p1`) with the developer's completed save copied in (the old test save stopped at a "Save?" prompt after `NSMBW_DEBUG_MAP_WORLD`). World 2 scrolls vertically: walking up (`NSMBW_TEST_INPUT` screen-up pulses) then free-look reached the developer's view.
+- **World 2 sandfall:** found the material in the disc files first (`mtSandTide`, CI8 `W2SandFall` mixed with `W2SandTide` by vertex alpha), then bisected with `NSMBW_DEBUG_TEXWHITE=256x128:9` (bands gone, so the palette texture is the black input). Logs showed the texture converted with the ground's 32-entry palette every frame, and the game never loading the sandfall's own palette. The translated NW4R palette loader (0x8024BAD0) explains it: it skips `GXLoadTlut` when a material's `GXTlutObj` bytes equal the ones last loaded, and our native `GXInitTlutObj` left them zero. It now writes them the way the game's 0x801C7660 does. Developer confirmed fixed.
+- **World 4 clouds:** not a runtime bug. The opaque backdrop (`mtCloudB`, one continuous sheet) shows the colour of its texture even where alpha is 0, and the HD pack's replacement (`SMN/World/Clouds/tex1_256x80_5040f01a9e7ecc48_6.dds`) has blocky colour there. With texture replacement off the same view matches the developer's reference. Ruled out first: the indirect ripple, the blended layer (`mtCloudA`), vertex colours, the texture decode (`NSMBW_DEBUG_SKIP_DRAWS`, `NSMBW_DEBUG_TEXWHITE`).
+
+**What broke**
+- My first theory for World 2 (a copied palette object with zero bytes) was wrong in its route but right in its cause: the object was never copied; NW4R *compared* its bytes.
+- I spent several W4 runs on the runtime before checking the HD pack: every test copy links the same pack folder. Check `texture_replacements = false` first when a texture looks wrong.
+- Several logging runs missed the cloud draws: a frame on the W4 map has thousands of draws, and NW4R skips reloading an identical texture object, so the bind-armed log never saw `mtCloudA`. `NSMBW_LOG_DRAW_TEXGEN_TEX=256x80` (new) filters by texture size instead.
+
+**What I learned**
+- A palette (TLUT, "texture look-up table") texture stores an index per pixel; the palette turns indices into colours. A palette with too few entries makes every larger index transparent black in aurora.
+- Bug class 3 can also bite through a *cache*: game code that compares an object's bytes to decide whether to reload it treats all unwritten objects as the same object.
+- After any change that stops an inlined SDK copy (like 2026-11-05), the native version must mirror every store the guest version made, not only those another SDK function reads.
+
+**What's next**
+- World 4 clouds: done. The developer chose to drop that pack file for everyone: aurora's replacement index now skips it by name (`kIgnoredReplacements`), verified with the pack on. A repaired HD version could replace it later.
+- Other `GXInitTlutObj` callers re-translated on 2026-11-05 (0x801826E0, 0x80245C80, 0x8029C960, 0x802B4D80) also get real bytes now; nothing else seen to change, not checked beyond the W2 map.

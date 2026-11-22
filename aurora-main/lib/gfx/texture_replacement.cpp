@@ -584,6 +584,18 @@ void build_index() noexcept {
       continue;
     }
 
+    // Known-bad pack files, skipped so the game's own texture is used instead.
+    // tex1_256x80_5040f01a9e7ecc48_6: NSMBW's World 4 map clouds (W4_Cloud_fix) in the SMN HD pack.
+    // Its colour under the transparent sky is blocky, and the map's opaque backdrop (mtCloudB)
+    // shows colour regardless of alpha: stepped blue rectangles behind the clouds (2026-11-21).
+    static constexpr std::string_view kIgnoredReplacements[] = {"tex1_256x80_5040f01a9e7ecc48_6"};
+    const auto stem = fs_path_to_string(path.stem());
+    if (std::any_of(std::begin(kIgnoredReplacements), std::end(kIgnoredReplacements),
+                    [&](std::string_view bad) { return iequals_ascii(stem, bad); })) {
+      Log.info("texture_replacement: ignoring known-bad pack file {}", fs_path_to_string(path));
+      continue;
+    }
+
     s_replacementIndex.try_emplace(*parsed, path);
     s_indexShapes.insert(texture_shape(parsed->width, parsed->height, parsed->format));
   }

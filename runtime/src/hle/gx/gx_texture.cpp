@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <unordered_set>
 #include <cstdlib>
 
@@ -706,9 +707,12 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         static std::unordered_set<uint32_t> s_texFmtSeen;
         if (s_texFmtEnv && (s_texFmtScene < 0 || g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(s_texFmtScene)) &&
             s_texFmtSeen.insert(meta.dataAddr).second) {
-            RT_LOGF(RT_TAG_GX, "NSMBW_TEXFMT scene=%u oa=0x%08X tid=%u fmt=%u %ux%u tlut=%u data=0x%08X mip=%d wrap=%u/%u minF=%u magF=%u lod=%.2f..%.2f bias=%.2f\n",
+            uint32_t raw[8] = {};
+            for (uint32_t k = 0; k < 8; ++k) Memory::TryRead32(oa + k * 4u, raw[k]);
+            RT_LOGF(RT_TAG_GX, "NSMBW_TEXFMT scene=%u oa=0x%08X tid=%u fmt=%u %ux%u tlut=%u data=0x%08X mip=%d wrap=%u/%u minF=%u magF=%u lod=%.2f..%.2f bias=%.2f raw=%08X %08X %08X %08X %08X %08X %08X %08X\n",
                     g_nsmbwCurrentSceneProfile, oa, tid, meta.format, meta.width, meta.height, meta.tlut,
-                    meta.dataAddr, meta.mipmap ? 1 : 0, meta.wrapS, meta.wrapT, meta.minFilter, meta.magFilter, meta.minLod, meta.maxLod, meta.lodBias);
+                    meta.dataAddr, meta.mipmap ? 1 : 0, meta.wrapS, meta.wrapT, meta.minFilter, meta.magFilter, meta.minLod, meta.maxLod, meta.lodBias,
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
         }
     }
 
@@ -1174,7 +1178,19 @@ PPC_NATIVE_OVERRIDE_VOID(80170cbc, GX__GetTexObjLODAll_80170cbc, (uint32_t oa, u
 // ============================================================================
 
 extern "C" void GX__InitTlutObj_80170f80(uint32_t oa, uint32_t da, uint32_t f, uint32_t e) {
-    std::lock_guard<std::mutex> guard(g_tlutObjMutex); GXTlutObj* obj = CreateHostTlutObj(oa); TlutObjMeta& meta = GetTlutObjMeta(oa);
+    std::lock_guard<std::mutex> guard(g_tlutObjMutex);
+    // Mirror the SDK's stores into the guest object (NSMBW 0x801C7660: +0 format in bits 10-11,
+    // +4 BP 0x64 with the address >> 5 in bits 0-23, +8 u16 entry count). NW4R g3d's TLUT loader
+    // (0x8024BAD0) compares these 12 bytes with the object it loaded last into that slot and skips
+    // GXLoadTlut when they match. Left at zero, every palette object looked identical, so World 2's
+    // sandfall (CI8, TLUT 0) was drawn with the ground's 32-entry palette and came out black
+    // (2026-11-21; exposed when g3d's callers stopped inlining GXInitTlutObj on 2026-11-05).
+    try {
+        Memory::Write32(oa + 0, (f << 10) & 0xC00u);
+        Memory::Write32(oa + 4, 0x64000000u | ((da >> 5) & 0xFFFFFFu));
+        Memory::Write16(oa + 8, static_cast<uint16_t>(e));
+    } catch (...) {}
+    GXTlutObj* obj = CreateHostTlutObj(oa); TlutObjMeta& meta = GetTlutObjMeta(oa);
     meta.dataAddr=CanonicalizeGxMainRamAddress(da); meta.format=f; meta.entries=(u16)e; meta.dirty=false;
     // Leave the object unconstructed on a bad descriptor. A later GXLoadTlut
     // then takes GetHostTlutObj's soft-fail path and gets a fresh empty object
@@ -1188,8 +1204,17 @@ extern "C" void GX__InitTlutObj_80170f80(uint32_t oa, uint32_t da, uint32_t f, u
 PPC_NATIVE_OVERRIDE_VOID(80170f80, GX__InitTlutObj_80170f80, (uint32_t oa, uint32_t da, uint32_t f, uint32_t e), (oa, da, f, e));
 
 extern "C" void GX__LoadTlut_80170fa8(uint32_t oa, uint32_t tl) { std::lock_guard<std::mutex> guard(g_tlutObjMutex);
-    { static const bool logTlut = AURORA_ENV("NSMBW_LOG_TLUT") != nullptr; static int logged = 0;
-      if (logTlut && logged < 40) { ++logged; RT_LOGF(RT_TAG_GX, "[NSMBW_TLUT] HLE GXLoadTlut oa=0x%08X idx=%u\n", oa, tl); } } if (tl >= kMaxTluts) { RT_LOGF(RT_TAG_GX, "GXLoadTlut: invalid TLUT index %u (oa=0x%08X)\n", tl, oa); return; } TlutObjMeta& meta = GetTlutObjMeta(oa);
+    // Logged once per distinct (object, slot): one material reloads its palette every frame, which
+    // used to fill a 40-line budget before any other object appeared (2026-11-21).
+    { static const bool logTlut = AURORA_ENV("NSMBW_LOG_TLUT") != nullptr; static std::set<uint64_t> seen;
+      if (logTlut && seen.size() < 64 && seen.insert((uint64_t(oa) << 8) | tl).second) {
+        const TlutObjMeta& m = GetTlutObjMeta(oa); uint32_t w0 = 0, w1 = 0, w2 = 0;
+        Memory::TryRead32(oa, w0); Memory::TryRead32(oa + 4, w1); Memory::TryRead32(oa + 8, w2);
+        RT_LOGF(RT_TAG_GX, "[NSMBW_TLUT] HLE GXLoadTlut oa=0x%08X idx=%u meta(data=0x%08X fmt=%u n=%u guestBytes=%d) guest=%08X %08X %08X\n",
+                oa, tl, m.dataAddr, m.format, m.entries, m.fromGuestBytes ? 1 : 0, w0, w1, w2); } }
+    { static const bool logAll = AURORA_ENV("NSMBW_LOG_TLUT_ALL") != nullptr; static int n = 0;
+      if (logAll && n++ < 400) std::fprintf(stderr, "[NSMBW_TLUT] load oa=0x%08X idx=%u\n", oa, tl); }
+    if (tl >= kMaxTluts) { RT_LOGF(RT_TAG_GX, "GXLoadTlut: invalid TLUT index %u (oa=0x%08X)\n", tl, oa); return; } TlutObjMeta& meta = GetTlutObjMeta(oa);
     // An object the GXInitTlutObj HLE never saw (NSMBW: NW4R g3d fills its GXTlutObjs itself, so
     // the HLE init is never called and every CI texture sampled an empty palette - the black World
     // 2 map ground, 2026-09-27): decode the guest bytes, laid out as the SDK's GXInitTlutObj writes

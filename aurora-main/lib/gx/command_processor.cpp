@@ -2491,6 +2491,15 @@ static const int tgMax = [] {
   return v ? static_cast<int>(std::strtol(v, nullptr, 10)) : 160;
 }();
 static int tgLogged = 0;
+// NSMBW_LOG_DRAW_TEXGEN_TEX=<w>x<h>: only log draws whose texture map 0 has that size (finds one
+// material's draws in a frame of thousands, e.g. the World 4 map clouds at 256x80, 2026-11-21).
+static const std::pair<u32, u32> tgTex = [] {
+  std::pair<u32, u32> wh{0, 0};
+  if (const char* v = AURORA_ENV("NSMBW_LOG_DRAW_TEXGEN_TEX")) std::sscanf(v, "%ux%u", &wh.first, &wh.second);
+  return wh;
+}();
+const bool tgTexMatch = tgTex.first == 0 || (g_gxState.loadedTextures[0].width() == tgTex.first &&
+                                             g_gxState.loadedTextures[0].height() == tgTex.second);
 const bool armedDraw = s_nsmbwArmedDraws > 0 && s_nsmbwArmedTotal < 400;
 if (armedDraw) {
   --s_nsmbwArmedDraws;
@@ -2542,7 +2551,7 @@ if (armedDraw) {
   }
 }
 if (armedDraw || (tgScene >= 0 && g_nsmbwCurrentSceneProfile == static_cast<uint32_t>(tgScene) &&
-    g_nsmbwCurrentViTick >= tgMinTick && g_gxState.numTevStages > 0 && tgLogged < tgMax &&
+    g_nsmbwCurrentViTick >= tgMinTick && g_gxState.numTevStages > 0 && tgLogged < tgMax && tgTexMatch &&
     g_gxState.logicalViewport.height >= tgMinVpHeight)) {
   ++tgLogged;
   const auto& texFmt = g_gxState.vtxFmts[fmt].attrs[GX_VA_TEX0];
@@ -2711,6 +2720,21 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
 
   // Push raw vertex data to buffer
   const uint8_t* vertices = data + pos;
+  // DIAGNOSTIC (NSMBW_DEBUG_SKIP_DRAWS=<w>x<h>:<blend mode>): drop draws whose texture map 0 has
+  // that size and whose blend mode is that value (0 none, 1 blend) - shows one layer of a
+  // multi-material effect on its own (World 4 map clouds, 2026-11-21).
+  {
+    static const std::array<u32, 3> skip = [] {
+      std::array<u32, 3> s{0, 0, 99};
+      if (const char* v = AURORA_ENV("NSMBW_DEBUG_SKIP_DRAWS")) std::sscanf(v, "%ux%u:%u", &s[0], &s[1], &s[2]);
+      return s;
+    }();
+    if (skip[0] != 0 && g_gxState.loadedTextures[0].width() == skip[0] &&
+        g_gxState.loadedTextures[0].height() == skip[1] && static_cast<u32>(g_gxState.blendMode) == skip[2]) {
+      pos += totalVtxBytes;
+      return true;
+    }
+  }
   // DIAGNOSTIC (temporary): NSMBW_LOG_STATE_RUNS=<profile>. Prints one line each time the
   // (viewport, projection type, PnMtx0 zero-ness) tuple changes between draws, with the running
   // draw index - i.e. the frame's structure as sequences of draws sharing render state. Remove
@@ -3284,6 +3308,10 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     pos += 4;
     slot.set_no_cache(false); // Reset no-cache flag
     g_gxState.stateDirty = true;
+    if (static const bool logAll = std::getenv("NSMBW_LOG_TLUT_ALL") != nullptr; logAll) {
+      static int n = 0;
+      if (n++ < 400) std::fprintf(stderr, "[NSMBW_TLUT] cp load slot=%u objId=%u n=%u\n", idx, slot.tlutObjId, slot.numEntries);
+    }
   } else if (subCmd == GX_LOAD_AURORA_DESTROY_TEXOBJ) {
     CHECK(pos + 4 <= size, "GX_LOAD_AURORA_DESTROY_TEXOBJ read overrun");
     evict_texture_object(read_u32(data + pos, bigEndian));
