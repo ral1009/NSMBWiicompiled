@@ -112,11 +112,11 @@ Defaults; change them in **Options → Controls**.
 
 ## Known issues
 - **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
-- **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Known problems: the end of the Bowser-face wipe leaves the sides uncovered; on the title screen the ground ends before the right edge. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
+- **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Known problems: the end of the Bowser-face wipe leaves the sides uncovered; on the title screen the ground ends before the right edge. Rooms narrower than the 21:9 view (most bonus rooms and some pipe rooms) are zoomed in so their walls reach the screen edges; the camera scrolls up and down in them, so a little of the ceiling is off screen until you climb. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
 - **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
 - Only the PAL and USA discs, revision 1, are supported.
-- **The USA version is new.** So far it has been tested through the title screen, the World 1 map and World 1 levels. Please report anything that differs from the PAL version.
+- **The USA version is new.** Please report anything that differs from the PAL version.
 - **The compatibility build for CPUs without AVX2 has not been tested on such a CPU yet.** It is chosen automatically; please report how it runs.
 
 ## FAQ

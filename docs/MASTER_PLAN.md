@@ -1911,4 +1911,6 @@ These were committed without a progress-log entry; the details are in the commit
 - The launcher does not log which game DLL it loaded; the process's module list is the evidence.
 
 **What's next**
-- Still from the release checklist: README Known issues line for the narrow-room zoom; the open `PLAYING.txt` Config.toml items; release notes; play-tests of the power-up freeze, character select and backup rotation; the zoom on USA and in 3-5 / multiplayer / Big Bertha. The seed still comes only from the worlds played so far.
+- Developer playtest of the package (same day), all confirmed: the 21:9 zoom (full zoom kept; 3-5 between zones, multiplayer, Big Bertha, USA), power-up freeze (pickups, damage, mini mushroom, death), character select (title and map Add/Drop, real controllers), 180 FPS and Match display, save-backup rotation (10 kept), USA past World 1, shader stutter in later worlds, the World 2 sandfall / World 4 clouds / W1 map edge fixes, and the setup window by hand. Not confirmed: tilt direction on a tilting platform, and the sky above water against hardware (both stay in docs/issues.md's open list).
+- README: Known issues gained the narrow-room zoom line; the USA line no longer says "tested through World 1". Release notes drafted in `dist/RELEASE_NOTES-v0.3.0.md` (not in the repo).
+- Still open for the release: the `PLAYING.txt` Config.toml items, then the `v0.3.0` tag.
