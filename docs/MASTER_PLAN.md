@@ -1914,3 +1914,30 @@ These were committed without a progress-log entry; the details are in the commit
 - Developer playtest of the package (same day), all confirmed: the 21:9 zoom (full zoom kept; 3-5 between zones, multiplayer, Big Bertha, USA), power-up freeze (pickups, damage, mini mushroom, death), character select (title and map Add/Drop, real controllers), 180 FPS and Match display, save-backup rotation (10 kept), USA past World 1, shader stutter in later worlds, the World 2 sandfall / World 4 clouds / W1 map edge fixes, and the setup window by hand. Not confirmed: tilt direction on a tilting platform, and the sky above water against hardware (both stay in docs/issues.md's open list).
 - README: Known issues gained the narrow-room zoom line; the USA line no longer says "tested through World 1". Release notes drafted in `dist/RELEASE_NOTES-v0.3.0.md` (not in the repo).
 - Still open for the release: the `PLAYING.txt` Config.toml items, then the `v0.3.0` tag.
+
+## 2026-11-22 — Native Linux launcher and AppImage
+
+**What I did**
+
+Built USA rev 1 with Clang 18 on Ubuntu 24.04. Imported a WBFS through the
+packaged file picker and ran the AppImage on Bazzite with Vulkan. The title,
+World 1 map and level 1-1 all rendered. Holding Shift reopened setup.
+ISO and RVZ copies of the same disc produced the same main.dol.
+
+**What broke**
+
+A clean translation stopped at character selection with a missing call to
+`0x80773220`. The card setter and the world map camera call at `0x809079B0`
+both come from handwritten C++ and needed entries in the function map.
+
+**What I learned**
+
+Raising the main thread's stack limit only fixed part of the problem. libco
+allocates each guest fiber separately. A 129-frame test reproduced the crash
+with the old 64 KiB stack and passed with 16 MiB. NSMBW also needs to install
+the page-fault handler itself because it has a separate entry point from MKW.
+
+**What's next**
+
+Test the PAL and x86-64-v2 game libraries on Linux and try the AppImage on
+Steam Deck.

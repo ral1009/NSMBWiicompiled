@@ -16,7 +16,10 @@ concurrency:
 jobs:
   translator:
     name: Translator (build + test)
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,3 +37,21 @@ jobs:
 
       - name: Test
         run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
+
+  linux-launcher:
+    name: Linux launcher
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev
+      - name: Build launcher and product compile check
+        run: cmake -S runtime/tests/linux -B build-linux-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build-linux-tests --parallel 4
+      - name: Test launcher and AppDir
+        run: |
+          ./build-linux-tests/fiber_stack
+          ./build-linux-tests/memory_fault
+          python3 projects/nsmbw/tools/test_expand_embeds.py
+          python3 projects/nsmbw/tools/test_linux_launcher.py build-linux-tests

@@ -16,6 +16,7 @@
 
 #if !defined(_WIN32)
 #include "libco.h"
+#include "host_fiber.h"
 #endif
 
 namespace Fiber {
@@ -329,8 +330,7 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
 #else
     // libco's co_create() entry point takes no argument; SwitchToThread() stages guestThreadAddr
     // into s_pendingFiberArg immediately before the co_switch that first activates this handle.
-    constexpr unsigned int kHostStackSize = 64 * 1024;
-    gf.fiber = co_create(kHostStackSize, &FiberProcTrampoline);
+    gf.fiber = CreateHostFiber(&FiberProcTrampoline);
 
     if (!gf.fiber) {
         RT_LOG(RT_TAG_OS) << "co_create failed for thread 0x"

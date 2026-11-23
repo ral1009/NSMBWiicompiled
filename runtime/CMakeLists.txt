@@ -37,6 +37,10 @@ string(SUBSTRING "${MKW_HOST_ISA}" 1 1 MKW_HOST_ISA_LEVEL)
 message(STATUS "Host CPU baseline: x86-64-${MKW_HOST_ISA}")
 
 set(CMAKE_CXX_STANDARD 17)
+if(NOT WIN32)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+option(MKW_BUILD_MKW "Build Mario Kart Wii products" ON)
 
 # Declared before the vendored libraries so the third-party block below can
 # branch on it and so cmake/NativePrebuilt.cmake is included after the names it
@@ -250,7 +254,8 @@ set(MKW_RETRO_REWIND_PRODUCT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/product/retro
 # mkw_runtime_common. See cmake/PublicProducts.cmake and the file's own header.
 set(MKW_CPU_BASELINE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/host_cpu_baseline.cpp")
 list(REMOVE_ITEM SOURCES ${MKW_BASE_PRODUCT_SOURCE} ${MKW_RETRO_REWIND_PRODUCT_SOURCE}
-     ${MKW_CPU_BASELINE_SOURCE})
+     ${MKW_CPU_BASELINE_SOURCE}
+     "${CMAKE_CURRENT_LIST_DIR}/src/product/nsmbw_launcher_linux.cpp")
 
 # WUP-028 (official GameCube adapter) support talks to the adapter over WinUSB, which only
 # exists on Windows - SDL3 already exposes the same hardware as a normal joystick on Linux/macOS,
@@ -267,17 +272,19 @@ endif()
 set(MKW_TRANSLATED_SHARD_MANIFEST
     "${CMAKE_CURRENT_LIST_DIR}/../generated/build_shards/shards.cmake"
     CACHE FILEPATH "Translator-owned aggregate shard manifest")
-if(NOT EXISTS "${MKW_TRANSLATED_SHARD_MANIFEST}")
-    message(FATAL_ERROR
-        "Missing translator-owned shard manifest: ${MKW_TRANSLATED_SHARD_MANIFEST}. "
-        "Run Translator.Cli emit-build-shards first; see translator/README.md.")
+if(MKW_BUILD_MKW)
+    if(NOT EXISTS "${MKW_TRANSLATED_SHARD_MANIFEST}")
+        message(FATAL_ERROR
+            "Missing translator-owned shard manifest: ${MKW_TRANSLATED_SHARD_MANIFEST}. "
+            "Run Translator.Cli emit-build-shards first; see translator/README.md.")
+    endif()
+    include("${MKW_TRANSLATED_SHARD_MANIFEST}")
+    set(MKW_HAVE_RETRO_REWIND ${MKW_HAVE_RETRO_REWIND_SHARDS})
+    message(STATUS
+        "Translator graph: ${MKW_SHARED_BASE_FUNCTION_COUNT}/${MKW_BASE_FUNCTION_COUNT} base functions shared; "
+        "${MKW_PROFILE_SENSITIVE_CALLER_COUNT} profile-sensitive callers; "
+        "${MKW_RETRO_REWIND_FUNCTION_COUNT} Retro Rewind functions")
 endif()
-include("${MKW_TRANSLATED_SHARD_MANIFEST}")
-set(MKW_HAVE_RETRO_REWIND ${MKW_HAVE_RETRO_REWIND_SHARDS})
-message(STATUS
-    "Translator graph: ${MKW_SHARED_BASE_FUNCTION_COUNT}/${MKW_BASE_FUNCTION_COUNT} base functions shared; "
-    "${MKW_PROFILE_SENSITIVE_CALLER_COUNT} profile-sensitive callers; "
-    "${MKW_RETRO_REWIND_FUNCTION_COUNT} Retro Rewind functions")
 
 set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/PublicProducts.cmake")

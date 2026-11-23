@@ -31,6 +31,8 @@
 #include "runtime_product.h"
 #include "system_bridge.h"
 #include "timebase_contract.h"
+#include "guest_flat_memory.h"
+#include "posix_memory_fault.h"
 
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
@@ -413,16 +415,17 @@ void RunAuroraLogCallback(AuroraLogLevel level, const char* module, const char* 
                  static_cast<int>(messageView.size()), messageView.data());
 }
 
-// nsmbw_data (texture packs, shader cache) lives next to the exe, so a shortcut or a launch from
-// another working directory still finds the HD pack; the working directory is only the fallback
-// when the exe's own path is unknown. (It used current_path(), which a release folder started
-// from a shortcut with a different "Start in" would get wrong.)
 // The game's NAND save folder: its title ID's low word as hex text (the game code, "SMNP" / "SMNE").
 constexpr const char* kSaveTitleDir = NSMBW_BY_VERSION("534d4e50", "534d4e45");
 
 std::filesystem::path NsmbwDataDir() {
+#if !defined(_WIN32)
+    // AppImages mount read-only; writable data belongs outside the executable directory.
+    return RuntimeConfigFile::ApplicationDataDirectory() / "nsmbw_data";
+#else
     if (const auto exeDir = RuntimeConfigFile::ExecutableDirectory()) return *exeDir / "nsmbw_data";
     return std::filesystem::current_path() / "nsmbw_data";
+#endif
 }
 
 // True when the Windows exe is running under Wine/Proton: Wine's ntdll exports wine_get_version,
@@ -1012,7 +1015,13 @@ void ProbeSchedulerDisableCount(const char* step) {
 
 // The game is a DLL (NSMBWCompiled-<version>.dll) that the launcher, NSMBWCompiled.exe
 // (nsmbw_launcher.cpp), loads and enters here. Everything below used to be main().
-extern "C" __declspec(dllexport) int NsmbwGameMain() {
+extern "C"
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+int NsmbwGameMain() {
 #ifdef _WIN32
     // Window/taskbar icon: SDL3 only takes an icon from the exe's resources when these hints name
     // one (they can be given as environment variables; set before aurora initializes SDL). Resource
@@ -1068,6 +1077,8 @@ extern "C" __declspec(dllexport) int NsmbwGameMain() {
     }
 #if defined(_WIN32)
     ::AddVectoredExceptionHandler(1, DiagVectoredExceptionHandler);
+#else
+    RuntimeSignals::InstallMemoryFaultHandler(&GuestFlat::HandleAccessViolation);
 #endif
     // Confirmed the hard way: without this, InitializeDataSections()'s first memcpy into guest
     // memory is a raw access violation, since nothing has mapped that address space yet.

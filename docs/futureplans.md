@@ -23,7 +23,7 @@ Ranked by plausibility (how sure we are it can be done with the code we have), t
 | 11 | Other game versions (NTSC-U first) | USA rev 1 built 2026-11-14/15 (a DLL per version behind the launcher); played past World 1 by the developer 2026-11-22. Other versions not started | - | **0.3.0** for USA rev 1; others later |
 | 12 | Save carry-over between regions | Unverified: save format not yet read | Small once item 11 exists | later, with item 11 |
 | 13 | Newer SMBW (code mods) | Low-medium | Very large | later |
-| 14 | Android, online play, native Linux build | Low | Very large | later |
+| 14 | Android, online play | Low | Very large | later |
 | 15 | Regression tests, installer, auto-update | Medium | Medium each | later |
 | 16 | Toggle for the power-up / damage freeze ("item pickup lag"; promised in the v0.2.2 release notes) | Built 2026-11-18: F10 > Advanced > Power-up freeze (section 7b); played by the developer 2026-11-22 (pickups, damage, mini mushroom, death) | - | **0.3.0** |
 | 17 | Assist options, infinite lives first (section 7d) | High for lives: one static function, `daPyMng_c::decRest`; not checked whether it is inlined. Invincibility not checked | Small | later (0.4.0) |
@@ -170,12 +170,16 @@ Two separate things:
 
 ## 5. Linux and Steam Deck
 
+The experimental x86-64 AppImage reached level 1-1 on Bazzite with the USA
+rev 1 disc and Vulkan. The next checks are PAL, the compatibility build and
+Steam Deck. See [Building on Linux](BUILDING.md#native-linux--appimage-experimental).
+
+### Proton
+
 A user ran the Windows exe under Proton and reported two problems (not yet reproduced; the developer has not tried Linux):
 
 - The renderer setting `auto` chooses DX12, which draws nothing under Proton. Setting it to Vulkan fixed it. **Fix:** default to Vulkan when running under Wine/Proton.
 - `nand_root` had to be set by hand in the config. **Fix:** give it an automatic default, like the disc path.
-
-After those, a native Linux build is a separate project: check how much of the runtime and the PowerShell scripts is Windows-only. Android is in scope later and depends on the same work.
 
 ## 6. Mods
 
