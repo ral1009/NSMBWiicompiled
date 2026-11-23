@@ -4,7 +4,7 @@
 
 ---
 
-**New Super Mario Bros. Wii as a native Windows game.** Play in high resolution and widescreen, at up to 180 fps, with keyboard or any gamepad, Dolphin HD texture packs and up to four players. No emulator needed.
+**New Super Mario Bros. Wii as a native Windows game.** Play the PAL or USA version in high resolution, widescreen or ultrawide, at up to 240 fps, with keyboard or any gamepad, Dolphin HD texture packs, any character and up to four players. No emulator needed.
 
 <p align="center">
   <img src="docs/images/hero.jpg" alt="The title screen in widescreen at high resolution" width="800">
@@ -48,7 +48,7 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 
 | | |
 |---|---|
-| ![The options menu](docs/images/options.jpg) | ![The world-map menu with its Options button](docs/images/map-menu.jpg) |
+| ![The options menu](docs/images/options.webp) | ![The world-map menu with its Options button](docs/images/map-menu.jpg) |
 
 **Save** in that world-map menu always does a full save and lets you keep playing, at any point in the game. The original only offers Quick Save, which quits to the title screen, until you beat the final boss.
 
@@ -58,7 +58,14 @@ Press **F10**, or choose **Options** in the pause menu or the world-map menu. Th
 - **Advanced:** turn off the power-up freeze, FPS counter, and the Wii's CRT anti-flicker blur (copy filter, off by default)
 
 ### High resolution and widescreen
-Render at up to 6K (3456 rows, 6.5 times the Wii's native 528), in 16:9. Pick a preset by height: 528p (native), 720p, 1080p, 1440p, 4K, 5K, 6K, or Auto to match the window. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120 or 180 fps on high-refresh monitors.
+Render at up to 6K (3456 rows, 6.5 times the Wii's native 528). Pick a preset by height: 528p (native), 720p, 1080p, 1440p, 4K, 5K, 6K, or Auto to match the window. The game logic still runs at 60 fps like the original. **Frame interpolation** adds in-between frames for 120, 180 or 240 fps on high-refresh monitors, or **Match display** to follow your monitor's exact refresh rate.
+
+### Ultrawide 21:9 (experimental)
+Set **Aspect ratio** to 21:9 in the options menu (it applies after a restart). You see more of each level and of the world map, nothing is stretched, and the HUD moves to the screen edges. Rooms narrower than the wider view are zoomed in so their walls reach the edges.
+
+| | |
+|---|---|
+| ![A lava level in 21:9](docs/images/volcano-21x9.webp) | ![An ice level in 21:9](docs/images/ice-21x9.webp) |
 
 ### HD texture packs
 Dolphin texture packs for NSMBW work without changes. Install one during setup, or later by copying it into the game folder, and switch it on or off in the options menu while you play. Tested with *NSMBW HD v2.81* and nymo642's [HD HUD Tweaks](https://gamebanana.com/mods/480785). No packs are included; download them from their authors.
@@ -71,7 +78,14 @@ Dolphin texture packs for NSMBW work without changes. Install one during setup, 
 - On-screen button prompts show the buttons you actually press, for the controller you last used.
 - Each connected gamepad is a player, up to four, and the keyboard is player 1. Other players can share the keyboard too: set their controller to Keyboard and give them keys of their own.
 
-![Mario and Luigi playing together](docs/images/coop.jpg)
+| | |
+|---|---|
+| ![The controls screen, with separate bindings for courses, the world map, menus and the options menu](docs/images/controls.jpg) | ![Mario and Luigi riding a skeleton platform over lava](docs/images/volcano.jpg) |
+
+### Play as any character
+After choosing the number of players, every player, player 1 included, picks Mario, Luigi, Blue Toad or Yellow Toad. To switch later, open **Add/Drop Players** in the world-map menu, pick on player 1's card, then press OK. The choice is kept in your save file.
+
+![Four players choosing their characters, with Luigi as player 1](docs/images/character-select.webp)
 
 ### Small changes to the game
 - **Exit** in the pause menu works in any course, even one you haven't cleared yet.
@@ -79,14 +93,15 @@ Dolphin texture packs for NSMBW work without changes. Install one during setup, 
 - The Wii Remote strap and "hold the remote sideways" screens are skipped.
 - The opening cutscene and hint movies can be skipped: press **-** once to show the prompt, then again to skip.
 - The options menu pauses the whole game, sound and hint-movie replays included.
-- **Optional: no power-up freeze.** In single player the game stops everything for about a second while Mario grows or shrinks. Turn off **Power-up freeze** in the options menu (Advanced) and the level keeps moving, as it does in multiplayer. On by default.
-- **Player 1 can be any character.** After choosing the number of players, every player, player 1 included, picks Mario, Luigi, Blue Toad or Yellow Toad. To switch later, open **Add/Drop Players** in the world-map menu, pick on player 1's card, then press OK. The choice is kept in your save file.
+- **Optional: no power-up freeze.** The game stops everything for about a second while a player grows, shrinks or changes power-up, and while another player dies. Turn off **Power-up freeze** in the options menu (Advanced) and the level keeps moving. On by default.
+- **Save backups.** Your save is copied to a `SaveBackups` folder each time you start the game; the last 10 copies are kept.
 
 ### Screenshots
 
 | | |
 |---|---|
-| ![A lava level](docs/images/volcano.jpg) | ![Course clear with two players](docs/images/course-clear.jpg) |
+| ![The World 4 map in 21:9](docs/images/world4-map-21x9.webp) | ![The World 5 map in 21:9](docs/images/world5-map-21x9.webp) |
+| ![Mario and Luigi playing together](docs/images/coop.jpg) | ![Course clear with two players](docs/images/course-clear.jpg) |
 | ![The World 4 map](docs/images/world-map.jpg) | ![A forest level](docs/images/forest.jpg) |
 
 ## Controls
@@ -106,12 +121,22 @@ Defaults; change them in **Options → Controls**.
 | Switch options tab | LB / RB | Q / E |
 
 ## Future Plans
-- Support for the other game versions (Japan, Korea, PAL and USA revision 2)
+Next release (0.4.0):
+- Riivolution mod support
+- Rumble and gyro tilt on controllers that have them
+- Assist options, starting with infinite lives
+- A toggle for players bumping into each other in co-op
+- Game speed and hold-to-fast-forward
+- Practice tools: instant restart, level timer, death counter, input display
+
+Later:
+- The other game versions (Japan, Korea, PAL and USA revision 2)
 - Full-screen 4:3 and 16:10
-- Android, Linux, Mac Support
+- Extended levels in ultrawide (so narrow rooms show more instead of zooming in)
+- Android, Linux and Mac
 
 ## Known issues
-- **Brief stutters the first time you see a new area.** The game ships with shaders prepared for World 1, so later worlds compile some on first visit. They are saved and do not stutter again.
+- **Brief stutters the first time you see a new area.** The game ships with about 2,000 prepared shaders collected from playing through the worlds, but not every area is covered yet; anything missing is compiled on first visit, saved, and does not stutter again.
 - **21:9 is experimental.** It shows more of each level and of the world map, with the HUD at the screen edges and the world unstretched. Rooms narrower than the 21:9 view (most bonus rooms and some pipe rooms) are zoomed in so their walls reach the screen edges; the camera scrolls up and down in them, so a little of the ceiling is off screen until you climb. Aspect ratio changes apply after a restart. 16:10 is not supported (it uses 16:9 with thin bars); 4:3 is the game's own mode, with black bars above and below.
 - **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
