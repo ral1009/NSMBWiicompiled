@@ -68,6 +68,35 @@ function(mkw_configure_translated_target target)
     mkw_bound_translated_compiles(${target})
 endfunction()
 
+# Host ISA guard. Everything in MKW_ALL_BUILD_TARGETS below is compiled with
+# MKW_HOST_MARCH_FLAG (x86-64-v3 unless MKW_HOST_ISA=v2); this object library deliberately is not, which
+# is the whole point of keeping it out of mkw_runtime_common. It runs a CPUID
+# check from a C initializer so an unsupported machine gets a readable error
+# instead of an illegal-instruction crash. Excluded from the unity build and the
+# precompiled header because both are produced with the owning target's flags.
+add_library(mkw_cpu_baseline OBJECT "${MKW_CPU_BASELINE_SOURCE}")
+target_compile_features(mkw_cpu_baseline PRIVATE cxx_std_17)
+set_target_properties(mkw_cpu_baseline PROPERTIES UNITY_BUILD OFF)
+target_compile_options(mkw_cpu_baseline PRIVATE -w)
+# Which feature list to require: the level the rest of the exe was compiled for.
+target_compile_definitions(mkw_cpu_baseline PRIVATE MKW_HOST_ISA_LEVEL=${MKW_HOST_ISA_LEVEL})
+
+
+# These translation units implement guest-visible floating-point bit
+# semantics.  Keep them out of the fast-math runtime unity groups and apply
+# the same contraction/rounding policy as translated PPC shards.
+set(MKW_PPC_SEMANTIC_RUNTIME_SOURCES
+    "${MKW_RUNTIME_SOURCE_DIR}/src/ppc_helpers.cpp"
+    "${MKW_RUNTIME_SOURCE_DIR}/src/fpu_helpers.cpp")
+set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
+    SKIP_UNITY_BUILD_INCLUSION ON
+    SKIP_PRECOMPILE_HEADERS ON
+    COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
+
+if(NOT MKW_BUILD_MKW)
+    return()
+endif()
+
 add_library(mkw_runtime_common OBJECT ${SOURCES})
 mkw_configure_object_target(mkw_runtime_common)
 target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
@@ -111,32 +140,10 @@ foreach(source IN LISTS SOURCES)
     endif()
     set_source_files_properties("${source}" PROPERTIES UNITY_GROUP "${runtime_group}")
 endforeach()
-# These translation units implement guest-visible floating-point bit
-# semantics.  Keep them out of the fast-math runtime unity groups and apply
-# the same contraction/rounding policy as translated PPC shards.
-set(MKW_PPC_SEMANTIC_RUNTIME_SOURCES
-    "${MKW_RUNTIME_SOURCE_DIR}/src/ppc_helpers.cpp"
-    "${MKW_RUNTIME_SOURCE_DIR}/src/fpu_helpers.cpp")
-set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
-    SKIP_UNITY_BUILD_INCLUSION ON
-    SKIP_PRECOMPILE_HEADERS ON
-    COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
 set_target_properties(mkw_runtime_common PROPERTIES UNITY_BUILD ON UNITY_BUILD_MODE GROUP)
 target_precompile_headers(mkw_runtime_common PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
 mkw_apply_common_compile_options(mkw_runtime_common)
 
-# Host ISA guard. Everything in MKW_ALL_BUILD_TARGETS below is compiled with
-# MKW_HOST_MARCH_FLAG (x86-64-v3 unless MKW_HOST_ISA=v2); this object library deliberately is not, which
-# is the whole point of keeping it out of mkw_runtime_common. It runs a CPUID
-# check from a C initializer so an unsupported machine gets a readable error
-# instead of an illegal-instruction crash. Excluded from the unity build and the
-# precompiled header because both are produced with the owning target's flags.
-add_library(mkw_cpu_baseline OBJECT "${MKW_CPU_BASELINE_SOURCE}")
-target_compile_features(mkw_cpu_baseline PRIVATE cxx_std_17)
-set_target_properties(mkw_cpu_baseline PROPERTIES UNITY_BUILD OFF)
-target_compile_options(mkw_cpu_baseline PRIVATE -w)
-# Which feature list to require: the level the rest of the exe was compiled for.
-target_compile_definitions(mkw_cpu_baseline PRIVATE MKW_HOST_ISA_LEVEL=${MKW_HOST_ISA_LEVEL})
 
 if(NOT MKW_BASE_COMMON_SHARDS)
     message(FATAL_ERROR "Translator build graph contains no shared base shards")

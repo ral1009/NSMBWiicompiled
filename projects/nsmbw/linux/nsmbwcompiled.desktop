@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NSMBWCompiled
+Comment=New Super Mario Bros. Wii recompilation
+Exec=NSMBWCompiled
+Icon=nsmbwcompiled
+Categories=Game;
+Terminal=false

@@ -1915,6 +1915,35 @@ These were committed without a progress-log entry; the details are in the commit
 - README: Known issues gained the narrow-room zoom line; the USA line no longer says "tested through World 1". Release notes drafted in `dist/RELEASE_NOTES-v0.3.0.md` (not in the repo).
 - Still open for the release: the `PLAYING.txt` Config.toml items, then the `v0.3.0` tag.
 
+## 2026-11-22 — Native Linux launcher and AppImage
+
+**What I did**
+
+Contributed by RivierGrullon in PR ral1009/NSMBWiicompiled#7; the Linux testing below is theirs (Bazzite on a desktop and a Lenovo Legion Go). The developer has not run Linux. On Windows the PR was built separately (2026-11-23, portable copy) and still reached title, map and 1-1.
+
+Built USA rev 1 with Clang 18 on Ubuntu 24.04. Imported a WBFS through the
+packaged file picker and ran the AppImage on Bazzite with Vulkan. The title,
+World 1 map and level 1-1 all rendered. Holding Shift reopened setup.
+ISO and RVZ copies of the same disc produced the same main.dol.
+
+**What broke**
+
+A clean translation stopped at character selection with a missing call to
+`0x80773220`. The card setter and the world map camera call at `0x809079B0`
+both come from handwritten C++ and needed entries in the function map.
+
+**What I learned**
+
+Raising the main thread's stack limit only fixed part of the problem. libco
+allocates each guest fiber separately. A 129-frame test reproduced the crash
+with the old 64 KiB stack and passed with 16 MiB. NSMBW also needs to install
+the page-fault handler itself because it has a separate entry point from MKW.
+
+**What's next**
+
+Test the PAL and x86-64-v2 game libraries on Linux and try the AppImage on
+Steam Deck.
+
 ## 2026-11-23 — GitHub issue #10: setup deleted a disc image kept inside `disc\`
 
 **What I did**

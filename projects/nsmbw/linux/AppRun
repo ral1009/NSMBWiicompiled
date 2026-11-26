@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$appdir/usr/bin/NSMBWCompiled" "$@"

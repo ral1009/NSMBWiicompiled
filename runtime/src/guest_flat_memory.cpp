@@ -32,6 +32,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <execinfo.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
@@ -450,9 +451,13 @@ void ReportFatalGuestFault(const char* category, uint32_t guestAddress, bool isW
     // which can be stale), to pin down exactly which translated PPC function is executing.
     {
         void* frames[32]{};
-        const USHORT n = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+#if defined(_WIN32)
+        const int n = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+#else
+        const int n = backtrace(frames, static_cast<int>(std::size(frames)));
+#endif
         std::cerr << "  host stack trace (" << n << " frames):" << std::endl;
-        for (USHORT i = 0; i < n; ++i) {
+        for (int i = 0; i < n; ++i) {
             const auto addr = reinterpret_cast<uintptr_t>(frames[i]);
             if (auto info = TranslatedFunctionRegistry::FindByHostAddress(addr)) {
                 std::cerr << "    [" << i << "] " << info->name << " (PPC:0x" << std::hex

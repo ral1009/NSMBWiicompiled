@@ -1044,6 +1044,55 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** aurora's pack index skips that file by name (`kIgnoredReplacements` in `aurora-main/lib/gfx/texture_replacement.cpp`, commit 0383ddf; logged as `ignoring known-bad pack file`), so every player with this pack gets the disc's 256x80 clouds there; the rest of the pack is unchanged (306 files indexed instead of 307). Developer's decision (remove rather than repair). Verified: same view with the pack on, no blocks (screenshot).
 - **Scope:** NSMBW-specific (pack content). New switch `NSMBW_DEBUG_SKIP_DRAWS=<w>x<h>:<blend mode>` (aurora `command_processor.cpp`) drops draws by texture size and blend mode, to look at one layer of an effect.
 
+## 2026-11-22 - Linux guest fibers overflow a 64 KiB host stack
+
+**Symptom:** a guest fiber running 129 nested calls with 4 KiB frames crashes with SIGSEGV.
+
+**Root cause:** the Linux branch passed 64 KiB to libco's fixed-size stack allocator.
+Windows `CreateFiber` interprets that size as an initial commitment, with a larger
+reserve inherited from the executable. Raising the Linux main thread's stack
+limit does not grow the separately allocated fiber stacks.
+
+**Fix:** `runtime/include/host_fiber.h` allocates 16 MiB for Linux guest fibers.
+`GuestFiberManager` uses that allocator. The same real-libco regression test in
+`runtime/tests/linux/fiber_stack.cpp` changes from exit 139 to a successful return.
+
+**Scope:** General Linux runtime; Windows fiber allocation is unchanged.
+
+## 2026-11-22 - NSMBW Linux memory-fault handling and diagnostics
+
+**Symptom:** native compilation stops in `ReportFatalGuestFault` on Win32-only
+`CaptureStackBackTrace` types. NSMBW's entry point also installs no POSIX fault
+handler, so protected guest pages cannot reach the existing fault resolver.
+
+**Root cause:** the stack diagnostic was not platform guarded. Linux fault
+handling existed only in Mario Kart Wii's `main.cpp`, excluded from NSMBW.
+
+**Fix:** use `backtrace` for the Linux diagnostic and install the SIGSEGV/SIGBUS
+dispatcher from `runtime/include/posix_memory_fault.h` in the NSMBW entry point.
+It passes the fault address and x86 write bit to `GuestFlat::HandleAccessViolation`,
+resumes handled accesses, and preserves fatal signals for unrelated faults.
+`runtime/tests/linux/memory_fault.cpp` tests protected reads/writes and a fatal
+unhandled signal using actual page protections and a child process.
+
+**Scope:** NSMBW-specific handler installation; General Linux stack diagnostic.
+
+## 2026-11-22 - Fresh translations miss native-only character/card and map calls
+
+**Symptom:** a clean USA build reaches the title but stops at character selection
+with `missing_target` for `0x80773220`, called from `0x807736E0`.
+
+**Root cause:** `nsmbw_p1_character.cpp` calls the card setter through
+`InvokeDirectCpu<kCardSetter>`. The translator does not discover calls from
+handwritten C++; the setter was absent from `function_map.txt`. Auditing the
+other constant native callees found the same gap at `0x809079B0`, called by
+`nsmbw_wm_camera_clamp.cpp`.
+
+**Fix:** seed both PAL addresses in `projects/nsmbw/function_map.txt` and regenerate
+the affected translations and shard manifest. Both map to the same USA addresses.
+
+**Scope:** NSMBW-specific translation inputs; applies to fresh builds on either OS.
+
 ## 2026-11-23 - Setup: picking a disc image inside `disc\` deletes it (GitHub issue #10)
 
 - **Symptom:** v0.3.0 reporter put `DISC.rvz` in `<game folder>\disc\`, chose "Disc image...", got "Could not move the extracted disc into the game folder" and the image was gone.
