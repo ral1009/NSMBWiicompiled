@@ -63,6 +63,92 @@ Output lands in `build_nsmbw\nsmbw_test.err.log` and `build_nsmbw\shots\`. Scene
 
 ## Packaging
 
+### Native Linux / AppImage (experimental)
+
+The native target requires Linux x86-64, Clang, CMake 3.25+, Ninja, .NET 8,
+Python 3 and the development packages for SDL's X11/Wayland and audio backends.
+On Ubuntu 24.04:
+
+```bash
+sudo apt-get install clang cmake ninja-build pkg-config libasound2-dev libpulse-dev \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev \
+  libxss-dev libxtst-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+  libgl1-mesa-dev libudev-dev libfreetype-dev libpng-dev zlib1g-dev file
+```
+
+Run the translation steps above **on Linux**; the data initializer's assembly
+uses the host platform's object format. Put the generated runtime header where
+the shared runtime includes it:
+
+```bash
+mkdir -p generated_nsmbw/generated
+cp generated_nsmbw/RuntimeConfig.h generated_nsmbw/generated/RuntimeConfig.h
+bash projects/nsmbw/tools/build_nsmbw_linux.sh
+```
+
+The helper builds NSMBW only, without requiring Mario Kart Wii translations.
+Its first argument is the build directory; remaining arguments go to CMake.
+Use `-DMKW_HOST_ISA=v2` in a separate directory for a compatibility build, or
+`-DNSMBW_GAME_VERSION=E1` after generating the USA version's translations.
+Copy the game libraries you want to ship into one build directory before packaging.
+
+```bash
+./build-linux-nsmbw/NSMBWCompiled --disc "/path/to/game.wbfs"
+```
+
+Open the AppImage, select **Disc image...** and choose your ISO, RVZ or WBFS.
+The bundled nodtool extracts the data partition once. Setup checks the region,
+revision and available game library before saving the disc location. You can also
+select **Extracted folder...**. Optionally install a Dolphin HD texture pack, then
+press **Play**. Later launches use the saved copy. Hold Shift at launch or pass
+`--setup` to reopen setup.
+
+`--disc` takes an image or an extracted folder. For unattended setup use
+`NSMBW_SETUP_IMAGE`, `NSMBW_SETUP_FOLDER` or `NSMBW_SETUP_TEXTURES`.
+`NSMBW_SETUP_SHOW=1` forces the window.
+
+Saves, settings and controls use `$XDG_DATA_HOME/WiiCompiled`, defaulting to
+`~/.local/share/WiiCompiled`. Imported discs are in `discs/E1` or `discs/P1`.
+Logs, caches and HD textures are in `nsmbw_data/` under that directory.
+The existing `portable.txt` mode also works for a writable unpacked installation;
+do not put that marker inside an AppImage.
+
+Install the x86-64 `linuxdeploy` AppImage and its `appimage` output plugin from
+[linuxdeploy](https://github.com/linuxdeploy/linuxdeploy/releases) and
+[linuxdeploy-plugin-appimage](https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases).
+Make both executable and put them on PATH, with the plugin named
+`linuxdeploy-plugin-appimage`. Then:
+
+```bash
+python3 projects/nsmbw/tools/package_nsmbw_linux.py build-linux-nsmbw
+```
+
+The result is `dist/NSMBWCompiled-x86_64.AppImage`. The package includes only the
+launcher, nodtool, selected game libraries, runtime seeds, bootstrap files and licenses;
+it does not copy an extracted disc, texture pack, save or `portable.txt`.
+`--appdir-only` stages the files for inspection without bundling dependencies.
+Build on the oldest distribution you intend to support; bundling does not remove
+the minimum glibc requirement. Test outside the source tree on a machine with
+Vulkan drivers installed.
+
+The launcher and packaging checks do not need a game disc:
+
+```bash
+cmake -S runtime/tests/linux -B build-linux-tests -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build-linux-tests --parallel 4
+./build-linux-tests/fiber_stack
+./build-linux-tests/memory_fault
+python3 projects/nsmbw/tools/test_expand_embeds.py
+python3 projects/nsmbw/tools/test_linux_launcher.py build-linux-tests
+```
+
+These checks compile the launcher and product entry point, then exercise setup,
+library loading and AppDir staging with temporary fixtures. They do not verify
+gameplay or graphics.
+
+### Windows package
+
 ```powershell
 .\projects\nsmbw\tools\package_nsmbw.ps1
 ```

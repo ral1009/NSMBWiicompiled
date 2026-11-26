@@ -114,6 +114,7 @@ if(MKW_BUILD_NSMBW)
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_movie_skip.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_setup.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_linux.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/host_cpu_baseline.cpp")
     if(NOT WIN32)
         list(REMOVE_ITEM NSMBW_RUNTIME_COMMON_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/wup028_adapter.cpp")
@@ -197,8 +198,23 @@ if(MKW_BUILD_NSMBW)
     if(MKW_HOST_ISA_LEVEL LESS 3)
         string(APPEND NSMBW_GAME_DLL_NAME "-compat")
     endif()
+    set(NSMBW_GLYPH_SOURCE "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp")
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles("#ifndef __has_embed\n#error no_embed\n#endif\nint main() {}" NSMBW_HAS_EMBED)
+    if(NOT NSMBW_HAS_EMBED)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        file(GLOB_RECURSE NSMBW_GLYPH_PNGS CONFIGURE_DEPENDS
+            "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/assets/button_glyphs/*.png")
+        set(NSMBW_EMBED_SCRIPT "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/tools/expand_embeds.py")
+        set(NSMBW_GLYPH_EXPANDED "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_button_glyphs.cpp")
+        add_custom_command(OUTPUT "${NSMBW_GLYPH_EXPANDED}"
+            COMMAND Python3::Interpreter "${NSMBW_EMBED_SCRIPT}" "${NSMBW_GLYPH_SOURCE}" "${NSMBW_GLYPH_EXPANDED}"
+            DEPENDS "${NSMBW_GLYPH_SOURCE}" "${NSMBW_EMBED_SCRIPT}" ${NSMBW_GLYPH_PNGS}
+            VERBATIM)
+        set(NSMBW_GLYPH_SOURCE "${NSMBW_GLYPH_EXPANDED}")
+    endif()
     add_library(NSMBWGame SHARED "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_product.cpp"
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_button_glyphs.cpp"
+        "${NSMBW_GLYPH_SOURCE}"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_controls.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_layout_patch.cpp"
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_menu_art.cpp"
@@ -207,6 +223,7 @@ if(MKW_BUILD_NSMBW)
         "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_movie_skip.cpp")
     set_target_properties(NSMBWGame PROPERTIES PREFIX "" OUTPUT_NAME "${NSMBW_GAME_DLL_NAME}")
     mkw_configure_object_target(NSMBWGame)
+    target_include_directories(NSMBWGame PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/src/product")
     # Same product define as nsmbw_runtime_common: runtime_config.h's inline functions read it, and
     # an inline function compiled differently in two objects of one module is an ODR violation.
     target_compile_definitions(NSMBWGame PRIVATE MKW_RUNTIME_PRODUCT_NSMBW)
@@ -247,6 +264,7 @@ if(MKW_BUILD_NSMBW)
             dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp setupapi winusb shell32 ole32)
     else()
         target_link_libraries(NSMBWGame PRIVATE mkw::libco)
+        target_link_options(NSMBWGame PRIVATE -Wl,--no-undefined)
     endif()
 
     # The launcher, NSMBWCompiled.exe (nsmbw_launcher.cpp): checks the CPU, loads the game DLL and
@@ -256,10 +274,14 @@ if(MKW_BUILD_NSMBW)
     # nsmbw_launcher_setup.cpp is the setup screen (disc, HD pack, mods slot); it reads and writes
     # Config.toml through runtime_config.h, the same header the game uses, so it needs that header's
     # include paths, toml11 and the NSMBW product define (which picks NSMBW's config template).
-    add_executable(NSMBWCompiled
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher.cpp"
-        "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_setup.cpp"
-        "${MKW_CPU_BASELINE_SOURCE}")
+    if(WIN32)
+        set(NSMBW_LAUNCHER_SOURCES
+            "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher.cpp"
+            "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_setup.cpp")
+    else()
+        set(NSMBW_LAUNCHER_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/product/nsmbw_launcher_linux.cpp")
+    endif()
+    add_executable(NSMBWCompiled ${NSMBW_LAUNCHER_SOURCES} "${MKW_CPU_BASELINE_SOURCE}")
     mkw_configure_object_target(NSMBWCompiled)
     target_compile_definitions(NSMBWCompiled PRIVATE MKW_RUNTIME_PRODUCT_NSMBW)
     target_link_libraries(NSMBWCompiled PRIVATE mkw::toml11)
@@ -298,8 +320,22 @@ if(MKW_BUILD_NSMBW)
     # before - raise the reserved stack well past what's been observed so far. This must be on the
     # exe: the main thread, and every thread created with the default size, take it from the exe
     # header, and a DLL's --stack is ignored.
-    target_link_options(NSMBWCompiled PRIVATE -Wl,--stack,16777216)
-    if(NSMBW_RELEASE)
+    if(WIN32)
+        target_link_options(NSMBWCompiled PRIVATE -Wl,--stack,16777216)
+    else()
+        set(linux_setup "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/linux")
+        include("${linux_setup}/launcher.cmake")
+        nsmbw_configure_linux_launcher()
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/nodtool" "${CMAKE_CURRENT_BINARY_DIR}/nodtool-LICENSE"
+            COMMAND "${CMAKE_COMMAND}" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}" -P "${linux_setup}/fetch_nodtool.cmake"
+            DEPENDS "${linux_setup}/fetch_nodtool.cmake" VERBATIM)
+        add_custom_target(nsmbw_disc_extractor DEPENDS
+            "${CMAKE_CURRENT_BINARY_DIR}/nodtool" "${CMAKE_CURRENT_BINARY_DIR}/nodtool-LICENSE")
+        add_dependencies(NSMBWCompiled nsmbw_disc_extractor)
+        set_target_properties(NSMBWCompiled NSMBWGame PROPERTIES
+            BUILD_RPATH_USE_ORIGIN ON INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib")
+    endif()
+    if(WIN32 AND NSMBW_RELEASE)
         # GUI subsystem: no console window. mingw-w64's startup still calls main().
         target_link_options(NSMBWCompiled PRIVATE -mwindows)
     endif()
@@ -412,5 +448,5 @@ END
         message(STATUS "NSMBWCompiled: embedding icon ${NSMBW_ICON}")
     endif()
 
-    message(STATUS "NSMBWCompiled launcher + ${NSMBW_GAME_DLL_NAME}.dll targets ready.")
+    message(STATUS "NSMBWCompiled launcher + ${NSMBW_GAME_DLL_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX} targets ready.")
 endif()
