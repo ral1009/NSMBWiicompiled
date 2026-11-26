@@ -1914,3 +1914,22 @@ These were committed without a progress-log entry; the details are in the commit
 - Developer playtest of the package (same day), all confirmed: the 21:9 zoom (full zoom kept; 3-5 between zones, multiplayer, Big Bertha, USA), power-up freeze (pickups, damage, mini mushroom, death), character select (title and map Add/Drop, real controllers), 180 FPS and Match display, save-backup rotation (10 kept), USA past World 1, shader stutter in later worlds, the World 2 sandfall / World 4 clouds / W1 map edge fixes, and the setup window by hand. Not confirmed: tilt direction on a tilting platform, and the sky above water against hardware (both stay in docs/issues.md's open list).
 - README: Known issues gained the narrow-room zoom line; the USA line no longer says "tested through World 1". Release notes drafted in `dist/RELEASE_NOTES-v0.3.0.md` (not in the repo).
 - Still open for the release: the `PLAYING.txt` Config.toml items, then the `v0.3.0` tag.
+
+## 2026-11-23 — GitHub issue #10: setup deleted a disc image kept inside `disc\`
+
+**What I did**
+- Read the report (v0.3.0): the tester put `DISC.rvz` in `<game folder>\disc\`, chose "Disc image...", saw "Could not move the extracted disc into the game folder", and the image was gone.
+- Read `ExtractDiscImage` in `nsmbw_launcher_setup.cpp`. After extracting into `disc_extracting\`, it ran `fs::remove_all(disc)` to clear any earlier extraction, then renamed the new one into place. The code assumed `disc\` holds only the launcher's own extraction.
+- Reproduced in a portable copy (PAL `.rvz` at `disc
+smbw.rvz`, `NSMBW_SETUP_IMAGE` pointing at it): the old build deleted the image; the new build kept it, extracted `sys` and `files` beside it, and the launcher accepted the disc and started the game.
+- Fix: stop wiping or replacing `disc\`. Its entries are removed one at a time, skipping the picked image (compared with `fs::equivalent`/canonical path), a failed removal aborts with a message saying the image was untouched, and the extracted entries are then moved in.
+
+**What broke**
+- The reporter's "Could not move" error did not reproduce (the rename succeeded here), so that half of the report is unexplained. Likely, not proven: an Explorer window or antivirus holding the emptied directory so it could not be removed or replaced. The new code never removes the directory, so it avoids that case, but that was not tested.
+
+**What I learned**
+- A function that "owns" a folder must not delete it wholesale when the user can point it at a file inside that folder. `remove_all` also fails quietly unless its `error_code` is checked.
+- Why it was not seen before: the developer's images are outside the game folder and the private package skips the picker.
+
+**What's next**
+- Reply on issue #10 (image is not recoverable; re-copy it and keep it outside `disc\`), then close it once released. README Known issues and `PLAYING.txt` (whose "extracted into a disc folder" wording is the likely reason the tester put the image there) now warn about v0.3.0 and earlier. Entry in docs/issues.md.

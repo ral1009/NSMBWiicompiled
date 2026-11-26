@@ -242,11 +242,31 @@ bool ExtractDiscImage(const fs::path& image) {
         Tell(status.text, MB_ICONWARNING);
         return false;
     }
-    fs::remove_all(disc, ec);
-    fs::rename(root, disc, ec);
-    if (ec) {
-        Tell(L"Could not move the extracted disc into the game folder.", MB_ICONERROR);
-        return false;
+    // The picked image may itself live inside disc\ (issue #10: remove_all(disc) deleted the user's
+    // only copy of the image). So never wipe disc\ wholesale: remove its entries one by one, skip the
+    // image, and move the extracted entries in beside it.
+    std::error_code ecs;
+    const fs::path imageCanon = fs::weakly_canonical(image, ecs);
+    fs::create_directories(disc, ec);
+    for (const auto& e : fs::directory_iterator(disc, ec)) {
+        std::error_code ec2;
+        if (fs::equivalent(e.path(), image, ec2) || (!ecs && fs::weakly_canonical(e.path(), ec2) == imageCanon)) continue;
+        std::error_code ecr;
+        fs::remove_all(e.path(), ecr);
+        if (ecr) {
+            fs::remove_all(tmp, ec2);
+            Tell(L"Could not clear the old files in " + disc.wstring() + L". Your disc image was not touched.",
+                 MB_ICONERROR);
+            return false;
+        }
+    }
+    for (const auto& e : fs::directory_iterator(root, ec)) {
+        std::error_code ecm;
+        fs::rename(e.path(), disc / e.path().filename(), ecm);
+        if (ecm) {
+            Tell(L"Could not move the extracted disc into the game folder.", MB_ICONERROR);
+            return false;
+        }
     }
     fs::remove_all(tmp, ec);
     if (!SaveDvdRoot(disc)) {

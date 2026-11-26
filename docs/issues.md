@@ -1044,6 +1044,13 @@ The recurring classes, for reference (details in CLAUDE.md):
 - **Fix:** aurora's pack index skips that file by name (`kIgnoredReplacements` in `aurora-main/lib/gfx/texture_replacement.cpp`, commit 0383ddf; logged as `ignoring known-bad pack file`), so every player with this pack gets the disc's 256x80 clouds there; the rest of the pack is unchanged (306 files indexed instead of 307). Developer's decision (remove rather than repair). Verified: same view with the pack on, no blocks (screenshot).
 - **Scope:** NSMBW-specific (pack content). New switch `NSMBW_DEBUG_SKIP_DRAWS=<w>x<h>:<blend mode>` (aurora `command_processor.cpp`) drops draws by texture size and blend mode, to look at one layer of an effect.
 
+## 2026-11-23 - Setup: picking a disc image inside `disc\` deletes it (GitHub issue #10)
+
+- **Symptom:** v0.3.0 reporter put `DISC.rvz` in `<game folder>\disc\`, chose "Disc image...", got "Could not move the extracted disc into the game folder" and the image was gone.
+- **Root cause:** `ExtractDiscImage` replaced any old extraction with `fs::remove_all(disc)`; the image lives inside `disc\`, so it was deleted. The `remove_all` error code was also ignored. The image deletion reproduced exactly (2026-11-23, portable copy, PAL .rvz in `disc\`). The reporter's rename failure did not reproduce here (the rename succeeded); likely cause, unconfirmed: something (an Explorer window open on `disc\`, antivirus) held the emptied directory so it could not be removed or replaced.
+- **Fix:** `nsmbw_launcher_setup.cpp` no longer wipes or replaces `disc\`: it removes its entries one by one, skips the picked image, aborts with a message if a removal fails, then moves the extracted entries in. Tested same setup: old build deleted the image, new build kept it, extracted beside it, and the launcher accepted the disc.
+- **Scope:** General (launcher setup, any version).
+
 ## Open / unconfirmed items
 
 Not fixed, or fixed by a guess. Listed so the scope split later does not miss them.

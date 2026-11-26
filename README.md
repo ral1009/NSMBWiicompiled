@@ -141,6 +141,7 @@ Later:
 - **5K and 6K are not available with frame interpolation on**, because they ran badly on the hardware tested.
 - **No Wii Remote support.** Use a keyboard or gamepad.
 - Only the PAL and USA discs, revision 1, are supported.
+- **Do not keep your disc image inside the game's `disc` folder (v0.3.0 and earlier).** Picking an image stored there deleted it while extracting (issue #10, fixed after 0.3.0). Keep the image anywhere else, and re-copy it if it was lost.
 - **The USA version is new.** Please report anything that differs from the PAL version.
 - **The compatibility build for CPUs without AVX2 has not been tested on such a CPU yet.** It is chosen automatically; please report how it runs.
 

@@ -20,6 +20,8 @@ SETUP
 2. Run NSMBWCompiled.exe. The first time, a setup window asks for your game files:
    - "Disc image...": pick your disc image (.rvz, .iso or .wbfs). It is extracted once, into a
      "disc" folder next to the exe (a few seconds; about 350 MB).
+     Keep your image outside that "disc" folder: the setup owns it, and versions up to 0.3.0
+     deleted an image stored there.
    - "Extracted folder...": pick a folder you already extracted with Dolphin (it contains
      "sys" and "files").
    It shows which version it found (PAL or USA). Optionally install an HD texture pack, then
