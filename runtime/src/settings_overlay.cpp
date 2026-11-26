@@ -1133,6 +1133,38 @@ bool AspectNeedsRestart() noexcept {
     return RuntimeConfigFile::ParseAspect(RuntimeConfigFile::AspectText()).text != RuntimeConfigFile::RunningAspect().text;
 }
 
+// The entries are the disc's languages (RuntimeConfigFile::DiscLanguages, English first) and, when
+// there is a choice, "Auto (system)" last. ASCII labels: the menu is drawn with the game's own font.
+int LanguageCount() noexcept {
+    const size_t discLanguages = RuntimeConfigFile::DiscLanguages().size();
+    return static_cast<int>(discLanguages > 1 ? discLanguages + 1 : discLanguages);
+}
+const char* LanguageLabel(int index) noexcept {
+    const auto& languages = RuntimeConfigFile::DiscLanguages();
+    if (index >= 0 && static_cast<size_t>(index) < languages.size()) {
+        return RuntimeConfigFile::LanguageName(languages[static_cast<size_t>(index)]);
+    }
+    return index == static_cast<int>(languages.size()) && languages.size() > 1 ? "Auto (system)" : "English";
+}
+int LanguageIndex() noexcept {
+    const auto& languages = RuntimeConfigFile::DiscLanguages();
+    const std::string saved = RuntimeConfigFile::SavedLanguageText();
+    if (languages.size() > 1 && RuntimeConfigFile::IsAutoLanguage(saved)) return static_cast<int>(languages.size());
+    const uint8_t code = RuntimeConfigFile::ParseLanguageCode(saved);
+    for (size_t i = 0; i < languages.size(); ++i) {
+        if (languages[i] == code) return static_cast<int>(i);
+    }
+    return 0;
+}
+void SetLanguageIndex(int index) noexcept {
+    const auto& languages = RuntimeConfigFile::DiscLanguages();
+    if (index >= 0 && static_cast<size_t>(index) < languages.size()) {
+        RuntimeConfigFile::SetLanguage(RuntimeConfigFile::LanguageTag(languages[static_cast<size_t>(index)]));
+    } else if (index == static_cast<int>(languages.size()) && languages.size() > 1) {
+        RuntimeConfigFile::SetLanguage("auto");
+    }
+}
+
 bool HdTextures() noexcept { return g_textureReplacements; }
 void SetHdTextures(bool enabled) noexcept {
     g_textureReplacements = enabled;

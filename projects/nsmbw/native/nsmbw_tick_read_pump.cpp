@@ -475,6 +475,24 @@ void NsmbwDebugGoto() {
     std::fprintf(stderr, "[nsmbw][diag] goto: area %d entrance %d at level frame %d%c", area, entrance, frames, 10);
 }
 
+// NSMBW_DEBUG_P1_LIVES=<n>: test only. 60 frames into the first course after a world map, set Mario's
+// lives (daPyMng_c::mRest[PLAYER_TYPE_MARIO], 0x80355190 in NSMBW-Decomp syms.txt) to n, so a run with
+// n = 1 and no input reaches the game-over screen. Added 2026-11-25 to check gameOver.arc per language.
+void NsmbwDebugP1Lives() {
+    static const long lives = [] {
+        const char* v = AURORA_ENV("NSMBW_DEBUG_P1_LIVES");
+        return v ? std::strtol(v, nullptr, 10) : -1L;
+    }();
+    static bool done = false, sawMap = false;
+    static int levelFrames = 0;
+    if (lives < 0 || done) return;
+    if (g_nsmbwCurrentSceneProfile == 3u) { sawMap = true; levelFrames = 0; return; }
+    if (!sawMap || g_nsmbwCurrentSceneProfile != 5u || ++levelFrames < 60) return; // nsmbw-va: not an address
+    done = true;
+    Memory::Write32(NSMBW_VA(0x80355190u), static_cast<uint32_t>(lives));
+    std::fprintf(stderr, "[nsmbw][diag] p1 lives -> %ld%c", lives, 10);
+}
+
 
 // NSMBW_DEBUG_P1_CHARACTER=<0..3> (0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad): sets player 1's
 // character 300 frames (5 s) into the first world map, through the same setter as the F10 option
@@ -574,6 +592,7 @@ extern "C" void nsmbw_tick_read_pump_801be010(CpuContext* ctx)
     NsmbwDebugP1Character();
     NsmbwDebugWarp();
     NsmbwDebugGoto();
+    NsmbwDebugP1Lives();
     NsmbwDebugMapWorld();
     NsmbwZonePillarboxTick();
     NsmbwDumpWmCam();

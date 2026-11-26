@@ -61,6 +61,20 @@ extern "C" uint32_t SCGetEuRgb60Mode_HLE()
 
 PPC_NATIVE_OVERRIDE(801B1CAC, SCGetEuRgb60Mode_HLE, uint32_t, (), ());
 
+// SCGetLanguage() (NSMBW: 0x801DD460, bound in projects/nsmbw/native/nsmbw_sc_language.cpp)
+// Returns the SDK's SCLanguage: 1 = English, 2 = German, 3 = French, 4 = Spanish, 5 = Italian.
+//
+// The game picks its language folder (/EU/EngEU, /EU/FraEU, ...) from this value. On a console it
+// is IPL.LNG in SYSCONF. We have no SYSCONF (the SC buffer is never filled, see
+// nsmbw_sc_deferred_write_sync.cpp), so the translated lookup always failed and returned its
+// fallback, English, whichever languages the disc held. Config.toml's [game] language decides now,
+// limited to the languages the extracted disc has (RuntimeConfigFile::DiscLanguages).
+extern "C" uint32_t SCGetLanguage_HLE()
+{
+    // One the disc has: RunningLanguage() falls back to English for a choice its folders lack.
+    return RuntimeConfigFile::RunningLanguage();
+}
+
 // The managed NAND intentionally starts without a console-owned setting.txt.
 // DWC nevertheless requires the Wii product code and serial number so it can
 // include csnum in NAS authentication. Expose one stable virtual-console

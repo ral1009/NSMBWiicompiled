@@ -55,6 +55,9 @@ struct RuntimeUserConfig {
     // NSMBW: [gameplay] power_up_freeze - false skips the freeze while a player changes size
     // (projects/nsmbw/native/nsmbw_power_up_freeze.cpp).
     std::optional<bool> powerUpFreeze;
+    // NSMBW: [game] language = "en" | "fr" | "de" | "es" | "it" | "auto" (the Windows display
+    // language). Answers the game's SCGetLanguage (runtime/src/hle/sc.cpp); applies after a restart.
+    std::optional<std::string> language;
     std::optional<bool> attenuateMusicWhenMediaPlays;
     std::optional<bool> networkEnabled;
     std::optional<std::string> nandRoot;
@@ -446,6 +449,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.audioMuted = FindConfigValue<bool>(document, "audio", "muted");
     config.audioMixWorker = FindConfigValue<bool>(document, "audio", "mix_worker");
     config.powerUpFreeze = FindConfigValue<bool>(document, "gameplay", "power_up_freeze");
+    config.language = FindConfigValue<std::string>(document, "game", "language");
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
@@ -714,6 +718,137 @@ inline bool SetAspectRatio(const std::string& text) {
     return wroteAspect && wroteFlag;
 }
 
+// NSMBW's language (2026-11-24). A real Wii keeps the language in SYSCONF (IPL.LNG) and the game
+// asks the SDK's SCGetLanguage; this runtime has no SYSCONF (the SC buffer is never filled, see
+// projects/nsmbw/native/nsmbw_sc_deferred_write_sync.cpp), so the lookup failed and the game fell
+// back to English whatever the disc held. SCGetLanguage_HLE (runtime/src/hle/sc.cpp) now answers
+// from here instead. The saved text is [game] language: "en", "fr", "de", "es", "it" (also the
+// English names and locale tags such as "fr-FR") or "auto" (the Windows display language).
+// NSMBW_LANGUAGE=<text> overrides it for a test run.
+// The codes are the SDK's SCLanguage values. Which of them can be played depends on the disc: the
+// game's language folders (EngEU, FraEU, ... or EngUS, FraUS, SpaUS) are looked up in the extracted
+// disc, see DiscLanguages() below, and a choice the disc does not have falls back to English.
+inline constexpr uint8_t kLanguageEnglish = 1;
+inline constexpr uint8_t kLanguageGerman = 2;
+inline constexpr uint8_t kLanguageFrench = 3;
+inline constexpr uint8_t kLanguageSpanish = 4;
+inline constexpr uint8_t kLanguageItalian = 5;
+
+// The English name (what the F10 menu shows) and the Config.toml spelling of a language code.
+inline const char* LanguageName(uint8_t code) {
+    switch (code) {
+    case kLanguageGerman: return "German";
+    case kLanguageFrench: return "French";
+    case kLanguageSpanish: return "Spanish";
+    case kLanguageItalian: return "Italian";
+    default: return "English";
+    }
+}
+inline const char* LanguageTag(uint8_t code) {
+    switch (code) {
+    case kLanguageGerman: return "de";
+    case kLanguageFrench: return "fr";
+    case kLanguageSpanish: return "es";
+    case kLanguageItalian: return "it";
+    default: return "en";
+    }
+}
+
+inline std::string LowerTrim(std::string_view text) {
+    std::string word = Trim(text);
+    for (char& c : word) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return word;
+}
+
+inline bool IsAutoLanguage(std::string_view text) {
+    return LowerTrim(text) == "auto";
+}
+
+// 0 when `text` names no supported language. Only the part before '-', '_' or '.' counts, so
+// "fr-FR", "fr_CA.UTF-8" and "French" all work.
+inline uint8_t ParseLanguageCode(std::string_view text) {
+    std::string word = LowerTrim(text);
+    const size_t cut = word.find_first_of("-_.");
+    if (cut != std::string::npos) {
+        word.resize(cut);
+    }
+    struct Name { const char* text; uint8_t code; };
+    static constexpr Name kNames[] = {
+        {"en", kLanguageEnglish}, {"eng", kLanguageEnglish}, {"english", kLanguageEnglish},
+        {"de", kLanguageGerman}, {"deu", kLanguageGerman}, {"ger", kLanguageGerman},
+        {"german", kLanguageGerman}, {"deutsch", kLanguageGerman},
+        {"fr", kLanguageFrench}, {"fra", kLanguageFrench}, {"fre", kLanguageFrench},
+        {"french", kLanguageFrench}, {"francais", kLanguageFrench},
+        {"es", kLanguageSpanish}, {"spa", kLanguageSpanish}, {"spanish", kLanguageSpanish},
+        {"espanol", kLanguageSpanish},
+        {"it", kLanguageItalian}, {"ita", kLanguageItalian}, {"italian", kLanguageItalian},
+        {"italiano", kLanguageItalian},
+    };
+    for (const Name& name : kNames) {
+        if (word == name.text) {
+            return name.code;
+        }
+    }
+    return 0;
+}
+
+// The language of the operating system's display settings, or English when it is not one the game has.
+// Windows: the UI (display) language, not GetUserDefaultLocaleName - that is the regional format
+// (dates, numbers), so an English Windows with French formats would have picked French.
+inline uint8_t SystemLanguageCode() {
+#ifdef _WIN32
+    wchar_t name[LOCALE_NAME_MAX_LENGTH] = {};
+    if (LCIDToLocaleName(MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT), name, LOCALE_NAME_MAX_LENGTH, 0) > 0) {
+        std::string ascii;
+        for (const wchar_t* c = name; *c != L'\0' && *c < 128; ++c) {
+            ascii.push_back(static_cast<char>(*c));
+        }
+        if (const uint8_t code = ParseLanguageCode(ascii)) {
+            return code;
+        }
+    }
+#else
+    for (const char* variable : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
+        if (const char* value = std::getenv(variable); value != nullptr && *value != '\0') {
+            if (const uint8_t code = ParseLanguageCode(value)) {
+                return code;
+            }
+        }
+    }
+#endif
+    return kLanguageEnglish;
+}
+
+// The saved choice as text (what the F10 menu shows and edits); "en" when nothing is saved.
+// Not NSMBW_LANGUAGE: with the test override set, the menu showed the override and a press
+// seemed to do nothing although it was saved (2026-11-25).
+inline std::string SavedLanguageText() {
+    const auto& config = Get();
+    if (config.language && !Trim(*config.language).empty()) {
+        return Trim(*config.language);
+    }
+    return "en";
+}
+
+// The language this run plays in: NSMBW_LANGUAGE=<text> (test runs) or the saved choice.
+inline std::string LanguageText() {
+    if (const char* env = std::getenv("NSMBW_LANGUAGE"); env != nullptr && *env != '\0') {
+        return env;
+    }
+    return SavedLanguageText();
+}
+
+inline bool SetLanguage(const std::string& text) {
+    const std::string word = LowerTrim(text);
+    if (word != "auto" && ParseLanguageCode(word) == 0) {
+        return false;
+    }
+    Mutable().language = word;
+    return WriteSetting("game", "language", FormatString(word));
+}
+
 inline bool SetShowFps(bool value) {
     Mutable().showFps = value;
     return WriteSetting("video", "show_fps", value ? "true" : "false");
@@ -940,6 +1075,76 @@ inline std::filesystem::path ResolveRelativeToConfig(const std::string& value) {
 inline std::filesystem::path ResolvedDvdRoot() {
     const std::string configured = DvdRoot();
     return configured.empty() ? std::filesystem::path{} : ResolveRelativeToConfig(configured);
+}
+
+// The languages the disc can play, found by looking for the game's own language folders in the
+// extracted disc (the launcher extracts an .rvz/.iso/.wbfs into one; Config.toml's dvd_root names it).
+// A language counts when `files/<EU|US>/<Eng|Fra|Ger|Spa|Ita><EU|US>/Message/Message.arc` exists:
+// the PAL disc has English, French, German, Spanish and Italian (its NedEU folder holds only a
+// strap-screen layout, and the game maps Dutch to English), the USA disc English, French and Spanish.
+// In menu order (English first); never empty: English when nothing is found (a layout this does
+// not know, or no disc configured yet).
+inline std::vector<uint8_t> ScanDiscLanguages(const std::filesystem::path& dvdRoot) {
+    struct Folder { const char* prefix; uint8_t code; };
+    static constexpr Folder kFolders[] = {
+        {"Eng", kLanguageEnglish}, {"Fra", kLanguageFrench}, {"Ger", kLanguageGerman},
+        {"Spa", kLanguageSpanish}, {"Ita", kLanguageItalian},
+    };
+    std::vector<uint8_t> found;
+    std::error_code ec;
+    for (const char* region : {"EU", "US"}) {
+        for (const Folder& folder : kFolders) {
+            const std::filesystem::path message = dvdRoot / "files" / region /
+                (std::string(folder.prefix) + region) / "Message" / "Message.arc";
+            if (std::filesystem::is_regular_file(message, ec) &&
+                std::find(found.begin(), found.end(), folder.code) == found.end()) {
+                found.push_back(folder.code);
+            }
+        }
+    }
+    if (found.empty()) {
+        found.push_back(kLanguageEnglish);
+    }
+    return found;
+}
+
+// Scanned once, at the first call.
+inline const std::vector<uint8_t>& DiscLanguages() {
+    static const std::vector<uint8_t> languages = ScanDiscLanguages(ResolvedDvdRoot());
+    return languages;
+}
+
+inline bool DiscHasLanguage(uint8_t code) {
+    const auto& languages = DiscLanguages();
+    return std::find(languages.begin(), languages.end(), code) != languages.end();
+}
+
+// Text -> SDK language code the disc can play. "auto" follows the system; a language the disc does
+// not have, or an unknown word, gives English (or the disc's first language when it has no English).
+inline uint8_t ResolveLanguage(std::string_view text) {
+    const bool automatic = IsAutoLanguage(text);
+    uint8_t code = automatic ? SystemLanguageCode() : ParseLanguageCode(text);
+    if (code == 0) {
+        std::cerr << "[runtime] Unknown game.language=\"" << text << "\", using English" << std::endl;
+        code = kLanguageEnglish;
+    }
+    if (!DiscHasLanguage(code)) {
+        const uint8_t fallback = DiscHasLanguage(kLanguageEnglish) ? kLanguageEnglish : DiscLanguages().front();
+        if (!automatic) {
+            std::cerr << "[runtime] game.language=\"" << text << "\" is not on this disc, using "
+                      << LanguageName(fallback) << std::endl;
+        }
+        code = fallback;
+    }
+    return code;
+}
+
+// The language this run started with: fixed at the first call (during boot). The game builds its
+// "/EU/<lang>EU/..." paths and loads each language's fonts and layouts as scenes start, so a later
+// change would mix two languages; it applies after a restart instead (same rule as RunningAspect).
+inline uint8_t RunningLanguage() {
+    static const uint8_t running = ResolveLanguage(LanguageText());
+    return running;
 }
 
 /// The canonical Retro Rewind installation the frontend owns, or "" when none is recorded.

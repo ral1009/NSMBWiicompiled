@@ -1933,3 +1933,22 @@ smbw.rvz`, `NSMBW_SETUP_IMAGE` pointing at it): the old build deleted the image;
 
 **What's next**
 - Reply on issue #10 (image is not recoverable; re-copy it and keep it outside `disc\`), then close it once released. README Known issues and `PLAYING.txt` (whose "extracted into a disc folder" wording is the likely reason the tester put the image there) now warn about v0.3.0 and earlier. Entry in docs/issues.md.
+
+## 2026-11-25 — PR 11: choose the game language (tested and merged)
+
+**What I did**
+- Built and tested ElAmine01's draft PR ral1009/NSMBWiicompiled#11, written without a toolchain. It binds `SCGetLanguage` (0x801DD460), which always returned its English fallback because the runtime has no SYSCONF, to a `[game] language` setting limited to the language folders on the extracted disc, with an F10 > Advanced row.
+- Checked its claims against the translated body (`func_801DD460.cpp`: IPL.LNG item 11 lookup, English fallback, not a leaf so no inlining) and the USA mapping (0x801DD320, same body).
+- Ran the PR's checklist in portable copies: PAL map in French/German/Italian, Spanish title, French pause menu, Spanish course clear (via `NSMBW_DEBUG_GOTO=1:5` near the 1-1 goal), French and Spanish game over (new `NSMBW_DEBUG_P1_LIVES=1`), unknown and missing-on-disc languages, the F10 row through a restart, and the USA build in French and Spanish. File opens were confirmed with NTFS last-access times, since the DVD layer does not log them.
+- Fixed two bugs in it: `auto` used the regional format instead of the display language; and the F10 row showed the `NSMBW_LANGUAGE` override, so presses were saved but the row did not move (the developer's report).
+
+**What broke**
+- A test disc made of directory junctions hung at the strap screen in every language; a real copy (342 MB) worked. Not investigated: a test-setup problem, not a game one.
+- Synthetic Right presses with scan code 0 were ignored by the options menu: it reads SDL scancodes, which come from the scan code field. Pass the real one (0x4D for Right).
+
+**What I learned**
+- The language-specific files are only the fonts, `Message.arc`, `staffroll.bin` and the `corseClear` / `gameOver` / `wiiStrap` layouts. The French, German and Italian game-over layouts are the English one renamed, so "GAME OVER!" in English is correct there.
+- A setting with a test override needs two readers: what the run uses (override first) and what the menu edits (saved value only).
+
+**What's next**
+- Unchecked: `auto` on a non-English Windows, the staff roll, and the USA pause / course-clear / game-over screens. Thank the contributor and close the PR as merged by hand (their fork is gone, so the branch could not be updated).

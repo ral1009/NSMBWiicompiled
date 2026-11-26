@@ -66,6 +66,14 @@ const char* AspectLabel(int index) noexcept;
 int AspectIndex() noexcept;
 void SetAspectIndex(int index) noexcept;
 bool AspectNeedsRestart() noexcept; // saved choice differs from the one this run started with
+// NSMBW language choices: the languages the disc has (found from its language folders, English
+// first), then "Auto" (the system's) when there is more than one. Saved as [game] language; applies
+// after a restart. LanguageCount() is 1 for a disc with a single language (the menu hides the row);
+// LanguageIndex() is the entry for the saved choice (0 when it is none of them).
+int LanguageCount() noexcept;
+const char* LanguageLabel(int index) noexcept;
+int LanguageIndex() noexcept;
+void SetLanguageIndex(int index) noexcept;
 bool HdTextures() noexcept;
 void SetHdTextures(bool enabled) noexcept;
 bool HdTexturesNeedRestart() noexcept; // no pack was loaded at startup

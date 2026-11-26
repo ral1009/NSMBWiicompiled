@@ -48,6 +48,11 @@ CONTROLS (keyboard defaults; any SDL gamepad also works)
    Move ............... arrow keys
    Tilt the remote .... A / D (gamepad: right stick) - steers tilting platforms
    F10 opens the options menu: graphics, volumes, a controller per player and rebinding.
+   Language: F10 > Advanced > Language lists the languages your disc has (PAL: English, French,
+   German, Spanish, Italian; USA: English, French, Spanish) and Auto = your Windows language. It
+   applies after a restart. By hand: in Config.toml add   [game]   and   language = "fr"
+   (en, fr, de, es, it or auto); a language your disc lacks falls back to English.
+   The HD texture pack's text pictures are English; in another language those show the disc's own.
    It also opens by itself before the title screen the first time you play.
    Multiplayer: each connected controller is its own player (up to 4); the keyboard is player 1.
    Players can share the keyboard: set a player's controller to Keyboard and bind their own keys.

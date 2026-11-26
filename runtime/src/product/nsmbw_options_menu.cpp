@@ -166,6 +166,17 @@ std::vector<Row> BuildRows(int tab) {
         break;
     }
     default: {
+        // The game reads its language through SCGetLanguage (nsmbw_sc_language.cpp) and loads that
+        // language's folder as scenes start, so a change applies after a restart. Only the languages
+        // the disc has are listed; a disc with one language (or an unknown layout) shows no row.
+        if (settings::LanguageCount() > 1) {
+            Row language{"Language", Kind::Picker};
+            for (int i = 0; i < settings::LanguageCount(); ++i) language.options.push_back(settings::LanguageLabel(i));
+            language.value = settings::LanguageIndex();
+            language.set = [](int v) { settings::SetLanguageIndex(v); };
+            language.note = "Applies after a restart";
+            rows.push_back(std::move(language));
+        }
         // On = the game's own freeze while a player grows or shrinks; off = the level keeps moving,
         // as the game itself does when its "player game stop" flag is clear (nsmbw_power_up_freeze.cpp).
         rows.push_back({"Power-up freeze", Kind::Toggle, {}, settings::PowerUpFreeze() ? 1 : 0,
