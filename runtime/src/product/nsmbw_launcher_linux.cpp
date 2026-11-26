@@ -17,7 +17,9 @@ namespace fs = std::filesystem;
 namespace {
 
 void EnsureStackSize() {
-    // Translated guest calls need the same 16 MiB stack reserved by the Windows launcher.
+    // Raise the main thread's stack limit to 16 MiB, matching the Windows exe header. Unlike that
+    // header this only covers the main thread: glibc fixed the default pthread stack size when the
+    // process started, and guest fibers get their own 16 MiB from host_fiber.h.
     constexpr rlim_t needed = 16 * 1024 * 1024;
     rlimit limit{};
     if (getrlimit(RLIMIT_STACK, &limit) != 0) throw std::runtime_error("Could not read the stack limit.");
