@@ -481,6 +481,24 @@ inline RuntimeUserConfig ParseConfig(std::istream& input, std::string sourceName
     }
 }
 
+// The TOML parser's message when Config.toml exists but cannot be parsed; nothing when it parses
+// (or does not exist). ParseConfig only logs this and falls back to defaults, which a player
+// never sees: a `dvd_root = "C:\Games"` typo ("\G" is an escape in a double-quoted string) reset
+// every setting on every launch, and the F10 menu's line-by-line writes kept the broken line.
+// The launcher calls this before anything reads the file (nsmbw_launcher_setup.cpp).
+inline std::optional<std::string> ConfigParseError() {
+    std::ifstream file(ResolveConfigPath(), std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    try {
+        (void)toml::parse(file, PathToUtf8(ResolveConfigPath()));
+    } catch (const std::exception& exception) {
+        return std::string(exception.what());
+    }
+    return std::nullopt;
+}
+
 inline RuntimeUserConfig LoadConfigFile() {
     EnsureConfigFile();
     std::ifstream file(ResolveConfigPath(), std::ios::binary);

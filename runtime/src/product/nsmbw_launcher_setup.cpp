@@ -136,6 +136,48 @@ void Tell(const std::wstring& text, UINT icon) {
     MessageBoxW(g_window, text.c_str(), L"NSMBWCompiled setup", MB_OK | icon | MB_SETFOREGROUND);
 }
 
+std::wstring WidenUtf8(const std::string& text) {
+    if (text.empty()) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring wide(static_cast<size_t>(size > 0 ? size : 0), L'\0');
+    if (size > 0) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), size);
+    return wide;
+}
+
+// A Config.toml that does not parse (RuntimeConfigFile::ConfigParseError) used to be ignored: the
+// game ran on defaults every launch with no message (docs/issues.md, 2026-11-26). Runs before
+// anything reads the file, so a reset here gives both the launcher and the game DLL the fresh one.
+// Returns false when the player chose to quit and fix it by hand.
+bool CheckConfigReadable() {
+    const auto error = RuntimeConfigFile::ConfigParseError();
+    if (!error) return true;
+    const fs::path path = RuntimeConfigFile::ResolveConfigPath();
+    fs::path backup = path;
+    backup += L".bad";
+    std::fwprintf(stderr, L"[launcher] Config.toml could not be read:\n%ls\n", WidenUtf8(*error).c_str());
+    if (Env("NSMBW_AUTO_PRESS_SELFTEST")) {
+        // Test runs never wait on a dialog; the game falls back to defaults as before.
+        return true;
+    }
+    const std::wstring text =
+        L"Your settings file could not be read, so none of its settings would be used:\n\n" + WidenUtf8(*error) +
+        L"\n\nA common cause is a backslash inside \"double quotes\": write C:\\\\Games, or use 'single quotes'."
+        L"\n\nYes: start with default settings. The broken file is kept as " + backup.filename().wstring() +
+        L" next to it.\nNo: quit, so you can fix " + path.wstring() + L" yourself.";
+    const int choice = MessageBoxW(nullptr, text.c_str(), L"NSMBWCompiled", MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND);
+    if (choice != IDYES) return false;
+    std::error_code ec;
+    fs::rename(path, backup, ec);
+    if (ec) {
+        Tell(L"Could not rename " + path.wstring() + L": " + WidenUtf8(ec.message()), MB_ICONERROR);
+        return false;
+    }
+    std::fwprintf(stderr, L"[launcher] kept the unreadable Config.toml as %ls; starting with defaults\n",
+                  backup.wstring().c_str());
+    RuntimeConfigFile::EnsureConfigFile();
+    return true;
+}
+
 fs::path PickPath(bool folder, const wchar_t* title) {
     fs::path result;
     IFileOpenDialog* dlg = nullptr;
@@ -480,6 +522,7 @@ bool RunSetupWindow() {
 
 std::wstring EnsureSetup(bool showWindow) {
     RuntimeConfigFile::EnsureConfigFile();
+    if (!CheckConfigReadable()) return {};
     if (Env("NSMBW_SETUP_SHOW")) showWindow = true;
 
     // CoInitialize only for the file dialogs; undone before the game DLL loads, so the game starts

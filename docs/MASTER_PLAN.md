@@ -1981,3 +1981,22 @@ smbw.rvz`, `NSMBW_SETUP_IMAGE` pointing at it): the old build deleted the image;
 
 **What's next**
 - Unchecked: `auto` on a non-English Windows, the staff roll, and the USA pause / course-clear / game-over screens. Thank the contributor and close the PR as merged by hand (their fork is gone, so the branch could not be updated).
+
+## 2026-11-26 — 0.3.1 scope; a broken Config.toml now says so
+
+**What I did**
+- Listed what changed since v0.3.0 (the tag is `c59d260`; the release zip was built from `8e0dab2`, only docs between): the issue #10 setup fix, the language option (PR 11), and the native Linux launcher (PR 7, Rivier Grullon). Decided 0.3.1 ships Windows only; the AppImage waits until there is a Linux build machine (WSL2 was considered: about 10-12 GB, and its Vulkan path is uncertain), and Linux players use Proton in the meantime.
+- Fixed the first item on the 0.3.1 list: a Config.toml with a TOML syntax error was ignored with no message. The launcher now reads the file before anything else does and, if it does not parse, shows the parser's error with Yes (keep it as `Config.toml.bad`, start with defaults) or No (quit). Entry in docs/issues.md.
+- Tested in a portable copy with `dvd_root = "C:\Games\NSMBW"`: No, Yes and a valid file all behaved as intended (details in the issues entry).
+
+**What broke**
+- My first test sent its "y" keypress and screenshot to whatever window was in front (the developer's Claude window), not the game's dialog. Answering a dialog by key press needs the dialog in front, which a test from another app can't guarantee. Fix: find the process's dialog window (`#32770`), read its text and image from that window (`GetDlgItemText`, `PrintWindow`) and post the button's command to it, which never touches the foreground.
+- PowerShell variable names are case-insensitive: `$p` (the process) overwrote `$P` (the folder path) in the same script.
+
+**What I learned**
+- The open item about the template's `nand_root` example was a Mario Kart leftover: NSMBW's template only has `dvd_root`, in single quotes, where a backslash is literal. (TOML: in a "double-quoted" string `\` starts an escape such as `\n`; in a 'single-quoted' one it is just a character.)
+- The runtime's config is a static inside a header, so the launcher exe and the game DLL each keep their own copy; anything that repairs the file has to happen before either reads it.
+
+**What's next**
+- Rest of 0.3.1: port the `crorc` fix from upstream WiiCompiled #420, the developer's test pass (language `auto`, USA screens, issue #10, the release package, a PAL regression run), release notes.
+- The Linux launcher has no equivalent check.
